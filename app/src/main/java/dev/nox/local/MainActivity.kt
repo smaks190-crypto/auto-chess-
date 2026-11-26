@@ -36,6 +36,7 @@ class MainActivity : Activity() {
     private lateinit var gpu: Switch
     private lateinit var vision: Switch
     private lateinit var tts: Switch
+    private lateinit var deep: Switch
     private lateinit var modelButton: Button
     private lateinit var cancel: Button
     private lateinit var progress: ProgressBar
@@ -45,6 +46,8 @@ class MainActivity : Activity() {
     private lateinit var openSettings: Button
     private val workControls = mutableListOf<View>()
     private var lastChat = ""
+    private var lastTurns: List<NoxService.Turn>? = null
+    private var partialView: TextView? = null
     private var pendingVoice = false
     private var pendingBackground = false
     private var importIndex = 0
@@ -153,7 +156,7 @@ class MainActivity : Activity() {
             val s = service ?: return@button
             val command = input.text.toString()
             if (command.isNotBlank() && !s.busy && !s.listening) {
-                s.ask(command, s.attachedImage, tts.isChecked)
+                s.ask(command, s.attachedImage, tts.isChecked, deep.isChecked)
                 input.text.clear()
             }
         }.apply { contentDescription = "Отправить"; setTextColor(bg); background = panel(accent, 24) }
@@ -189,7 +192,8 @@ class MainActivity : Activity() {
         gpu = Switch(this).apply { text = "GPU для языка"; setTextColor(ink); isChecked = prefs.getBoolean("gpu", true) }
         vision = Switch(this).apply { text = "Анализ изображений"; setTextColor(ink); isChecked = prefs.getBoolean("vision", true) }
         tts = Switch(this).apply { text = "Озвучивать текстовые ответы"; setTextColor(ink); isChecked = false }
-        settings.addView(gpu); settings.addView(vision); settings.addView(tts)
+        deep = Switch(this).apply { text = "Глубокий анализ (медленнее)"; setTextColor(ink); isChecked = false }
+        settings.addView(gpu); settings.addView(vision); settings.addView(tts); settings.addView(deep)
         workControls.add(gpu); workControls.add(vision)
         modelButton = addButton(settings, "Скачать и запустить") { selectModel() }
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100; visibility = View.GONE }
@@ -260,17 +264,27 @@ class MainActivity : Activity() {
         val signature = turns.toString() + partial
         if (signature == lastChat) return
         lastChat = signature
-        messages.removeAllViews()
-        if (turns.isEmpty() && partial.isEmpty()) {
-            messages.addView(textLabel("Я Нокс. Чем помочь?", 24f))
-            messages.addView(textLabel("Для начала выбери модель в настройках. Простые команды работают и без модели.", 14f, muted))
+        if (lastTurns != turns) {
+            lastTurns = turns
+            messages.removeAllViews()
+            partialView = null
+            if (turns.isEmpty() && partial.isEmpty()) {
+                messages.addView(textLabel("Я Нокс. Чем помочь?", 24f))
+                messages.addView(textLabel("Для начала выбери модель в настройках. Простые команды работают и без модели.", 14f, muted))
+            }
+            for (turn in turns) addTurn(turn.user, turn.text)
         }
-        for (turn in turns) addTurn(turn.user, turn.text)
-        if (partial.isNotBlank()) addTurn(false, partial)
+        if (partial.isNotBlank()) {
+            val row = partialView ?: addTurn(false, partial).also { partialView = it }
+            row.text = partial
+        } else {
+            partialView?.let { messages.removeView(it) }
+            partialView = null
+        }
         chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
     }
 
-    private fun addTurn(user: Boolean, text: String) {
+    private fun addTurn(user: Boolean, text: String): TextView {
         val row = textLabel(text, 16f).apply {
             setPadding(dp(14), dp(10), dp(14), dp(10))
             if (user) background = panel(0xFF29243F.toInt(), 18)
@@ -280,6 +294,7 @@ class MainActivity : Activity() {
             topMargin = dp(8); bottomMargin = dp(6)
             if (user) leftMargin = dp(30) else rightMargin = dp(12)
         })
+        return row
     }
 
     private fun selectModel() {
