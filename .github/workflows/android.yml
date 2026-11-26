@@ -26,13 +26,19 @@ jobs:
         with:
           packages: "platform-tools platforms;android-36 build-tools;36.0.0"
       - name: Test, lint, assemble
-        run: gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+        run: gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:lintDev :app:assembleDev
       # Hosted runners create disposable debug keys: these artifacts are CI-only.
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'pull_request'
         with:
           name: nox-ci-ephemeral-not-an-update
           path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+      # Re-sign this artifact locally using the persistent N.O.X. Dev key.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nox-dev-for-local-signing
+          path: app/build/outputs/apk/dev/app-dev.apk
           if-no-files-found: error
       - name: Sign and verify an in-place update (original signing key required)
         if: github.event_name == 'workflow_dispatch'
