@@ -19,7 +19,7 @@ class NoxNavigationService : AccessibilityService() {
         super.onDestroy()
     }
     companion object {
-        internal var current: NoxNavigationService? = null
+        @Volatile internal var current: NoxNavigationService? = null
             private set
     }
 }
