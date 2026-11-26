@@ -43,6 +43,12 @@ internal class AndroidAgentTools(
     private val main = Handler(Looper.getMainLooper())
     private val apps = mutableMapOf<String, String>()
     private var snapshot: Screen? = null
+    private var expectedLaunch: String? = null
+    private val grantPrefs = context.getSharedPreferences("nox_agent_grants", Context.MODE_PRIVATE)
+    private val permissions = AgentPermissionPolicy(
+        saved = { pkg -> grantPrefs.getString(pkg, null)?.let { runCatching { AppGrant.valueOf(it) }.getOrNull() } },
+        persist = { pkg, grant -> check(grantPrefs.edit().putString(pkg, grant.name).commit()) { "Не удалось сохранить разрешение" } }
+    )
 
     private data class Node(val id: String, val path: List<Int>, val label: String, val kind: String,
         val resource: String, val hint: String, val bounds: String, val clickable: Boolean, val editable: Boolean,
@@ -95,6 +101,7 @@ internal class AndroidAgentTools(
         val root = nav().rootInActiveWindow ?: error("Активный экран недоступен")
         val pkg = root.packageName?.toString().orEmpty()
         require(permitted(pkg)) { "Этот экран не доступен агенту: " + pkg }
+        require(permissions.allowed(pkg)) { "Нет разрешения на управление текущим приложением" }
         val nodes = mutableListOf<Node>()
         var visited = 0
         fun walk(n: AccessibilityNodeInfo, path: List<Int>, sensitive: Boolean) {
@@ -123,7 +130,12 @@ internal class AndroidAgentTools(
 
     private fun observe(): String {
         snapshot = null
-        val screen = ui { readScreen() }
+        val pkg = ui { nav().rootInActiveWindow?.packageName?.toString().orEmpty() }
+        require(permitted(pkg)) { "Этот экран не доступен агенту: " + pkg }
+        require(expectedLaunch == null || expectedLaunch == pkg) { "Ожидается экран " + expectedLaunch }
+        authorize(pkg)
+        val screen = ui { readScreen().also { require(it.pkg == pkg) { "Активное приложение изменилось" } } }
+        expectedLaunch = null
         snapshot = screen
         return screen.describe()
     }
@@ -132,9 +144,9 @@ internal class AndroidAgentTools(
         val view = runCatching { observe() }.getOrElse { "Экран не подтверждён: " + it.message }
         return prefix + "\n" + view
     }
-    private fun confirmed(label: String) {
+    private fun choose(label: String, options: List<String>): Int {
         checkActive()
-        val decision = CompletableFuture<Boolean>()
+        val decision = CompletableFuture<Int>()
         val pair = ui {
             val service = nav()
             val wm = requireNotNull(service.getSystemService(WindowManager::class.java))
@@ -148,13 +160,13 @@ internal class AndroidAgentTools(
                     setTextColor(0xFFFFFFFF.toInt()); textSize = 15f
                 })
                 addView(LinearLayout(service).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    addView(Button(service).apply {
-                        text = "Отмена"; filterTouchesWhenObscured = true; setOnClickListener { decision.complete(false) }
-                    }, LinearLayout.LayoutParams(0, -2, 1f))
-                    addView(Button(service).apply {
-                        text = "Разрешить"; filterTouchesWhenObscured = true; setOnClickListener { decision.complete(true) }
-                    }, LinearLayout.LayoutParams(0, -2, 1f))
+                    orientation = LinearLayout.VERTICAL
+                    options.forEachIndexed { index, option ->
+                        addView(Button(service).apply {
+                            text = option; filterTouchesWhenObscured = true
+                            setOnClickListener { decision.complete(index) }
+                        }, LinearLayout.LayoutParams(-1, -2))
+                    }
                 })
             }
             val params = WindowManager.LayoutParams(
@@ -172,15 +184,40 @@ internal class AndroidAgentTools(
             while (System.nanoTime() < deadline) {
                 checkActive()
                 try {
-                    if (decision.get(200, TimeUnit.MILLISECONDS)) return
-                    throw AgentDenied()
+                    return decision.get(200, TimeUnit.MILLISECONDS)
                 } catch (_: TimeoutException) {}
             }
-            throw AgentDenied()
+            throw AgentDenied("Время ожидания подтверждения истекло. Задача остановлена.")
         } finally {
             // Cleanup must run even after cancellation; not routed through checkActive.
             main.post { runCatching { pair.first.removeView(pair.second) } }
         }
+    }
+
+    private fun appLabel(pkg: String): String = apps[pkg] ?: runCatching {
+        context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(pkg, 0)).toString()
+    }.getOrDefault(pkg)
+
+    private fun authorize(pkg: String) {
+        checkActive()
+        require(permitted(pkg)) { "Управление этим приложением запрещено" }
+        if (permissions.blocked(pkg)) throw AgentDenied("Управление «" + appLabel(pkg) + "» запрещено в настройках Нокса.")
+        if (permissions.allowed(pkg)) return
+        val choice = choose("Управление «" + appLabel(pkg) + "»\n" + pkg +
+            "\nРазрешает открытие, чтение экрана и проверенные безопасные действия. Остальные действия требуют отдельного подтверждения.",
+            listOf("Разрешать всегда", "Разрешить на эту задачу", "Запретить всегда", "Отмена"))
+        checkActive()
+        when (choice) {
+            0 -> permissions.apply(pkg, AppGrant.ALWAYS)
+            1 -> permissions.apply(pkg, AppGrant.ONCE)
+            2 -> { permissions.apply(pkg, AppGrant.NEVER); throw AgentDenied("Управление приложением запрещено.") }
+            else -> throw AgentDenied()
+        }
+    }
+
+    private fun confirmed(label: String) {
+        if (choose(label, listOf("Разрешить действие", "Отмена")) != 0) throw AgentDenied()
+        checkActive()
     }
 
     /**
@@ -222,17 +259,21 @@ internal class AndroidAgentTools(
     private fun actOnNode(action: AgentDecision.Tool): String {
         val before = snapshot ?: error("Сначала используй observe")
         val target = before.nodes.firstOrNull { it.id == action.arg } ?: error("Неизвестный ID; обнови экран")
-        require(target.enabled && if (action.name == "type") target.editable else target.clickable) {
-            "Узел не поддерживает это действие"
+        if (!(target.enabled && if (action.name == "type") target.editable else target.clickable)) {
+            snapshot = null
+            return "ERROR[UNSUPPORTED_NODE] Узел не поддерживает это действие. Выбери другой доступный узел после observe."
         }
+        authorize(before.pkg)
         val actionText = if (action.name == "type") "Ввести «" + action.text.take(1000) + "»"
             else "Нажать «" + target.label.ifBlank { target.kind + " " + target.resource } + "»"
         actionGate.before(if (action.name == "type") AgentNarration.type(target.hint.ifBlank { target.label }, target.resource, action.text)
             else AgentNarration.click(target.label, target.resource))
-        confirmed(before.pkg + "\n" + actionText)
+        if (!AgentPermissionPolicy.safeAction(before.pkg, action.name, target.label, target.resource, target.kind))
+            confirmed(appLabel(before.pkg) + " · " + before.pkg + "\n" + actionText)
         pause(250)
         snapshot = null
         val accepted = ui {
+            require(permissions.allowed(before.pkg)) { "Разрешение отозвано" }
             val current = readScreen()
             require(current == before) { "Экран изменился. Требуется новое наблюдение и подтверждение." }
             val root = nav().rootInActiveWindow ?: error("Экран исчез")
@@ -271,6 +312,14 @@ internal class AndroidAgentTools(
             "launch" -> {
                 require(action.arg in apps && permitted(action.arg)) { "Сначала получи точный пакет через apps" }
                 val label = apps.getValue(action.arg)
+                authorize(action.arg)
+                val already = runCatching { ui { readScreen() } }.getOrNull()
+                if (already?.pkg == action.arg) {
+                    expectedLaunch = null
+                    snapshot = already
+                    return "Приложение уже открыто; продолжай с текущего экрана.\n" + already.describe()
+                }
+                expectedLaunch = action.arg
                 actionGate.before(AgentNarration.launch(label))
                 snapshot = null
                 val launch = context.packageManager.getLaunchIntentForPackage(action.arg)
@@ -298,11 +347,12 @@ internal class AndroidAgentTools(
                     lastScreen = runCatching { ui { readScreen() } }.getOrNull()
                     val observed = lastScreen
                     if (observed?.pkg == action.arg) {
+                        expectedLaunch = null
                         snapshot = observed
                         return "Запуск подтверждён: " + action.arg + "\n" + observed.describe()
                     }
                 }
-                snapshot = lastScreen
+                snapshot = null
                 // Accessibility is connected, but Android may still be switching windows.
                 // AgentCore performs bounded read-only observations; no clicks until verified.
                 return AgentToolStatus.LAUNCH_RECHECK +
@@ -311,14 +361,18 @@ internal class AndroidAgentTools(
             "observe" -> observe()
             "click", "type" -> actOnNode(action)
             "back", "home" -> {
+                val pkg = ui { nav().rootInActiveWindow?.packageName?.toString().orEmpty() }
+                authorize(pkg)
+                confirmed(appLabel(pkg) + "\n" + if (action.name == "back") "Назад" else "На главный экран")
                 actionGate.before(if (action.name == "back") "Возвращаюсь назад." else "Перехожу на главный экран.")
                 snapshot = null
-                val ok = ui { nav().performGlobalAction(if (action.name == "back") AccessibilityService.GLOBAL_ACTION_BACK
+                val ok = ui { require(nav().rootInActiveWindow?.packageName?.toString() == pkg && permissions.allowed(pkg)) { "Экран изменился" }; nav().performGlobalAction(if (action.name == "back") AccessibilityService.GLOBAL_ACTION_BACK
                     else AccessibilityService.GLOBAL_ACTION_HOME) }
                 describeAfter(if (ok) "Android принял навигацию." else "Навигация отклонена.")
             }
             "scroll" -> {
                 val before = snapshot ?: error("Сначала используй observe")
+                authorize(before.pkg)
                 val target = before.nodes.firstOrNull { it.scrollable && it.enabled } ?: error("Нет доступной прокрутки")
                 actionGate.before(if (action.arg == "down") "Листаю вниз." else "Листаю вверх.")
                 snapshot = null
@@ -332,6 +386,7 @@ internal class AndroidAgentTools(
                 describeAfter(if (ok) "Прокрутка принята." else "Прокрутка не выполнена.")
             }
             "volume" -> {
+                confirmed("Изменить громкость устройства")
                 actionGate.before(if (action.arg == "up") "Увеличиваю громкость." else "Уменьшаю громкость.")
                 ui {
                 val audio = requireNotNull(context.getSystemService(AudioManager::class.java))
