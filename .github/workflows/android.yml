@@ -1,7 +1,7 @@
 name: Android prototype
 on:
   pull_request:
-    branches: [main]
+    branches: [main, 'chatgpt/nox-android']
   workflow_dispatch:
 permissions:
   contents: read
