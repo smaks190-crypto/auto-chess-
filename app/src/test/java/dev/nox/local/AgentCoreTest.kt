@@ -218,11 +218,40 @@ class AgentCoreTest {
         var count = 0
         val core = AgentCore(
             decide = { AgentDecision.Tool("observe", "") },
-            execute = { count++; "Без изменений" },
+            execute = { count++; "Наблюдение $count" },
             cancelled = { false }, maxSteps = 3
         )
         assertTrue(core.run("Посмотри", "").contains("лимит", ignoreCase = true))
         assertEquals(3, count)
+    }
+
+    @Test fun alreadyVerifiedAppCannotBeLaunchedRepeatedly() {
+        val pkg = "org.telegram.messenger"
+        val executed = mutableListOf<String>()
+        val core = AgentCore(
+            decide = { AgentDecision.Tool("launch", pkg) },
+            execute = { action ->
+                executed.add(action.name)
+                "Запуск подтверждён: $pkg\nАктивное приложение: $pkg\n1 | Button | Поиск [click]"
+            }, cancelled = { false }
+        )
+        val result = core.run("Открой Telegram и напиши сообщение", "")
+        assertEquals(listOf("launch"), executed)
+        assertTrue(result.contains("повтор", ignoreCase = true))
+        assertTrue(result.contains("не подтверждено"))
+    }
+
+    @Test fun repeatedReadOnlyCycleStopsBeforeStepLimit() {
+        var decisions = 0
+        val core = AgentCore(
+            decide = { if (decisions++ % 2 == 0) AgentDecision.Tool("apps", "Telegram")
+                else AgentDecision.Tool("observe", "") },
+            execute = { if (it.name == "apps") "Telegram = org.telegram.messenger"
+                else "Активное приложение: org.telegram.messenger" },
+            cancelled = { false }
+        )
+        assertTrue(core.run("Найди чат", "").contains("без прогресса"))
+        assertEquals(5, decisions)
     }
 
     @Test fun denialStopsBeforeAnotherAction() {
