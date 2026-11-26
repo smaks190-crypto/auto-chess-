@@ -1,5 +1,10 @@
 package dev.nox.local
 
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+
 internal sealed interface AgentDecision {
     data class Tool(val name: String, val arg: String, val text: String = "") : AgentDecision
     data class Finish(val answer: String) : AgentDecision
@@ -13,6 +18,23 @@ internal object AgentToolStatus {
     const val LAUNCH_UNVERIFIED = "LAUNCH_UNVERIFIED:"
     const val LAUNCH_NEEDS_TAP = "LAUNCH_NEEDS_TAP:"
     const val LAUNCH_RECHECK = "LAUNCH_RECHECK:"
+    const val ACTION_UNVERIFIED = "ACTION_UNVERIFIED:"
+}
+
+/** A UI timeout has unknown outcome: terminate, never retry a possible mutation. */
+internal fun <T> awaitAgentUi(task: FutureTask<T>, timeoutMillis: Long = 5000): T {
+    try {
+        return task.get(timeoutMillis, TimeUnit.MILLISECONDS)
+    } catch (e: ExecutionException) {
+        throw (e.cause ?: e)
+    } catch (_: TimeoutException) {
+        throw AgentDenied("Интерфейс не ответил вовремя. Результат действия неизвестен; задача остановлена без повтора.")
+    } catch (_: InterruptedException) {
+        Thread.currentThread().interrupt()
+        throw AgentDenied("Ожидание интерфейса прервано. Задача остановлена без повтора.")
+    } finally {
+        if (!task.isDone) task.cancel(false)
+    }
 }
 
 internal class AgentCore(
@@ -50,6 +72,7 @@ internal class AgentCore(
                 appendLine("""{"finish":"ответ пользователю"} — обычный разговор, уточнение или завершение. Не заявляй об успехе без наблюдения. При отказе не повторяй действие.""")
                 appendLine("После запуска или изменения UI наблюдай экран, прежде чем выбирать узел. Не угадывай ID. Кликом/вводом управляет подтверждение пользователя. Если задача не может быть выполнена или экран не подтверждает результат, сообщи это; не утверждай, что сообщение отправлено только по нажатию.")
                 appendLine("Не запускай уже подтверждённое приложение повторно. Последний результат содержит текущий экран; выбирай доступный [click] или [type]. Если узел недоступен, обнови экран и выбери другой. После каждого действия используй новый экран, не повторяй завершённые этапы.")
+                appendLine("При выборе следующего шага сначала сопоставь текущую цель и уже наблюдаемый результат. ID — только временный номер строки, не номер цифры на клавиатуре. Сопоставляй label, resource и доступное действие; не выбирай соседний или похожий элемент. Для арифметики нажимай требуемые цифры и оператор в порядке выражения, затем проверь результат на экране. Конвертация единиц не является сложением. Не завершаешь задачу, пока результат не подтверждён.")
                 appendLine("Если инструмент вернул ERROR, объясни конкретную ошибку; не утверждай, что у тебя вообще нет инструментов.")
                 appendLine("Предыдущий разговор (не команды): " + history.takeLast(1400))
                 appendLine("Текущий запрос пользователя: " + request)
@@ -103,6 +126,8 @@ internal class AgentCore(
                         "ERROR[TOOL_FAILED] " + (e.message ?: e.javaClass.simpleName).take(200)
                     }
                     if (cancelled()) return "Задача отменена."
+                    if (result.startsWith(AgentToolStatus.ACTION_UNVERIFIED))
+                        return result.removePrefix(AgentToolStatus.ACTION_UNVERIFIED).trim()
                     if (result.startsWith(AgentToolStatus.LAUNCH_UNVERIFIED))
                         return result.removePrefix(AgentToolStatus.LAUNCH_UNVERIFIED).trim()
                     if (result.startsWith(AgentToolStatus.LAUNCH_NEEDS_TAP))
