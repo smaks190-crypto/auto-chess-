@@ -17,6 +17,10 @@ class AgentNarrationTest {
         assertEquals("Готовлю отправку, жду твоего подтверждения.", AgentNarration.click("Отправить", ""))
         assertEquals("Перехожу к «Александр».", AgentNarration.click("Александр", ""))
     }
+    @Test fun destructiveControlIsDescribedAsPending() {
+        assertEquals("Готовлю удаление, жду твоего подтверждения.", AgentNarration.click("Удалить", ""))
+        assertEquals("Готовлю удаление, жду твоего подтверждения.", AgentNarration.click("Delete", ""))
+    }
     @Test fun unknownControlIsDescribedHonestly() {
         assertEquals("Нажимаю на элемент без названия.", AgentNarration.click("", ""))
     }
