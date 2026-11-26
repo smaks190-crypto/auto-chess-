@@ -54,7 +54,12 @@ internal class LocalModel : AutoCloseable {
 
     fun decide(prompt: String, cancelled: () -> Boolean): AgentDecision {
         val raw = generate(prompt, null, false, cancelled, {})
-        return AgentProtocol.parse(raw)
+        return try {
+            AgentProtocol.parse(raw)
+        } catch (e: RuntimeException) {
+            // Retry only schema/JSON errors, never model failures or cancelled generation.
+            throw AgentFormatException(e.message ?: "Неверный JSON ответа модели")
+        }
     }
 
     private fun generate(prompt: String, image: File?, deep: Boolean, cancelled: () -> Boolean,
