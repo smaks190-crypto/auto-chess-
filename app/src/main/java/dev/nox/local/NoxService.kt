@@ -8,7 +8,6 @@ import android.content.pm.ServiceInfo
 import android.graphics.*
 import android.content.res.Configuration
 import android.speech.tts.UtteranceProgressListener
-import android.text.TextUtils
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.*
@@ -96,12 +95,18 @@ class NoxService : Service() {
         publish()
     }
     private var bubble: CameraRing? = null
-    private var touchTarget: View? = null
     private var caption: ConnectedCaption? = null
     private var captionTop = 0
     private var captionX = 0
     private var captionNeck = 0
     private var captionClosing = false
+    private var captionHoldUntil = 0L
+    private val expireCaption = Runnable {
+        if (!speaking && activeSpeech == null && SystemClock.uptimeMillis() >= captionHoldUntil) {
+            spokenText = ""; visibleSpeechEnd = 0
+            syncCaption()
+        }
+    }
     private var captionPalette = CaptionPalette.DARK
     private val wallpaperColorsListener = WallpaperManager.OnColorsChangedListener { colors, which ->
         if ((which and WallpaperManager.FLAG_SYSTEM) != 0 && !destroyed) {
@@ -114,6 +119,8 @@ class NoxService : Service() {
     private var visibleSpeechEnd = 0
     private var speaking = false
     private var voiceLevel = 0f
+    internal var recognizedText = ""
+        private set
     private var lastNotificationStatus: String? = null
     @Volatile private var destroyed = false
     @Volatile private var cancelled = false
@@ -333,7 +340,7 @@ class NoxService : Service() {
 
     private fun dp(value: Float): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
 
-    private inner class CameraRing(context: Context, private val radius: Float) : View(context) {
+    private inner class CameraRing(context: Context, private val radius: Float, private val centerY: Float) : View(context) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val violet = 0xFFB6A1FF.toInt()
         init { contentDescription = "Нокс — голосовая команда" }
@@ -348,7 +355,7 @@ class NoxService : Service() {
                 else -> 0f
             }
             val cx = width / 2f
-            val cy = height / 2f
+            val cy = centerY
             paint.style = Paint.Style.STROKE
             paint.shader = null
             paint.color = violet
@@ -400,23 +407,14 @@ class NoxService : Service() {
                 y = top
                 if (!touchable) alpha = 0.8f
             }
-        val ring = CameraRing(this, radius)
+        val centerY = centeredCutout?.let { (it.centerY() - ringY).toFloat() } ?: size / 2f
+        val ring = CameraRing(this, radius, centerY)
         if (centeredCutout == null) ring.setOnClickListener { listen() }
         runCatching { wm.addView(ring, params(size, size, ringY, centeredCutout == null)) }
             .onSuccess { bubble = ring }
         if (bubble == null) return
-        val targetTop = maxOf(statusBottom, centeredCutout?.bottom ?: 0) + dp(2f)
-        if (centeredCutout != null) {
-            // The system status bar owns touches above this position.
-            val target = View(this).apply {
-                contentDescription = "Нокс — начать слушать"
-                setOnClickListener { listen() }
-            }
-            runCatching { wm.addView(target, params(dp(44f), dp(24f), targetTop, true)) }
-                .onSuccess { touchTarget = target }
-        }
-        // Start at the lower edge of the visible ring, not below the touch target.
-        captionTop = ringY + size / 2 + radius.toInt() - dp(1f)
+        // Continuous voice uses the foreground notification for manual retry; do not intercept other apps' taps.
+        captionTop = ringY + centerY.toInt() + radius.toInt() - dp(1f)
         captionX = ringX
         captionNeck = maxOf(dp(9f), statusBottom - captionTop + dp(4f))
         syncCaption()
@@ -469,12 +467,13 @@ class NoxService : Service() {
 
     private inner class ConnectedCaption(context: Context, neck: Int) : TextView(context) {
         private val shape = CaptionShape(neck, captionPalette)
+        private var fullCaption = ""
         init {
             textSize = 14f
             gravity = Gravity.CENTER
             setPadding(dp(14f), neck + dp(10f), dp(14f), dp(10f))
             maxLines = 4
-            ellipsize = TextUtils.TruncateAt.START
+            ellipsize = null
             background = shape
             applyPalette(captionPalette)
         }
@@ -483,16 +482,35 @@ class NoxService : Service() {
             setTextColor(palette.text)
             shape.invalidateSelf()
         }
+        fun showText(value: String) {
+            fullCaption = value
+            refreshText()
+        }
+        private fun refreshText() {
+            val available = width - paddingLeft - paddingRight
+            val visible = if (available > 0 && fullCaption.isNotEmpty()) {
+                val layout = android.text.StaticLayout.Builder.obtain(
+                    fullCaption, 0, fullCaption.length, paint, available)
+                    .setAlignment(android.text.Layout.Alignment.ALIGN_CENTER)
+                    .setBreakStrategy(breakStrategy)
+                    .setHyphenationFrequency(hyphenationFrequency)
+                    .build()
+                if (layout.lineCount > 4) fullCaption.substring(layout.getLineStart(layout.lineCount - 4)).trimStart()
+                else fullCaption
+            } else fullCaption
+            if (text.toString() != visible) text = visible
+        }
         override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
             super.onSizeChanged(w, h, oldw, oldh)
             pivotX = w / 2f
             pivotY = 0f
+            if (w != oldw) post { refreshText() }
         }
     }
 
     private fun syncCaption() {
         val wm = getSystemService(WindowManager::class.java) ?: return
-        if (bubble == null || !speaking || spokenText.isBlank()) {
+        if (bubble == null || (!speaking && SystemClock.uptimeMillis() >= captionHoldUntil) || spokenText.isBlank()) {
             val view = caption ?: return
             if (captionClosing) return
             captionClosing = true
@@ -510,7 +528,7 @@ class NoxService : Service() {
         val shown = spokenText.take(visibleSpeechEnd).takeLast(240)
         val text = shown.ifBlank { "…" }
         caption?.let { view ->
-            view.text = text
+            view.showText(text)
             if (captionClosing) {
                 captionClosing = false
                 view.animate().cancel()
@@ -519,7 +537,7 @@ class NoxService : Service() {
             return
         }
         val view = ConnectedCaption(this, captionNeck).apply {
-            this.text = text
+            showText(text)
             scaleX = 0.08f
             scaleY = 0.04f
         }
@@ -546,8 +564,8 @@ class NoxService : Service() {
         val wm = getSystemService(WindowManager::class.java)
         captionClosing = false
         caption?.animate()?.cancel()
-        listOfNotNull(bubble, touchTarget, caption).forEach { runCatching { wm?.removeView(it) } }
-        bubble = null; touchTarget = null; caption = null
+        listOfNotNull(bubble, caption).forEach { runCatching { wm?.removeView(it) } }
+        bubble = null; caption = null
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -559,13 +577,24 @@ class NoxService : Service() {
     private fun finishSpeech(id: String) {
         main.post {
             if (activeSpeech == id) {
-                activeSpeech = null; speaking = false; spokenText = ""; visibleSpeechEnd = 0
+                activeSpeech = null; speaking = false
+                holdCaption(spokenText)
                 publish()
             }
         }
     }
 
+    private fun holdCaption(text: String) {
+        spokenText = text
+        visibleSpeechEnd = text.length
+        captionHoldUntil = SystemClock.uptimeMillis() + 2500L
+        main.removeCallbacks(expireCaption)
+        main.postDelayed(expireCaption, 2500L)
+    }
+
     private fun stopSpeech() {
+        main.removeCallbacks(expireCaption)
+        captionHoldUntil = 0L
         activeSpeech = null; speaking = false; spokenText = ""; visibleSpeechEnd = 0
         tts?.stop()
         syncCaption()
@@ -676,10 +705,31 @@ class NoxService : Service() {
                 android.graphics.BitmapFactory.decodeStream(it, null,
                     android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
             } ?: error("Не удалось прочитать изображение")
+            val orientation = runCatching {
+                contentResolver.openInputStream(uri).use { input ->
+                    android.media.ExifInterface(requireNotNull(input)).getAttributeInt(
+                        android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_NORMAL)
+                }
+            }.getOrDefault(android.media.ExifInterface.ORIENTATION_NORMAL)
+            val matrix = Matrix()
+            when (orientation) {
+                2 -> matrix.setScale(-1f, 1f)
+                3 -> matrix.setRotate(180f)
+                4 -> matrix.setScale(1f, -1f)
+                5 -> { matrix.setRotate(90f); matrix.postScale(-1f, 1f) }
+                6 -> matrix.setRotate(90f)
+                7 -> { matrix.setRotate(-90f); matrix.postScale(-1f, 1f) }
+                8 -> matrix.setRotate(-90f)
+            }
             val file = File(cacheDir, "observation.jpg")
+            var oriented = bitmap
             try {
-                file.outputStream().use { check(bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it)) }
-            } finally { bitmap.recycle() }
+                if (!matrix.isIdentity) oriented = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                file.outputStream().use { check(oriented.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it)) }
+            } finally {
+                if (oriented !== bitmap) oriented.recycle()
+                bitmap.recycle()
+            }
             file.absolutePath
         }, { attachedImage = File(it); status = "Изображение прикреплено" })
     }
@@ -756,6 +806,7 @@ class NoxService : Service() {
             if (tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, id) != TextToSpeech.SUCCESS) {
                 stopSpeech()
                 status = "Не удалось озвучить ответ"
+                holdCaption(text)
             } else {
                 main.postDelayed({
                     if (activeSpeech == id && !speaking) {
@@ -772,7 +823,10 @@ class NoxService : Service() {
                     }
                 }, 180_000L)
             }
-        } else if (speak) status = "Русский офлайн-голос недоступен"
+        } else if (speak) {
+            status = "Русский офлайн-голос недоступен"
+            holdCaption(text)
+        }
         publish()
     }
 
@@ -789,7 +843,6 @@ class NoxService : Service() {
             status = "Офлайн-распознавание речи недоступно или нет разрешения"; publish(); return
         }
         loopBlocked = false
-        stopSpeech()
         stopListening()
         val token = ++speechId
         try {
@@ -813,7 +866,13 @@ class NoxService : Service() {
                         status = "Распознаю…"; publish()
                     }
                 }
-                override fun onPartialResults(partialResults: Bundle?) {}
+                override fun onPartialResults(partialResults: Bundle?) {
+                    if (token == speechId && listening) {
+                        recognizedText = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            ?.firstOrNull().orEmpty()
+                        publish()
+                    }
+                }
                 override fun onEvent(eventType: Int, params: Bundle?) {}
                 override fun onError(error: Int) {
                     if (token != speechId) return
@@ -826,6 +885,7 @@ class NoxService : Service() {
                     stopListening()
                     recognitionFailures = 0; retryAt = 0L
                     if (!unlocked()) { publish(); return }
+                    if (background && VoiceLoopPolicy.isStopPhrase(text)) { disableBackground(); return }
                     ask(text, speak = true)
                 }
             })
@@ -833,6 +893,7 @@ class NoxService : Service() {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
                 putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             })
             main.removeCallbacks(recognitionTimeout)
             main.postDelayed(recognitionTimeout, 30_000L)
@@ -846,7 +907,7 @@ class NoxService : Service() {
         speechId++
         main.removeCallbacks(recognitionTimeout)
         recognizer?.let { runCatching { it.cancel() }; runCatching { it.destroy() } }
-        recognizer = null; listening = false; voiceLevel = 0f
+        recognizer = null; listening = false; voiceLevel = 0f; recognizedText = ""
     }
 
     internal fun benchmark(index: Int, gpu: Boolean, vision: Boolean) {
