@@ -225,7 +225,7 @@ class MainActivity : Activity() {
             service?.reviewPerception()
             if (settingsPage.visibility == View.VISIBLE) toggleSettings()
         }
-        settings.addView(textLabel("Выбери приложение для звука и в системном окне Android выбери тот же экран. Захват продолжается вне чата до остановки или блокировки экрана. Аудио и кадры не сохраняются; распознанная речь и краткий контекст хранятся в памяти.", 13f, muted))
+        settings.addView(textLabel("Выбери приложение для звука и в системном окне Android выбери тот же экран. Захват продолжается вне чата до остановки или блокировки экрана. Аудио не записывается в файл. Последний кадр и распознанная речь хранятся в памяти; для Gemma создаётся временное изображение, которое удаляется после анализа.", 13f, muted))
         settings.addView(textLabel("Модель", 19f).apply { typeface = Typeface.DEFAULT_BOLD })
         models = Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, catalog.map { it.name })
@@ -335,7 +335,7 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this).setTitle("Какое приложение смотреть и слушать?")
             .setItems(apps.map { it.loadLabel(packageManager).toString() }.toTypedArray()) { _, index ->
                 perceptionUid = apps[index].activityInfo.applicationInfo.uid
-                val manager = getSystemService(android.media.projection.MediaProjectionManager::class.java)
+                val manager = requireNotNull(getSystemService(android.media.projection.MediaProjectionManager::class.java))
                 startActivityForResult(manager.createScreenCaptureIntent(), 31)
             }.setNegativeButton("Отмена", null).show()
     }
