@@ -281,6 +281,43 @@ class AgentCoreTest {
         assertEquals(1, count)
     }
 
+    @Test fun uiFuturePreservesPermissionDenialAndUnavailable() {
+        val denied = AgentDenied("Нет разрешения")
+        val task = java.util.concurrent.FutureTask<String> { throw denied }
+        task.run()
+        try { awaitAgentUi(task); fail("Expected denial") }
+        catch (e: AgentDenied) { assertSame(denied, e) }
+
+        val unavailable = AgentToolUnavailable()
+        val other = java.util.concurrent.FutureTask<String> { throw unavailable }
+        other.run()
+        try { awaitAgentUi(other); fail("Expected unavailable") }
+        catch (e: AgentToolUnavailable) { assertSame(unavailable, e) }
+    }
+
+    @Test fun uiTimeoutCancelsPendingTaskAndDoesNotRetry() {
+        var executed = false
+        val task = java.util.concurrent.FutureTask { executed = true }
+        try { awaitAgentUi(task, 1); fail("Expected timeout") }
+        catch (e: AgentDenied) { assertTrue(e.message.orEmpty().contains("без повтора")) }
+        task.run()
+        assertTrue(task.isCancelled)
+        assertFalse(executed)
+    }
+
+    @Test fun unverifiedMutationStopsBeforeModelCanRetryOrClaimSuccess() {
+        var decisions = 0
+        var executions = 0
+        val core = AgentCore(
+            decide = { decisions++; AgentDecision.Tool("click", "1") },
+            execute = { executions++; AgentToolStatus.ACTION_UNVERIFIED + "Экран не подтверждён." },
+            cancelled = { false }
+        )
+        assertEquals("Экран не подтверждён.", core.run("Нажми кнопку", ""))
+        assertEquals(1, decisions)
+        assertEquals(1, executions)
+    }
+
     @Test fun cancellationPreventsExecution() {
         var count = 0
         val core = AgentCore(
