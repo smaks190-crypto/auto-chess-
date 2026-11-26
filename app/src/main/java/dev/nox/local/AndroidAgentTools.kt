@@ -37,13 +37,14 @@ internal class AndroidAgentTools(
     private var snapshot: Screen? = null
 
     private data class Node(val id: String, val path: List<Int>, val label: String, val kind: String,
-        val resource: String, val bounds: String, val clickable: Boolean, val editable: Boolean,
+        val resource: String, val hint: String, val bounds: String, val clickable: Boolean, val editable: Boolean,
         val scrollable: Boolean, val enabled: Boolean)
     private data class Screen(val pkg: String, val window: Int, val nodes: List<Node>) {
         fun describe(): String = buildString {
             append("Активное приложение: ").append(pkg).append('\n')
             nodes.forEach { n ->
                 append(n.id).append(" | ").append(n.kind).append(" | ").append(n.label)
+                if (n.hint.isNotBlank() && n.hint != n.label) append(" [hint: ").append(n.hint).append("]")
                 if (n.clickable) append(" [click]")
                 if (n.editable) append(" [type]")
                 if (n.scrollable) append(" [scroll]")
@@ -98,7 +99,7 @@ internal class AndroidAgentTools(
                     val bounds = Rect().also { n.getBoundsInScreen(it) }.toShortString()
                     nodes.add(Node((nodes.size + 1).toString(), path, label,
                         n.className?.toString()?.substringAfterLast('.') ?: "View",
-                        n.viewIdResourceName.orEmpty(), bounds, n.isClickable, n.isEditable,
+                        n.viewIdResourceName.orEmpty(), n.hintText?.toString()?.take(180).orEmpty(), bounds, n.isClickable, n.isEditable,
                         n.isScrollable, n.isEnabled))
                 }
             }
@@ -181,7 +182,8 @@ internal class AndroidAgentTools(
         }
         val actionText = if (action.name == "type") "Ввести «" + action.text.take(1000) + "»"
             else "Нажать «" + target.label.ifBlank { target.kind + " " + target.resource } + "»"
-        actionGate.before(if (action.name == "type") "Сейчас введу текст: " + action.text.take(160) else "Сейчас нажму: " + target.label.ifBlank { target.kind + " " + target.resource }.take(120))
+        actionGate.before(if (action.name == "type") AgentNarration.type(target.hint.ifBlank { target.label }, target.resource, action.text)
+            else AgentNarration.click(target.label, target.resource))
         confirmed(before.pkg + "\n" + actionText)
         pause(250)
         snapshot = null
@@ -223,7 +225,7 @@ internal class AndroidAgentTools(
             }
             "launch" -> {
                 require(action.arg in apps && permitted(action.arg)) { "Сначала получи точный пакет через apps" }
-                actionGate.before("Сейчас открою " + apps.getValue(action.arg).take(100))
+                actionGate.before(AgentNarration.launch(apps.getValue(action.arg)))
                 snapshot = null
                 ui {
                     val launch = context.packageManager.getLaunchIntentForPackage(action.arg) ?: error("Нет запускаемого экрана")
@@ -246,7 +248,7 @@ internal class AndroidAgentTools(
             "observe" -> observe()
             "click", "type" -> actOnNode(action)
             "back", "home" -> {
-                actionGate.before(if (action.name == "back") "Сейчас вернусь назад" else "Сейчас выйду на главный экран")
+                actionGate.before(if (action.name == "back") "Возвращаюсь назад." else "Перехожу на главный экран.")
                 snapshot = null
                 val ok = ui { nav().performGlobalAction(if (action.name == "back") AccessibilityService.GLOBAL_ACTION_BACK
                     else AccessibilityService.GLOBAL_ACTION_HOME) }
@@ -255,7 +257,7 @@ internal class AndroidAgentTools(
             "scroll" -> {
                 val before = snapshot ?: error("Сначала используй observe")
                 val target = before.nodes.firstOrNull { it.scrollable && it.enabled } ?: error("Нет доступной прокрутки")
-                actionGate.before(if (action.arg == "down") "Сейчас прокручу экран вниз" else "Сейчас прокручу экран вверх")
+                actionGate.before(if (action.arg == "down") "Листаю вниз." else "Листаю вверх.")
                 snapshot = null
                 val ok = ui {
                     require(readScreen() == before) { "Экран изменился" }
@@ -267,7 +269,7 @@ internal class AndroidAgentTools(
                 describeAfter(if (ok) "Прокрутка принята." else "Прокрутка не выполнена.")
             }
             "volume" -> {
-                actionGate.before(if (action.arg == "up") "Сейчас увеличу громкость" else "Сейчас уменьшу громкость")
+                actionGate.before(if (action.arg == "up") "Увеличиваю громкость." else "Уменьшаю громкость.")
                 ui {
                 val audio = requireNotNull(context.getSystemService(AudioManager::class.java))
                 audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,
