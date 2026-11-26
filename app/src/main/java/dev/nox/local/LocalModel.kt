@@ -5,6 +5,9 @@ import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.MessageCallback
+import java.util.concurrent.CountDownLatch
 import java.io.File
 
 /** All calls are owned by a single worker thread. No network client. */
@@ -36,6 +39,30 @@ internal class LocalModel : AutoCloseable {
             else conversation.sendMessage(Contents.of(
                 Content.ImageFile(image.absolutePath), Content.Text(prompt)
             )).toString()
+        }
+    }
+
+    fun chat(command: String, image: File?, update: (String) -> Unit): String {
+        val prompt = PromptPolicy.build(command) + "\nОтвечай естественно, кратко и по существу. Не перечисляй свои возможности без запроса."
+        val active = checkNotNull(engine) { "Сначала загрузите модель" }
+        return active.createConversation().use { conversation ->
+            val done = CountDownLatch(1)
+            val output = StringBuilder()
+            var failure: Throwable? = null
+            val callback = object : MessageCallback {
+                override fun onMessage(message: Message) {
+                    output.append(message.toString())
+                    update(output.toString())
+                }
+                override fun onDone() { done.countDown() }
+                override fun onError(throwable: Throwable) { failure = throwable; done.countDown() }
+            }
+            val contents = if (image == null) Contents.of(Content.Text(prompt))
+                else Contents.of(Content.ImageFile(image.absolutePath), Content.Text(prompt))
+            conversation.sendMessageAsync(contents, callback, maxOutputToken = 512)
+            done.await()
+            failure?.let { throw it }
+            output.toString()
         }
     }
 
