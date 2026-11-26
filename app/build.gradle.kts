@@ -45,8 +45,8 @@ android {
         applicationId = "dev.nox.local"
         minSdk = 31
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.3.0-dev"
+        versionCode = 5
+        versionName = "0.4.0-agent-dev"
         ndk { abiFilters += "arm64-v8a" }
     }
     compileOptions {
@@ -61,4 +61,5 @@ dependencies {
     implementation("com.alphacephei:vosk-android:0.3.75@aar")
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.18.0")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
