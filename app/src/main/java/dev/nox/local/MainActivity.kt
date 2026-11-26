@@ -28,8 +28,13 @@ class MainActivity : Activity() {
     private lateinit var vision: Switch
     private lateinit var models: Spinner
     private var activeKey: String? = null // worker thread only
-    private val names = listOf("Gemma 4 E2B", "Qwen 3.5 2B", "Qwen 3.5 4B")
-    private val keys = listOf("gemma-e2b", "qwen-2b", "qwen-4b")
+    private val catalog = ModelDownload.catalog
+    private val names = catalog.map { it.name }
+    private val keys = catalog.map { it.key }
+    private lateinit var downloadButton: Button
+    private lateinit var cancelDownload: Button
+    private lateinit var downloadProgress: ProgressBar
+    @Volatile private var downloadCancelled = false
     private lateinit var speak: Switch
     private val controls = mutableListOf<View>()
     private var image: File? = null
@@ -37,7 +42,7 @@ class MainActivity : Activity() {
     private var tts: TextToSpeech? = null
     private var offlineTts = false
     private var busy = false
-    private var destroyed = false
+    @Volatile private var destroyed = false
     private fun modelFile(index: Int) = File(filesDir, "${keys[index]}.litertlm")
     private fun modelKey(index: Int, gpu: Boolean, vision: Boolean) = "${keys[index]}:$gpu:$vision"
 
@@ -58,7 +63,7 @@ class MainActivity : Activity() {
         }
         label("N.O.X.  /  LOCAL", 28f)
         label("Экспериментальная версия • без управления телефоном")
-        status = label("Импортируйте файл .litertlm или загрузите сохранённую модель.")
+        status = label("Выберите модель и нажмите «Скачать и запустить». Интернет нужен только для скачивания.")
         models = Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, names)
             root.addView(this)
@@ -66,10 +71,29 @@ class MainActivity : Activity() {
         controls.add(models)
         vision = Switch(this).apply { text = "Модель поддерживает изображения"; isChecked = true; root.addView(this) }
         controls.add(vision)
-        gpu = Switch(this).apply { text = "GPU для языка (выключено: CPU)"; isChecked = true; root.addView(this) }
+        gpu = Switch(this).apply { text = "GPU для языка (выключено: CPU)"; isChecked = false; root.addView(this) }
         controls.add(gpu)
-        button("Импорт модели") { pick(10, "*/*") }
-        button("Загрузить сохранённую модель") { load(null) }
+        downloadButton = button("Скачать и запустить") { downloadOrLoad() }
+        downloadProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100; visibility = View.GONE; root.addView(this)
+        }
+        cancelDownload = Button(this).apply {
+            text = "Отменить скачивание"; visibility = View.GONE
+            setOnClickListener { downloadCancelled = true; isEnabled = false; status.text = "Отмена…" }
+            root.addView(this)
+        }
+        models.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val pkg = catalog[position]
+                vision.isChecked = pkg.vision
+                if (pkg.cpuOnly) gpu.isChecked = false
+                gpu.isEnabled = !busy && !pkg.cpuOnly
+                vision.isEnabled = !busy && pkg.vision
+                refreshDownloadButton()
+            }
+        }
+        button("Импорт файла вручную (необязательно)") { pick(10, "*/*") }
         button("Выбрать изображение") { pick(11, "image/*") }
         button("Убрать изображение") { image?.delete(); image = null; status.text = "Режим текста" }
         command = EditText(this).apply {
@@ -116,10 +140,83 @@ class MainActivity : Activity() {
                 if (destroyed) return@runOnUiThread
                 busy = false
                 controls.forEach { it.isEnabled = true }
+                gpu.isEnabled = !catalog[models.selectedItemPosition].cpuOnly
+                vision.isEnabled = catalog[models.selectedItemPosition].vision
+                cancelDownload.visibility = View.GONE
+                downloadProgress.visibility = View.GONE
+                window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                refreshDownloadButton()
                 result.fold(onSuccess = { status.text = "Готово"; finished(it) },
                     onFailure = { status.text = "Ошибка: " + (it.message ?: it.javaClass.simpleName) })
             }
         }
+    }
+
+    private fun refreshDownloadButton() {
+        val index = models.selectedItemPosition
+        if (index !in catalog.indices) return
+        val pkg = catalog[index]
+        val sizeGb = String.format(Locale.US, "%.2f", pkg.size / 1_000_000_000.0)
+        downloadButton.text = if (modelFile(index).isFile) "Запустить ${pkg.name}"
+            else "Скачать и запустить · ${sizeGb} ГБ"
+    }
+
+    private fun downloadOrLoad() {
+        if (busy) return
+        val index = models.selectedItemPosition
+        val pkg = catalog[index]
+        val file = modelFile(index)
+        if (file.isFile) { load(null); return }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Скачать ${pkg.name}?")
+            .setMessage("Размер: " + String.format(Locale.US, "%.2f", pkg.size / 1_000_000_000.0) +
+                " ГБ. Рекомендуется Wi-Fi. Не закрывайте приложение до окончания скачивания.")
+            .setNegativeButton("Отмена", null)
+            .setPositiveButton("Скачать") { _, _ -> startModelDownload(index) }
+            .show()
+    }
+
+    private fun startModelDownload(index: Int) {
+        val pkg = catalog[index]
+        val file = modelFile(index)
+        val useGpu = gpu.isChecked && !pkg.cpuOnly
+        val useVision = vision.isChecked && pkg.vision
+        val key = modelKey(index, useGpu, useVision)
+        downloadCancelled = false
+        downloadProgress.progress = 0
+        downloadProgress.visibility = View.VISIBLE
+        cancelDownload.isEnabled = true
+        cancelDownload.visibility = View.VISIBLE
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        runWork("Скачивание ${pkg.name}…", {
+            activeKey = null
+            model.close()
+            var last = 0L
+            ModelDownload.download(pkg, file, { destroyed || downloadCancelled }) { bytes ->
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (now - last >= 300 || bytes == pkg.size) {
+                    last = now
+                    val percent = (bytes * 100 / pkg.size).toInt()
+                    runOnUiThread {
+                        if (!destroyed && !downloadCancelled) {
+                            downloadProgress.progress = percent
+                            status.text = "Скачивание ${pkg.name}: $percent% (" +
+                                (bytes / 1_000_000) + " / " + (pkg.size / 1_000_000) + " МБ)"
+                        }
+                    }
+                }
+            }
+            check(!destroyed && !downloadCancelled) { "Загрузка отменена" }
+            runOnUiThread {
+                if (!destroyed) {
+                    cancelDownload.visibility = View.GONE
+                    status.text = "Файл проверен. Запуск модели…"
+                }
+            }
+            model.load(file, useGpu, useVision)
+            activeKey = key
+            "${pkg.name} готова к работе офлайн"
+        }, { status.text = it })
     }
 
     private fun load(uri: Uri?) {
@@ -303,6 +400,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         destroyed = true
+        downloadCancelled = true
         recognizer?.destroy()
         tts?.stop(); tts?.shutdown()
         worker.execute { runCatching { model.close() } }
