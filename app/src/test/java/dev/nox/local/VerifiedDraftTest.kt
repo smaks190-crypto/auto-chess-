@@ -19,6 +19,11 @@ class VerifiedDraftTest {
         assertNull(registry.draft("напиши Александру привет"))
         assertNull(registry.draft("Подготовь черновик в Telegram для «Александр»: «»"))
     }
+    @Test fun russianCommandKeywordsAreUnicodeCaseInsensitiveWithoutChangingPayload() {
+        val result = requireNotNull(registry.draft("ПОДГОТОВЬ ЧЕРНОВИК В TELEGRAM ДЛЯ «Александр»: «ПрИвЕт!»"))
+        assertEquals("Александр",result.recipient)
+        assertEquals("ПрИвЕт!",result.text)
+    }
     @Test fun exactRecipientComposerAndPackageAreRequired() {
         val g = goal()
         assertNotNull(VerifiedDraft.verify(g,fields,screen(3),2))
