@@ -280,7 +280,7 @@ class NoxService : Service() {
         if (!busy && !listening) { attachedImage?.delete(); attachedImage = null; publish() }
     }
 
-    internal fun ask(command: String, image: File? = null, speak: Boolean = false) {
+    internal fun ask(command: String, image: File? = null, speak: Boolean = false, deep: Boolean = false) {
         val text = command.trim()
         if (text.isEmpty() || busy || listening || destroyed) return
         if (text.length > 2000) { status = "Команда слишком длинная"; publish(); return }
@@ -304,7 +304,7 @@ class NoxService : Service() {
         var lastUpdate = 0L
         runWork("Думаю…", {
             val start = SystemClock.elapsedRealtime()
-            val response = model.chat(prompt, image) { chunk ->
+            val response = model.chat(prompt, image, deep) { chunk ->
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastUpdate >= 80) {
                     lastUpdate = now
