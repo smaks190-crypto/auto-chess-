@@ -12,7 +12,6 @@ import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.*
 import android.provider.Settings
-import android.speech.*
 import android.speech.tts.TextToSpeech
 import android.view.*
 import android.widget.TextView
@@ -27,7 +26,7 @@ class NoxService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val model = LocalModel()
-    private var recognizer: SpeechRecognizer? = null
+    private var recognizer: SilentRecognizer? = null
     private var tts: TextToSpeech? = null
     private var offlineTts = false
     private var speechId = 0
@@ -42,7 +41,7 @@ class NoxService : Service() {
         if (!clientBound && !background && !busy && !listening && activeSpeech == null) stopSelf()
     }
     private val recognitionTimeout = Runnable {
-        if (listening) recognitionFailed(SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
+        if (listening) recognitionFailed("Истекло время запуска микрофона", false)
     }
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -78,21 +77,13 @@ class NoxService : Service() {
         } else if (!main.hasCallbacks(releaseIdle)) main.postDelayed(releaseIdle, 60_000L)
     }
 
-    private fun recognitionFailed(error: Int) {
+    private fun recognitionFailed(message: String, permanent: Boolean) {
         stopListening()
         recognitionFailures = (recognitionFailures + 1).coerceAtMost(100)
-        val delay = VoiceLoopPolicy.retryDelay(error, recognitionFailures)
+        val delay = if (permanent) null else VoiceLoopPolicy.retryDelay(3, recognitionFailures)
         loopBlocked = delay == null
         retryAt = SystemClock.uptimeMillis() + (delay ?: 0L)
-        status = when (error) {
-            SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
-                if (background) "На связи · слушаю снова" else "Не расслышала"
-            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Разреши доступ к микрофону"
-            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED, SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ->
-                "Установи русский офлайн-пакет распознавания"
-            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Микрофон занят · повторю"
-            else -> "Ошибка распознавания (" + error + ")" + if (delay != null && background) " · повторю" else ""
-        }
+        status = message + if (delay != null && background) " · повторю" else ""
         publish()
     }
     private var bubble: CameraRing? = null
@@ -752,7 +743,7 @@ class NoxService : Service() {
         val direct = if (image == null) PhoneCommands.parse(text) else null
         if (direct != null) {
             val start = SystemClock.elapsedRealtime()
-            if (direct is PhoneCommand.Open) {
+            if (direct is PhoneCommand.Open || direct is PhoneCommand.OpenWithFollowUp) {
                 runWork("Открываю приложение…", { PhoneActions.execute(this, direct) }, {
                     elapsedMs = SystemClock.elapsedRealtime() - start
                     complete(it, speak && voiceToken == voiceEpoch)
@@ -838,77 +829,61 @@ class NoxService : Service() {
         if (busy) { status = "Подожди, Нокс занят…"; publish(); return }
         main.removeCallbacks(restartVoice)
         if (!unlocked()) { status = "Разблокируй телефон для голосовой команды"; publish(); return }
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED ||
-            !SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             loopBlocked = true
-            status = "Офлайн-распознавание речи недоступно или нет разрешения"; publish(); return
+            status = "Разреши доступ к микрофону"; publish(); return
         }
         loopBlocked = false
         stopListening()
         val token = ++speechId
         try {
-            recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
-            listening = true; status = "Слушаю…"; publish()
-            recognizer?.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) {}
-                override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {
-                    if (token == speechId) {
-                        val level = if (rmsdB.isFinite()) ((rmsdB + 2f) / 12f).coerceIn(0f, 1f) else 0f
+            val engine = recognizer ?: SilentRecognizer(applicationContext).also { recognizer = it }
+            listening = true
+            status = "Запускаю локальное распознавание…"; publish()
+            main.postDelayed(recognitionTimeout, 60_000L)
+            engine.start(object : SilentRecognizer.Listener {
+                override fun onReady() {
+                    if (token != speechId || !listening) return
+                    main.removeCallbacks(recognitionTimeout)
+                    if (!unlocked()) { stopListening(); publish(); return }
+                    status = "Слушаю…"; publish()
+                    // Background sessions stay open through silence; manual sessions have a limit.
+                    if (!background) main.postDelayed(recognitionTimeout, 30_000L)
+                }
+                override fun onLevel(level: Float) {
+                    if (token == speechId && listening) {
                         voiceLevel = voiceLevel * 0.65f + level * 0.35f
                         bubble?.invalidate()
                     }
                 }
-                override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() {
-                    if (token == speechId) {
-                        main.removeCallbacks(recognitionTimeout)
-                        main.postDelayed(recognitionTimeout, 6000L)
-                        status = "Распознаю…"; publish()
-                    }
-                }
-                override fun onPartialResults(partialResults: Bundle?) {
+                override fun onPartial(text: String) {
                     if (token == speechId && listening) {
-                        recognizedText = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            ?.firstOrNull().orEmpty()
+                        recognizedText = text
                         publish()
                     }
                 }
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-                override fun onError(error: Int) {
-                    if (token != speechId) return
-                    recognitionFailed(error)
-                }
-                override fun onResults(results: Bundle?) {
-                    if (token != speechId) return
-                    val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-                    if (text.isNullOrBlank()) { recognitionFailed(SpeechRecognizer.ERROR_NO_MATCH); return }
+                override fun onResult(text: String) {
+                    if (token != speechId || !listening) return
                     stopListening()
                     recognitionFailures = 0; retryAt = 0L
                     if (!unlocked()) { publish(); return }
                     if (background && VoiceLoopPolicy.isStopPhrase(text)) { disableBackground(); return }
                     ask(text, speak = true)
                 }
+                override fun onError(message: String, permanent: Boolean) {
+                    if (token == speechId && listening) recognitionFailed(message, permanent)
+                }
             })
-            recognizer?.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
-                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            })
-            main.removeCallbacks(recognitionTimeout)
-            main.postDelayed(recognitionTimeout, 30_000L)
         } catch (e: Exception) {
-            stopListening(); loopBlocked = true
-            status = "Ошибка микрофона: " + e.message; publish()
+            recognitionFailed("Ошибка микрофона: " + e.message, true)
         }
     }
 
     private fun stopListening() {
         speechId++
         main.removeCallbacks(recognitionTimeout)
-        recognizer?.let { runCatching { it.cancel() }; runCatching { it.destroy() } }
-        recognizer = null; listening = false; voiceLevel = 0f; recognizedText = ""
+        recognizer?.stop()
+        listening = false; voiceLevel = 0f; recognizedText = ""
     }
 
     internal fun benchmark(index: Int, gpu: Boolean, vision: Boolean) {
@@ -963,7 +938,8 @@ class NoxService : Service() {
         main.removeCallbacks(restartVoice)
         main.removeCallbacks(releaseIdle)
         if (receiverRegistered) { runCatching { unregisterReceiver(screenReceiver) }; receiverRegistered = false }
-        stopListening(); stopSpeech(); removeOverlay(); tts?.shutdown()
+        stopListening(); recognizer?.close(); recognizer = null
+        stopSpeech(); removeOverlay(); tts?.shutdown()
         listener = null
         worker.execute { runCatching { model.close() } }
         worker.shutdown()
