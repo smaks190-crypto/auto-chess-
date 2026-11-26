@@ -31,6 +31,7 @@ class NoxService : Service() {
     private var speechId = 0
     private var voiceEpoch = 0
     private var bubble: TextView? = null
+    private var lastNotificationStatus: String? = null
     @Volatile private var destroyed = false
     @Volatile private var cancelled = false
     internal var listener: (() -> Unit)? = null
@@ -62,7 +63,7 @@ class NoxService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        getSystemService(NotificationManager::class.java).createNotificationChannel(
+        requireNotNull(getSystemService(NotificationManager::class.java)).createNotificationChannel(
             NotificationChannel(CHANNEL, "Нокс — фоновый голос", NotificationManager.IMPORTANCE_LOW))
         tts = TextToSpeech(this) { result ->
             main.post {
@@ -110,6 +111,7 @@ class NoxService : Service() {
         try {
             startForeground(ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
             background = true
+            lastNotificationStatus = null
             syncOverlay()
             status = if (overlayVisible) "Фоновый голос включён · нажми круг Нокс"
                 else "Фоновый голос включён · кнопка в уведомлении"
@@ -137,7 +139,7 @@ class NoxService : Service() {
     internal fun syncOverlay() {
         if (!background || !Settings.canDrawOverlays(this)) { removeOverlay(); return }
         if (bubble != null) return
-        val wm = getSystemService(WindowManager::class.java)
+        val wm = requireNotNull(getSystemService(WindowManager::class.java))
         val size = (resources.displayMetrics.density * 56).toInt()
         val params = WindowManager.LayoutParams(size, size, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT).apply {
@@ -179,7 +181,7 @@ class NoxService : Service() {
     }
 
     private fun removeOverlay() {
-        bubble?.let { runCatching { getSystemService(WindowManager::class.java).removeView(it) } }
+        bubble?.let { runCatching { getSystemService(WindowManager::class.java)?.removeView(it) } }
         bubble = null
     }
 
@@ -187,7 +189,11 @@ class NoxService : Service() {
         if (destroyed) return
         bubble?.text = when { listening -> "●"; busy -> "…"; else -> "N" }
         listener?.invoke()
-        if (background) getSystemService(NotificationManager::class.java).notify(ID, notification())
+        if (background && lastNotificationStatus != status &&
+            (Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)) {
+            getSystemService(NotificationManager::class.java)?.notify(ID, notification())
+            lastNotificationStatus = status
+        }
     }
 
     private fun runWork(label: String, work: () -> String, finish: (String) -> Unit = {}) {
@@ -324,7 +330,7 @@ class NoxService : Service() {
 
     internal fun listen() {
         if (destroyed || busy || listening) return
-        if (getSystemService(KeyguardManager::class.java).isDeviceLocked) { status = "Разблокируй телефон для голосовой команды"; publish(); return }
+        if (getSystemService(KeyguardManager::class.java)?.isDeviceLocked == true) { status = "Разблокируй телефон для голосовой команды"; publish(); return }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED ||
             !SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) {
             status = "Офлайн-распознавание речи недоступно или нет разрешения"; publish(); return
