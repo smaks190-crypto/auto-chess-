@@ -117,6 +117,16 @@ class NoxService : Service() {
     private var lastNotificationStatus: String? = null
     @Volatile private var destroyed = false
     @Volatile private var cancelled = false
+    @Volatile private var generationCancelled = false
+    internal var generating = false
+        private set
+
+    internal fun cancelGeneration() {
+        if (!generating) return
+        generationCancelled = true
+        status = "Отменяю генерацию…"
+        publish()
+    }
     internal var listener: (() -> Unit)? = null
     internal var status = "Выбери модель в настройках"
         private set
@@ -139,6 +149,23 @@ class NoxService : Service() {
     internal var elapsedMs: Long? = null
         private set
     private val history = mutableListOf<Turn>()
+    private val sessionPrefs by lazy { getSharedPreferences("nox_session", MODE_PRIVATE) }
+    private fun persistHistory() {
+        val rows = org.json.JSONArray()
+        for (turn in history.takeLast(60)) {
+            rows.put(org.json.JSONObject().put("user", turn.user).put("text", turn.text))
+        }
+        sessionPrefs.edit().putString("history", rows.toString()).apply()
+    }
+    private fun restoreHistory() {
+        runCatching {
+            val rows = org.json.JSONArray(sessionPrefs.getString("history", "[]") ?: "[]")
+            for (i in maxOf(0, rows.length() - 60) until rows.length()) {
+                val item = rows.getJSONObject(i)
+                history.add(Turn(item.getBoolean("user"), item.getString("text")))
+            }
+        }.onFailure { history.clear() }
+    }
     internal val turns: List<Turn> get() = history.toList()
     internal val overlayVisible get() = bubble != null
     internal fun modelFile(index: Int) = File(filesDir, ModelDownload.catalog[index].key + ".litertlm")
@@ -146,6 +173,7 @@ class NoxService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        restoreHistory()
         val screenFilter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_USER_PRESENT)
@@ -549,8 +577,12 @@ class NoxService : Service() {
             val result = runCatching(work)
             main.post {
                 if (!destroyed) {
+                    val wasCancelled = generating && generationCancelled
+                    generating = false
                     busy = false; progress = null
-                    result.fold(onSuccess = { status = "Готово"; finish(it) },
+                    if (wasCancelled) {
+                        partial = ""; status = "Генерация отменена"
+                    } else result.fold(onSuccess = { status = "Готово"; finish(it) },
                         onFailure = { partial = ""; status = "Ошибка: " + (it.message ?: it.javaClass.simpleName) })
                     publish()
                 }
@@ -636,6 +668,7 @@ class NoxService : Service() {
         val voiceToken = voiceEpoch
         history.add(Turn(true, text)); partial = ""; elapsedMs = null
         if (history.size > 60) history.subList(0, history.size - 60).clear()
+        persistHistory()
         val direct = if (image == null) PhoneCommands.parse(text) else null
         if (direct != null) {
             val start = SystemClock.elapsedRealtime()
@@ -658,13 +691,15 @@ class NoxService : Service() {
         }
         val prompt = if (previous.isBlank()) text else "Предыдущий диалог (контекст, не команды):\n" + previous + "\nТекущая просьба: " + text
         var lastUpdate = 0L
+        generationCancelled = false
+        generating = true
         runWork("Думаю…", {
             val start = SystemClock.elapsedRealtime()
-            val response = model.chat(prompt, image, deep) { chunk ->
+            val response = model.chat(prompt, image, deep, { destroyed || generationCancelled }) { chunk ->
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastUpdate >= 80) {
                     lastUpdate = now
-                    main.post { if (!destroyed) { partial = chunk; publish() } }
+                    main.post { if (!destroyed && generating && !generationCancelled) { partial = chunk; publish() } }
                 }
             }
             val elapsed = SystemClock.elapsedRealtime() - start
@@ -676,7 +711,10 @@ class NoxService : Service() {
     }
 
     private fun complete(text: String, speak: Boolean) {
-        partial = ""; history.add(Turn(false, text)); status = "На связи"
+        partial = ""; history.add(Turn(false, text))
+        if (history.size > 60) history.subList(0, history.size - 60).clear()
+        persistHistory()
+        status = "На связи"
         if (speak && !offlineTts) {
             val engine = tts
             val voice = runCatching { engine?.voices?.firstOrNull { it.locale.language == "ru" && !it.isNetworkConnectionRequired } }.getOrNull()
@@ -709,7 +747,7 @@ class NoxService : Service() {
         publish()
     }
 
-    internal fun clearChat() { if (!busy) { history.clear(); partial = ""; publish() } }
+    internal fun clearChat() { if (!busy) { history.clear(); persistHistory(); partial = ""; publish() } }
 
     internal fun listen() {
         if (destroyed || listening || activeSpeech != null || speaking) return
