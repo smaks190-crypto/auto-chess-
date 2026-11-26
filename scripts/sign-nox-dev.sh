@@ -26,7 +26,7 @@ fi
 [[ -f "$1" && ! -e "$2" ]] || { echo "Input APK missing or output already exists." >&2; exit 1; }
 tmp="$(mktemp "${2}.signing.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
-apksigner sign --ks "$store" --ks-key-alias nox-dev --ks-pass "file:$pass" --key-pass "file:$pass" --v4-signing-enabled false --out "$tmp" "$1"
+apksigner sign --ks "$store" --ks-key-alias nox-dev --ks-pass "file:$pass" --v4-signing-enabled false --out "$tmp" "$1"
 verified="$(apksigner verify --verbose --print-certs "$tmp")"
 actual="$(printf "%s\n" "$verified" | sed -n "s/^Signer #1 certificate SHA-256 digest: //p")"
 count="$(printf "%s\n" "$verified" | grep -c "^Signer #[0-9][0-9]* certificate SHA-256 digest:" || true)"
