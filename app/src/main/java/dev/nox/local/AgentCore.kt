@@ -4,7 +4,7 @@ internal sealed interface AgentDecision {
     data class Tool(val name: String, val arg: String, val text: String = "") : AgentDecision
     data class Finish(val answer: String) : AgentDecision
 }
-internal class AgentDenied : RuntimeException()
+internal class AgentDenied(message: String = "Действие отменено пользователем. Задача остановлена.") : RuntimeException(message)
 
 internal class AgentCore(
     private val decide: (String) -> AgentDecision,
@@ -48,8 +48,8 @@ internal class AgentCore(
                 is AgentDecision.Finish -> return finish(action.answer)
                 is AgentDecision.Tool -> {
                     progress("Шаг " + (step + 1) + " · " + action.name)
-                    val result = try { execute(action) } catch (_: AgentDenied) {
-                        return "Действие отменено пользователем. Задача остановлена."
+                    val result = try { execute(action) } catch (denied: AgentDenied) {
+                        return denied.message ?: "Задача остановлена."
                     } catch (e: Exception) {
                         "Ошибка инструмента: " + (e.message ?: e.javaClass.simpleName)
                     }
