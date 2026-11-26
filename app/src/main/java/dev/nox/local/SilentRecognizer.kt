@@ -128,7 +128,11 @@ internal class SilentRecognizer(private val context: Context) : AutoCloseable {
         }
     }
 
-    private fun prepareModel(): File {
+    private fun prepareModel(): File = prepareSharedModel(context)
+
+    companion object {
+        private const val RATE = 16000
+        @Synchronized internal fun prepareSharedModel(context: Context): File {
         val root = File(context.filesDir, "asr-ru-0.22")
         val ready = File(root, ".ready")
         val modelDir = File(root, "vosk-model-small-ru-0.22")
@@ -174,6 +178,8 @@ internal class SilentRecognizer(private val context: Context) : AutoCloseable {
         } finally { stage.deleteRecursively() }
     }
 
+    }
+
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         stop()
@@ -181,5 +187,4 @@ internal class SilentRecognizer(private val context: Context) : AutoCloseable {
         worker.shutdown()
     }
 
-    companion object { private const val RATE = 16000 }
 }
