@@ -4,6 +4,41 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AgentCoreTest {
+    @Test fun preActionGoalRejectionAllowsCorrectionEvenAfterPrematureFinish() {
+        val script = listOf(AgentDecision.Tool("click","wrong"), AgentDecision.Finish("Готово"),
+            AgentDecision.Tool("click","right"), AgentDecision.Finish("Готово"))
+        var i = 0
+        var mutations = 0
+        val core = AgentCore(decide = { script[i++] }, execute = {
+            if (it.arg == "wrong") AgentToolStatus.GOAL_REJECTED + "Нужна другая кнопка"
+            else { mutations++; "Подтверждённый переход" }
+        }, cancelled = { false }, goal = GoalState("Open Calculator and calculate 2+2"),
+            verifyFinish = { if (mutations == 1) "Проверено" else null })
+        assertEquals("Проверено",core.run("Open Calculator and calculate 2+2",""))
+        assertEquals(4,i)
+        assertEquals(1,mutations)
+    }
+
+    @Test fun preActionRejectionBudgetIsBounded() {
+        var attempts = 0
+        val core = AgentCore(decide = { AgentDecision.Tool("click","wrong") },
+            execute = { attempts++; AgentToolStatus.GOAL_REJECTED + "Не выполнено" },
+            cancelled = { false }, goal = GoalState("Open Calculator and calculate 2+2"))
+        assertTrue(core.run("Open Calculator and calculate 2+2","").contains("GOAL_MISMATCH"))
+        assertEquals(3,attempts)
+    }
+
+    @Test fun uncertainMutationDuringCorrectionStillStopsImmediately() {
+        var attempts = 0
+        val core = AgentCore(decide = { AgentDecision.Tool("click","1") }, execute = {
+            attempts++
+            if (attempts == 1) AgentToolStatus.GOAL_REJECTED + "Не выполнено"
+            else AgentToolStatus.ACTION_UNVERIFIED + "Результат неизвестен"
+        }, cancelled = { false }, goal = GoalState("Open Calculator and calculate 2+2"))
+        assertEquals("Результат неизвестен",core.run("Open Calculator and calculate 2+2",""))
+        assertEquals(2,attempts)
+    }
+
     @Test fun modelChoosesNextStepFromToolResult() {
         val calls = mutableListOf<String>()
         val core = AgentCore(
