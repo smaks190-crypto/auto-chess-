@@ -35,7 +35,6 @@ class NoxService : Service() {
     private var speechId = 0
     private var voiceEpoch = 0
     private var agentRunning = false
-    @Volatile private var stopMicReady = false
     private var agentActionLabel: String? = null
     private var loopBlocked = false
     private var recognitionFailures = 0
@@ -371,7 +370,7 @@ class NoxService : Service() {
             paint.strokeWidth = dp(1.5f).toFloat()
             paint.alpha = if (active) 145 + (pulse * 105).toInt() else 135
             canvas.drawCircle(cx, cy, radius, paint)
-            if (busy && !listening && !speaking) {
+            if (busy && !speaking && (!listening || agentRunning)) {
                 paint.alpha = 255
                 paint.strokeWidth = dp(2f).toFloat()
                 paint.strokeCap = Paint.Cap.ROUND
@@ -950,7 +949,7 @@ class NoxService : Service() {
                     if (token != speechId || !listening) return
                     main.removeCallbacks(recognitionTimeout)
                     if (!unlocked()) { stopListening(); publish(); return }
-                    if (stopOnly) stopMicReady = true else status = "Слушаю…"
+                    if (!stopOnly) status = "Слушаю…"
                     publish()
                     // Background sessions stay open through silence; manual sessions have a limit.
                     if (!background) main.postDelayed(recognitionTimeout, 30_000L)
@@ -992,7 +991,7 @@ class NoxService : Service() {
         speechId++
         main.removeCallbacks(recognitionTimeout)
         recognizer?.stop()
-        listening = false; stopMicReady = false; voiceLevel = 0f; recognizedText = ""
+        listening = false; voiceLevel = 0f; recognizedText = ""
     }
 
     internal fun benchmark(index: Int, gpu: Boolean, vision: Boolean) {
