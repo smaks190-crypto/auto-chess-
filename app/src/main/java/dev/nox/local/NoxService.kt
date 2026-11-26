@@ -31,7 +31,6 @@ class NoxService : Service() {
     private var speechId = 0
     private var voiceEpoch = 0
     private var bubble: TextView? = null
-    private var speechEnabled = false
     @Volatile private var destroyed = false
     @Volatile private var cancelled = false
     internal var listener: (() -> Unit)? = null
@@ -48,6 +47,8 @@ class NoxService : Service() {
     internal var progress: Int? = null
         private set
     internal var partial = ""
+        private set
+    internal var attachedImage: File? = null
         private set
     internal var report = ""
         private set
@@ -68,7 +69,7 @@ class NoxService : Service() {
                 if (!destroyed && result == TextToSpeech.SUCCESS) {
                     val engine = tts
                     val voice = engine?.voices?.firstOrNull { it.locale.language == "ru" && !it.isNetworkConnectionRequired }
-                    if (voice != null) offlineTts = engine.setVoice(voice) == TextToSpeech.SUCCESS
+                    if (voice != null) offlineTts = engine?.setVoice(voice) == TextToSpeech.SUCCESS
                 }
             }
         }
@@ -198,7 +199,7 @@ class NoxService : Service() {
                 if (!destroyed) {
                     busy = false; progress = null
                     result.fold(onSuccess = { status = "Готово"; finish(it) },
-                        onFailure = { status = "Ошибка: " + (it.message ?: it.javaClass.simpleName) })
+                        onFailure = { partial = ""; status = "Ошибка: " + (it.message ?: it.javaClass.simpleName) })
                     publish()
                 }
             }
@@ -249,6 +250,29 @@ class NoxService : Service() {
     }
 
     internal fun cancelDownload() { cancelled = true; status = "Отмена загрузки…"; publish() }
+
+    internal fun prepareImage(uri: Uri) {
+        runWork("Подготовка изображения…", {
+            val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            contentResolver.openInputStream(uri).use { android.graphics.BitmapFactory.decodeStream(it, null, opts) }
+            require(opts.outWidth > 0 && opts.outHeight > 0) { "Неизвестный формат изображения" }
+            var sample = 1
+            while (maxOf(opts.outWidth, opts.outHeight) / sample > 1280) sample *= 2
+            val bitmap = contentResolver.openInputStream(uri).use {
+                android.graphics.BitmapFactory.decodeStream(it, null,
+                    android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
+            } ?: error("Не удалось прочитать изображение")
+            val file = File(cacheDir, "observation.jpg")
+            try {
+                file.outputStream().use { check(bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it)) }
+            } finally { bitmap.recycle() }
+            file.absolutePath
+        }, { attachedImage = File(it); status = "Изображение прикреплено" })
+    }
+
+    internal fun removeImage() {
+        if (!busy && !listening) { attachedImage?.delete(); attachedImage = null; publish() }
+    }
 
     internal fun ask(command: String, image: File? = null, speak: Boolean = false) {
         val text = command.trim()
