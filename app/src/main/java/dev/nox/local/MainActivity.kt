@@ -200,7 +200,8 @@ class MainActivity : Activity() {
         addButton(settings, "Разрешить агенту управление экраном", false) {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
-        settings.addView(textLabel("Агент: сформулируй цель обычным языком. Нокс сам выбирает инструменты, читает доступный экран и запрашивает подтверждение нажатий и ввода. Для выполнения нужна загруженная модель.", 13f, muted))
+        settings.addView(textLabel("Агент запрашивает доступ к каждому приложению. Проверенные безопасные действия выполняются самостоятельно; неизвестные и критические требуют отдельного подтверждения.", 13f, muted))
+        addButton(settings, "Разрешения агента") { showAgentGrants() }
 
         settings.addView(textLabel("Модель", 19f).apply { typeface = Typeface.DEFAULT_BOLD })
         models = Spinner(this).apply {
@@ -258,6 +259,36 @@ class MainActivity : Activity() {
         runCatching { startService(Intent(this, NoxService::class.java).setAction(NoxService.KEEP_ALIVE)) }
         bound = bindService(Intent(this, NoxService::class.java), connection, BIND_AUTO_CREATE)
         render()
+    }
+
+    private fun showAgentGrants() {
+        val grants = getSharedPreferences("nox_agent_grants", MODE_PRIVATE)
+        val entries = grants.all.entries.sortedBy { it.key }
+        val labels = entries.map { entry ->
+            val name = runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(entry.key, 0)).toString() }.getOrDefault(entry.key)
+            name + " · " + when (entry.value) {
+                AppGrant.ALWAYS.name -> "Разрешено всегда"
+                AppGrant.NEVER.name -> "Запрещено"
+                else -> "Спрашивать"
+            }
+        }.toTypedArray()
+        val dialog = AlertDialog.Builder(this).setTitle("Разрешения агента")
+            .setNegativeButton("Закрыть", null)
+        if (entries.isEmpty()) dialog.setMessage("Постоянных разрешений пока нет.")
+        else dialog.setItems(labels) { _, index ->
+            val pkg = entries[index].key
+            AlertDialog.Builder(this).setTitle(labels[index])
+                .setItems(arrayOf("Спрашивать снова", "Запретить всегда")) { _, option ->
+                    val edit = grants.edit()
+                    if (option == 0) edit.remove(pkg) else edit.putString(pkg, AppGrant.NEVER.name)
+                    edit.apply()
+                }.setNegativeButton("Отмена", null).show()
+        }.setNeutralButton("Сбросить все") { _, _ ->
+            AlertDialog.Builder(this).setMessage("Удалить все постоянные разрешения и запреты?")
+                .setPositiveButton("Сбросить") { _, _ -> grants.edit().clear().apply() }
+                .setNegativeButton("Отмена", null).show()
+        }
+        dialog.show()
     }
 
     private fun toggleSettings() {
