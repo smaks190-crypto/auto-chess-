@@ -183,7 +183,7 @@ class MainActivity : Activity() {
             else startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + packageName)))
             render()
         }
-        settings.addView(textLabel("После включения Нокс автоматически слушает и возобновляет прослушивание после ответа. Микрофон отключается на время ответа и при блокировке экрана. Выключить можно здесь или в уведомлении.", 13f, muted))
+        settings.addView(textLabel("После включения Нокс автоматически слушает и возобновляет прослушивание после ответа. Микрофон отключается на время ответа и при блокировке экрана. Выключить можно здесь, в уведомлении или фразой «Нокс, перестань слушать».", 13f, muted))
         addButton(settings, "Разрешить команды «Назад» и «Домой»", false) {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
@@ -260,7 +260,7 @@ class MainActivity : Activity() {
         val index = models.selectedItemPosition.coerceIn(catalog.indices)
         val pkg = catalog[index]
         val busy = s == null || s.busy
-        header.text = if (s == null) "Подключение…" else s.status
+        header.text = if (s == null) "Подключение…" else if (s.listening && s.recognizedText.isNotBlank()) "Слышу: " + s.recognizedText else s.status
         details.text = if (s == null) "" else (s.loaded?.let { catalog[it.index].name + (if (it.imported) " · импорт" else " · каталог") + if (it.gpu) " · GPU" else " · CPU" } ?: "Модель не загружена") +
             (s.elapsedMs?.let { "\nПоследний ответ: " + it + " мс" } ?: "")
         val exists = s?.modelFile(index)?.isFile == true
