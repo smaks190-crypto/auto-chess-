@@ -33,6 +33,14 @@ class GoalStateTest {
         g.mutation()
         assertNull(g.finish(screen(g,"4")))
     }
+    @Test fun postClickMustMatchExpectedFormulaTransition() {
+        val g = GoalState("Open Calculator and calculate 2+2")
+        val before = screen(g,"2")
+        g.mutation()
+        assertFalse(g.afterClick(before,key + "add",screen(g,"22")))
+        assertFalse(g.afterClick(before,key + "add",screen(g,"2")))
+        assertTrue(g.afterClick(before,key + "add",screen(g,"2+")))
+    }
     @Test fun wrongEqualsDoesNotConfirmEvenIfResultExistsAsKey() {
         val g = GoalState("Open Calculator and calculate 37+58")
         val before = screen(g,"37+58")
