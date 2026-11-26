@@ -9,6 +9,10 @@ import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.MessageCallback
 import com.google.ai.edge.litertlm.ThinkingConfig
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.CancellationException
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import java.io.File
 
 /** All calls are owned by a single worker thread. No network client. */
@@ -43,29 +47,53 @@ internal class LocalModel : AutoCloseable {
         }
     }
 
-    fun chat(command: String, image: File?, deep: Boolean, update: (String) -> Unit): String {
+    fun chat(command: String, image: File?, deep: Boolean, cancelled: () -> Boolean, update: (String) -> Unit): String {
         val prompt = PromptPolicy.build(command) + "\nОтвечай естественно, кратко и по существу. Не перечисляй свои возможности без запроса."
         val active = checkNotNull(engine) { "Сначала загрузите модель" }
         return active.createConversation().use { conversation ->
             val done = CountDownLatch(1)
             val output = StringBuilder()
-            var failure: Throwable? = null
+            val failure = AtomicReference<Throwable?>(null)
+            val accepting = AtomicBoolean(true)
             val callback = object : MessageCallback {
                 override fun onMessage(message: Message) {
-                    output.append(message.toString())
-                    update(output.toString())
+                    synchronized(output) {
+                        if (accepting.get() && !cancelled()) {
+                            output.append(message.toString())
+                            update(output.toString())
+                        }
+                    }
                 }
-                override fun onDone() { done.countDown() }
-                override fun onError(throwable: Throwable) { failure = throwable; done.countDown() }
+                override fun onDone() { accepting.set(false); done.countDown() }
+                override fun onError(throwable: Throwable) {
+                    failure.set(throwable); accepting.set(false); done.countDown()
+                }
             }
             val contents = if (image == null) Contents.of(Content.Text(prompt))
                 else Contents.of(Content.ImageFile(image.absolutePath), Content.Text(prompt))
-            conversation.sendMessageAsync(contents, callback,
-                maxOutputToken = if (deep) 1536 else 512,
-                thinkingConfig = ThinkingConfig(enableThinking = deep))
-            done.await()
-            failure?.let { throw it }
-            output.toString()
+            if (cancelled()) throw CancellationException("Генерация отменена")
+            try {
+                conversation.sendMessageAsync(contents, callback,
+                    maxOutputToken = if (deep) 2048 else 512,
+                    thinkingConfig = ThinkingConfig(enableThinking = deep,
+                        thinkingTokenBudget = if (deep) 1024 else 0))
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(if (deep) 300 else 120)
+                while (!done.await(200, TimeUnit.MILLISECONDS)) {
+                    if (cancelled() || System.nanoTime() >= deadline) {
+                        accepting.set(false)
+                        runCatching { conversation.cancelProcess() }
+                        // Allow native cancellation to deliver its terminal callback before closing.
+                        done.await(5, TimeUnit.SECONDS)
+                        if (cancelled()) throw CancellationException("Генерация отменена")
+                        error("Истекло время генерации")
+                    }
+                }
+                if (cancelled()) throw CancellationException("Генерация отменена")
+                failure.get()?.let { throw it }
+                synchronized(output) { output.toString() }
+            } finally {
+                accepting.set(false)
+            }
         }
     }
 
