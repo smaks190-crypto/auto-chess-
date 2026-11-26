@@ -160,7 +160,7 @@ internal class AndroidAgentTools(
         val view = try { observe() } catch (e: AgentDenied) { throw e } catch (e: AgentToolUnavailable) { throw e } catch (e: Exception) {
             return AgentToolStatus.ACTION_UNVERIFIED + "Действие могло быть выполнено, но экран не подтверждён. Не повторяю автоматически. " + (e.message ?: e.javaClass.simpleName)
         }
-        return prefix + "\n" + view
+        return prefix + "\n" + (snapshot?.describe() ?: view)
     }
     private fun choose(label: String, options: List<String>): Int {
         checkActive()
@@ -276,6 +276,7 @@ internal class AndroidAgentTools(
 
     private fun actOnNode(action: AgentDecision.Tool): String {
         val before = snapshot ?: error("Сначала используй observe")
+        if (goal.arithmetic && !goal.allowsLaunch(before.pkg)) return "ERROR[GOAL_MISMATCH] Нужен экран калькулятора."
         val target = before.nodes.firstOrNull { it.id == action.arg } ?: error("Неизвестный ID; обнови экран")
         if (!(target.enabled && if (action.name == "type") target.editable else target.clickable)) {
             snapshot = null
@@ -322,6 +323,10 @@ internal class AndroidAgentTools(
 
     fun execute(action: AgentDecision.Tool): String {
         checkActive()
+        if (goal.arithmetic && action.name !in setOf("apps", "launch", "observe", "click"))
+            return "ERROR[GOAL_MISMATCH] Для этой задачи нужны только кнопки калькулятора."
+        if (action.name == "launch" && !goal.allowsLaunch(action.arg))
+            return "ERROR[GOAL_MISMATCH] Нужен калькулятор Samsung."
         return when (action.name) {
             "apps" -> {
                 val pm = context.packageManager
