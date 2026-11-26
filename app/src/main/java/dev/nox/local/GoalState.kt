@@ -19,7 +19,13 @@ internal class GoalState(private val request: String) {
         s.replace(Regex("\\bплюс\\b"), "+").replace(Regex("\\bминус\\b"), "-")
     }
     private val match = expression.findAll(normalized).toList().singleOrNull()
-        ?.takeIf { normalized.contains("calculator") || normalized.contains("калькулятор") }
+        ?.takeIf { m ->
+            val remainder = normalized.removeRange(m.range)
+            (normalized.contains("calculator") || normalized.contains("калькулятор")) &&
+                remainder.none { it.isDigit() || it in "+−-*/×÷=" } &&
+                m.groupValues[1].let { it == "0" || !it.startsWith("0") } &&
+                m.groupValues[3].let { it == "0" || !it.startsWith("0") }
+        }
     private val formula = match?.let { it.groupValues[1] + it.groupValues[2].replace('−','-') + it.groupValues[3] }
     private val expected = match?.let {
         val a = BigInteger(it.groupValues[1]); val b = BigInteger(it.groupValues[3])
@@ -48,7 +54,7 @@ internal class GoalState(private val request: String) {
         if (!f.startsWith(prefix) || prefix.length >= f.length) return "clear"
         return when (val ch = f[prefix.length]) { '+' -> "add"; '-' -> "sub"; else -> "0" + ch }
     }
-    fun hint(o: GoalObservation): String? = wantedKey(o)?.let { key ->
+    fun hint(o: GoalObservation): String? = if (verifiedEqualsSeq != null) "Вычисление проверено. Заверши задачу." else wantedKey(o)?.let { key ->
         "Проверка цели: требуется кнопка " + KEY + key + ". Выбери её ID из текущего экрана."
     }
     fun reject(o: GoalObservation, action: String, resource: String): String? {
@@ -71,7 +77,7 @@ internal class GoalState(private val request: String) {
         }
         val target = Regex("^(?:открой|запусти|open|launch)\\s+([\\p{L}0-9 ._-]+)$", RegexOption.IGNORE_CASE)
             .matchEntire(request.trim())?.groupValues?.get(1)?.trim() ?: return null
-        if (o.pkg == launchPkg && (target.equals(launchName, true) || target.equals(launchPkg, true)))
+        if (o.pkg == launchPkg && (target.equals(launchName, true) || target.equals(launchPkg, true) || (o.pkg == CALC && target.equals("calculator", true))))
             return "Приложение открыто: " + launchName
         return null
     }
