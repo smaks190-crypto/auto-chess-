@@ -18,6 +18,101 @@ class AgentCoreTest {
         assertEquals(listOf("launch"), calls)
     }
 
+    @Test fun fullTelegramJourneyContinuesBeyondAppLaunch() {
+        // A simulated model run: these are tool contracts, not a real Telegram session.
+        // The last step prepares a draft; it does NOT send a message to a real person.
+        val script = listOf(
+            AgentDecision.Tool("apps", "Telegram"),
+            AgentDecision.Tool("launch", "org.telegram.messenger"),
+            AgentDecision.Tool("observe", ""),
+            AgentDecision.Tool("click", "2"),
+            AgentDecision.Tool("observe", ""),
+            AgentDecision.Tool("type", "4", "Привет"),
+            AgentDecision.Tool("observe", ""),
+            AgentDecision.Finish("Черновик готов, отправку ещё не выполнял.")
+        )
+        var position = 0
+        val executed = mutableListOf<String>()
+        val core = AgentCore(
+            decide = { script[position++] },
+            execute = { action ->
+                executed.add(action.name)
+                when (action.name) {
+                    "apps" -> "Telegram = org.telegram.messenger"
+                    "launch", "observe" -> "Активное приложение: org.telegram.messenger\n2 | Button | Поиск [click]\n4 | EditText | Сообщение [type]"
+                    "click" -> "Android принял действие. Активное приложение: org.telegram.messenger"
+                    "type" -> "Android принял действие. Черновик присутствует."
+                    else -> error("Непредвиденный инструмент")
+                }
+            },
+            cancelled = { false }
+        )
+        assertEquals("Черновик готов, отправку ещё не выполнял.", core.run("Напиши Александру привет", ""))
+        assertEquals(listOf("apps", "launch", "observe", "click", "observe", "type", "observe"), executed)
+    }
+
+    @Test fun uncertainLaunchWaitsForVerifiedScreenThenResumes() {
+        var decisions = 0
+        var observations = 0
+        val executed = mutableListOf<String>()
+        val core = AgentCore(
+            decide = {
+                decisions++
+                when (decisions) {
+                    1 -> AgentDecision.Tool("launch", "org.telegram.messenger")
+                    2 -> AgentDecision.Tool("click", "2")
+                    else -> AgentDecision.Finish("Открыт нужный экран")
+                }
+            },
+            execute = { action ->
+                executed.add(action.name)
+                when (action.name) {
+                    "launch" -> AgentToolStatus.LAUNCH_RECHECK + "Ожидается проверка."
+                    "observe" -> {
+                        observations++
+                        if (observations == 1) "Активное приложение: dev.other.app"
+                        else "Активное приложение: org.telegram.messenger\n2 | Button | Поиск [click]"
+                    }
+                    "click" -> "Android принял действие"
+                    else -> error("Unexpected")
+                }
+            },
+            cancelled = { false }
+        )
+        assertEquals("Открыт нужный экран", core.run("Открой Telegram и нажми поиск", ""))
+        assertEquals(listOf("launch", "observe", "observe", "click"), executed)
+        assertEquals(3, decisions)
+    }
+
+    @Test fun uncertainLaunchNeverClicksAnotherApp() {
+        var decisions = 0
+        var clicks = 0
+        var observes = 0
+        val core = AgentCore(
+            decide = {
+                decisions++
+                AgentDecision.Tool("launch", "org.telegram.messenger")
+            },
+            execute = { action ->
+                when (action.name) {
+                    "launch" -> AgentToolStatus.LAUNCH_RECHECK + "Ожидается проверка."
+                    "observe" -> {
+                        observes++
+                        "Активное приложение: dev.other.app\n1 | Button | Похожий элемент [click]"
+                    }
+                    "click", "type" -> { clicks++; error("Нельзя управлять чужим окном") }
+                    else -> error("Unexpected")
+                }
+            },
+            cancelled = { false }
+        )
+        val result = core.run("Открой Telegram и напиши сообщение", "")
+        assertTrue(result.contains("не подтверждён"))
+        assertEquals(1, decisions)
+        assertEquals(5, observes)
+        assertEquals(0, clicks)
+    }
+
     @Test fun repairsTwoMalformedDecisionsBeforeAnyExecution() {
         val prompts = mutableListOf<String>()
         var executions = 0
