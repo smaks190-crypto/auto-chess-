@@ -928,7 +928,8 @@ class NoxService : Service() {
                     })
                 AgentCore(
                     decide = { model.decide(it, stop) },
-                    execute = { tools.execute(it) },
+                    execute = { error("Legacy executor disabled") },
+                    executeTyped = tools::execute,
                     cancelled = stop,
                     goal = goal,
                     verifyFinish = tools::verifyFinish,
