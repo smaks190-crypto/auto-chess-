@@ -28,7 +28,27 @@ internal object LivePerception {
     @Volatile var frames = 0L
     @Volatile var audioSamples = 0L
     @Volatile var epoch = 0L
-    fun clear() { buffer.clear(); visualSummary = ""; frames = 0; audioSamples = 0 }
+    @Synchronized fun begin(): Long {
+        epoch++
+        buffer.clear(); visualSummary = ""; frames = 0; audioSamples = 0
+        active = true
+        return epoch
+    }
+    @Synchronized fun end() {
+        active = false; epoch++
+        buffer.clear(); visualSummary = ""; frames = 0; audioSamples = 0
+    }
+    @Synchronized fun frame(session: Long, jpeg: ByteArray, now: Long) {
+        if (active && session == epoch) { buffer.frame(jpeg, now); frames++ }
+    }
+    @Synchronized fun samples(session: Long, count: Int) {
+        if (active && session == epoch) audioSamples += count
+    }
+    @Synchronized fun speech(session: Long, value: String, final: Boolean) {
+        if (active && session == epoch) {
+            if (final) buffer.finalText(value) else buffer.partial(value)
+        }
+    }
 }
 
 class PerceptionService : Service() {
@@ -72,7 +92,7 @@ class PerceptionService : Service() {
             stopSelf(); return START_NOT_STICKY
         }
         try {
-            val manager = getSystemService(NotificationManager::class.java)
+            val manager = requireNotNull(getSystemService(NotificationManager::class.java))
             manager.createNotificationChannel(NotificationChannel(CHANNEL, "Нокс — восприятие", NotificationManager.IMPORTANCE_LOW))
             val stop = PendingIntent.getService(this, 1, Intent(this, PerceptionService::class.java).setAction(STOP),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -86,15 +106,12 @@ class PerceptionService : Service() {
                 .addAction(Notification.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel, "Остановить", stop).build())
                 .build()
             startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-            val mp = getSystemService(MediaProjectionManager::class.java).getMediaProjection(result, token)
+            val mp = requireNotNull(getSystemService(MediaProjectionManager::class.java)).getMediaProjection(result, token)
                 ?: error("Не получено разрешение Android")
             projection = mp
-            LivePerception.clear()
-            LivePerception.epoch++
-            val session = LivePerception.epoch
+            val session = LivePerception.begin()
             generation = session
             running = true
-            LivePerception.active = true
             LivePerception.status = "Подключение экрана и звука…"
             mp.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() { stopSelf() }
@@ -103,12 +120,13 @@ class PerceptionService : Service() {
                         .onFailure { LivePerception.status = "Ошибка изменения размера экрана"; stopSelf() }
                 }
             }, main)
-            registerReceiver(screenOff, IntentFilter(Intent.ACTION_SCREEN_OFF), Context.RECEIVER_NOT_EXPORTED)
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(screenOff, IntentFilter(Intent.ACTION_SCREEN_OFF), Context.RECEIVER_NOT_EXPORTED)
+            else @Suppress("DEPRECATION") registerReceiver(screenOff, IntentFilter(Intent.ACTION_SCREEN_OFF))
             receiverRegistered = true
             val thread = HandlerThread("nox-vision").apply { start() }
             videoThread = thread
             videoHandler = Handler(thread.looper)
-            val bounds = getSystemService(android.view.WindowManager::class.java).maximumWindowMetrics.bounds
+            val bounds = requireNotNull(getSystemService(android.view.WindowManager::class.java)).maximumWindowMetrics.bounds
             val (w,h) = dimensions(bounds.width(), bounds.height())
             val first = makeReader(w,h,session)
             reader = first
@@ -148,7 +166,7 @@ class PerceptionService : Service() {
                                 check(cropped.compress(Bitmap.CompressFormat.JPEG, 75, out)); out.toByteArray()
                             }
                             if (running && session == LivePerception.epoch) {
-                                LivePerception.buffer.frame(jpeg,now); LivePerception.frames++
+                                LivePerception.frame(session,jpeg,now)
                             }
                         } finally { if (cropped !== padded) cropped.recycle() }
                     } finally { padded.recycle() }
@@ -203,11 +221,11 @@ class PerceptionService : Service() {
                         if (n < 0) error("Ошибка потока звука: " + n)
                         if (n == 0) { Thread.sleep(20); continue }
                         if (!running || session != LivePerception.epoch) break
-                        LivePerception.audioSamples += n
+                        LivePerception.samples(session,n)
                         if (asr.acceptWaveForm(samples,n)) {
-                            LivePerception.buffer.finalText(JSONObject(asr.result).optString("text"))
+                            LivePerception.speech(session, JSONObject(asr.result).optString("text"), true)
                         } else {
-                            LivePerception.buffer.partial(JSONObject(asr.partialResult).optString("partial"))
+                            LivePerception.speech(session, JSONObject(asr.partialResult).optString("partial"), false)
                         }
                     }
                 }
@@ -222,9 +240,7 @@ class PerceptionService : Service() {
 
     override fun onDestroy() {
         running = false
-        LivePerception.active = false
-        LivePerception.epoch++
-        LivePerception.clear()
+        LivePerception.end()
         LivePerception.status = "Восприятие выключено"
         audio?.let { runCatching { it.stop() } }
         display?.release(); display = null
