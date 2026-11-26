@@ -12,6 +12,7 @@ internal class AgentToolUnavailable(message: String = "Управление эк
 internal object AgentToolStatus {
     const val LAUNCH_UNVERIFIED = "LAUNCH_UNVERIFIED:"
     const val LAUNCH_NEEDS_TAP = "LAUNCH_NEEDS_TAP:"
+    const val LAUNCH_RECHECK = "LAUNCH_RECHECK:"
 }
 
 internal class AgentCore(
@@ -89,6 +90,45 @@ internal class AgentCore(
                         return result.removePrefix(AgentToolStatus.LAUNCH_UNVERIFIED).trim()
                     if (result.startsWith(AgentToolStatus.LAUNCH_NEEDS_TAP))
                         return result.removePrefix(AgentToolStatus.LAUNCH_NEEDS_TAP).trim()
+                    if (result.startsWith(AgentToolStatus.LAUNCH_RECHECK)) {
+                        // A launch is not the end of a multi-step command. Only a verified
+                        // Accessibility observation of the requested package allows the agent
+                        // to continue. Never guess a target or execute clicks on an old screen.
+                        var verifiedScreen: String? = null
+                        var lastObserved = "Экран пока недоступен"
+                        progress("Шаг " + (step + 1) + " · проверяю запуск приложения")
+                        for (attempt in 0 until 5) {
+                            if (cancelled()) return "Задача отменена."
+                            if (attempt > 0) {
+                                try {
+                                    Thread.sleep(500L)
+                                } catch (_: InterruptedException) {
+                                    Thread.currentThread().interrupt()
+                                    return "Задача прервана при проверке экрана."
+                                }
+                            }
+                            try {
+                                val observed = execute(AgentDecision.Tool("observe", ""))
+                                val firstLine = observed.lineSequence().firstOrNull().orEmpty()
+                                if (firstLine == "Активное приложение: " + decision.arg) {
+                                    verifiedScreen = observed
+                                    break
+                                }
+                                lastObserved = firstLine.take(160)
+                            } catch (e: AgentDenied) {
+                                return e.message ?: "Задача остановлена."
+                            } catch (e: AgentToolUnavailable) {
+                                return e.message ?: "Специальные возможности Нокс отключены."
+                            } catch (e: Exception) {
+                                lastObserved = (e.message ?: e.javaClass.simpleName).take(160)
+                            }
+                        }
+                        val screen = verifiedScreen
+                            ?: return "Android получил запрос на запуск, но экран «" + decision.arg +
+                                "» не подтверждён. Не выполнял дальнейшие действия. " + lastObserved
+                        results.add(decision.name + ": Запуск подтверждён.\n" + screen.take(7200))
+                        return@repeat
+                    }
                     if (result.startsWith("ERROR[")) {
                         val fingerprint = decision.name + ":" + decision.arg + ":" + result.take(150)
                         consecutiveFailures = if (fingerprint == lastFailure) consecutiveFailures + 1 else 1
