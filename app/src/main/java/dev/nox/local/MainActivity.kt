@@ -184,10 +184,10 @@ class MainActivity : Activity() {
             render()
         }
         settings.addView(textLabel("После включения Нокс автоматически слушает и возобновляет прослушивание после ответа. Микрофон отключается на время ответа и при блокировке экрана. Выключить можно здесь, в уведомлении или фразой «Нокс, перестань слушать».", 13f, muted))
-        addButton(settings, "Разрешить команды «Назад» и «Домой»", false) {
+        addButton(settings, "Разрешить агенту управление экраном", false) {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
-        settings.addView(textLabel("Команды: «открой Telegram», «громче», «тише», «назад», «на главный экран». Произвольные нажатия не поддерживаются.", 13f, muted))
+        settings.addView(textLabel("Агент: сформулируй цель обычным языком. Нокс сам выбирает инструменты, читает доступный экран и запрашивает подтверждение нажатий и ввода. Для выполнения нужна загруженная модель.", 13f, muted))
 
         settings.addView(textLabel("Модель", 19f).apply { typeface = Typeface.DEFAULT_BOLD })
         models = Spinner(this).apply {
