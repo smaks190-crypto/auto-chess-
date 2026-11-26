@@ -86,6 +86,7 @@ internal class AndroidAgentTools(
     private fun permitted(pkg: String): Boolean {
         // Never operate on own UI, system permissions, lock screens, installers or settings.
         return pkg.isNotBlank() && pkg != context.packageName &&
+            pkg != "dev.nox.local" && pkg != "dev.nox.local.dev" &&
             pkg != "android" && pkg != "com.android.systemui" &&
             pkg != "com.android.settings" && pkg != "com.google.android.permissioncontroller" &&
             !pkg.contains("permissioncontroller") && !pkg.contains("packageinstaller")
