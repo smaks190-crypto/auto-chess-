@@ -69,9 +69,21 @@ internal class GoalState(private val request: String) {
         return if (action == "click" && resource == KEY + key) null
             else "Выбранное действие не соответствует выражению. " + hint(o)
     }
-    fun afterClick(before: GoalObservation, resource: String, after: GoalObservation) {
-        if (resource == KEY + "equal" && value(before) == formula && value(after) == expected && after.seq > lastMutation)
-            verifiedEqualsSeq = after.seq
+    fun afterClick(before: GoalObservation, resource: String, after: GoalObservation): Boolean {
+        if (!arithmetic) return true
+        val previous = value(before) ?: return false
+        val actual = value(after) ?: return false
+        if (after.seq <= lastMutation || after.seq <= before.seq || resource != KEY + wantedKey(before)) return false
+        val next = when (val key = resource.removePrefix(KEY)) {
+            "clear" -> "0"
+            "equal" -> expected
+            "add" -> previous + "+"
+            "sub" -> previous + "-"
+            else -> (if (previous == "0" && formula?.startsWith("0") == false) "" else previous) + key.removePrefix("0")
+        }
+        if (actual != next) return false
+        if (resource == KEY + "equal" && previous == formula) verifiedEqualsSeq = after.seq
+        return true
     }
     fun finish(o: GoalObservation?): String? {
         if (o == null || o.seq <= lastMutation) return null
