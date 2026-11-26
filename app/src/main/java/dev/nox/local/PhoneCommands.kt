@@ -4,6 +4,7 @@ import java.util.Locale
 
 internal sealed interface PhoneCommand {
     data class Open(val app: String): PhoneCommand
+    data class OpenWithFollowUp(val app: String, val followUp: String): PhoneCommand
     data class Volume(val direction: Int): PhoneCommand
     data object Home: PhoneCommand
     data object Back: PhoneCommand
@@ -11,6 +12,11 @@ internal sealed interface PhoneCommand {
 }
 
 internal object PhoneCommands {
+    private const val APP = "[\\p{L}\\p{N}][\\p{L}\\p{N} ._+-]{0,60}"
+    private val compound = Regex("^(?:открой|запусти)\\s+($APP?)(?:\\s*,\\s*|\\s+)(?:(?:и|а)\\s+)?(?:потом\\s+)?(напиши\\b.*|отправь\\b.*|найди\\b.*|нажми\\b.*|позвони\\b.*|введи\\b.*|открой\\b.*|запусти\\b.*)$")
+    private val open = Regex("^(?:открой|запусти)\\s+($APP)$")
+    private val reverseOpen = Regex("^($APP)\\s+(?:открой|запусти)$")
+
     fun parse(input: String): PhoneCommand? {
         val text = input.trim().lowercase(Locale.ROOT)
             .replace(Regex("^нокс[ ,!:.]+"), "")
@@ -21,8 +27,16 @@ internal object PhoneCommands {
             "тише", "уменьши громкость" -> PhoneCommand.Volume(-1)
             "домой", "на главный экран", "главный экран" -> PhoneCommand.Home
             "назад", "вернись назад" -> PhoneCommand.Back
-            else -> Regex("^(?:открой|запусти) ([\\p{L}\\p{N}][\\p{L}\\p{N} ._+-]{0,60})$")
-                .matchEntire(text)?.groupValues?.get(1)?.trim()?.let { PhoneCommand.Open(it) }
+            else -> {
+                compound.matchEntire(text)?.let {
+                    return PhoneCommand.OpenWithFollowUp(it.groupValues[1].trim(), it.groupValues[2].trim())
+                }
+                val app = (open.matchEntire(text) ?: reverseOpen.matchEntire(text))
+                    ?.groupValues?.get(1)?.trim()
+                // Never route an unrecognised multi-action phrase to the package lookup.
+                if (app == null || Regex("\\s+(?:и|потом|затем)\\s+").containsMatchIn(app)) null
+                else PhoneCommand.Open(app)
+            }
         }
     }
 }
