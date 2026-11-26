@@ -15,8 +15,9 @@ internal class GoalState(private val request: String) {
     }
     private val normalized = request.lowercase().let { original ->
         var s = original
-        for ((word, digit) in numberWords) s = s.replace(Regex("\\b" + word + "\\b"), digit)
-        s.replace(Regex("\\bплюс\\b"), "+").replace(Regex("\\bминус\\b"), "-")
+        fun wordPattern(word: String) = Regex("(?<![\\p{L}\\p{N}_])" + Regex.escape(word) + "(?![\\p{L}\\p{N}_])")
+        for ((word, digit) in numberWords) s = s.replace(wordPattern(word), digit)
+        s.replace(wordPattern("плюс"), "+").replace(wordPattern("минус"), "-")
     }
     private val match = expression.findAll(normalized).toList().singleOrNull()
         ?.takeIf { m ->
