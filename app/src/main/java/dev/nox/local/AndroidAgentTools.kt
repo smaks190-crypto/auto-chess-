@@ -302,8 +302,10 @@ internal class AndroidAgentTools(
                     }
                 }
                 snapshot = lastScreen
-                return AgentToolStatus.LAUNCH_UNVERIFIED +
-                    "Android получил запрос на запуск «" + label + "», но экран приложения пока не подтверждён."
+                // Accessibility is connected, but Android may still be switching windows.
+                // AgentCore performs bounded read-only observations; no clicks until verified.
+                return AgentToolStatus.LAUNCH_RECHECK +
+                    "Android получил запрос на запуск «" + label + "», но экран ещё не подтвердил переход."
             }
             "observe" -> observe()
             "click", "type" -> actOnNode(action)
