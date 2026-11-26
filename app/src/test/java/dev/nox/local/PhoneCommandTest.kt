@@ -18,6 +18,15 @@ class PhoneCommandTest {
         assertEquals(PhoneCommand.Home, PhoneCommands.parse("На главный экран"))
         assertEquals(PhoneCommand.Back, PhoneCommands.parse("Назад"))
     }
+    @Test fun separatesCompoundOpenFromFollowUp() {
+        assertEquals(PhoneCommand.OpenWithFollowUp("telegram", "напиши александру привет"),
+            PhoneCommands.parse("Открой Telegram и напиши Александру привет"))
+        assertEquals(PhoneCommand.OpenWithFollowUp("телеграм", "отправь сообщение"),
+            PhoneCommands.parse("Нокс, открой телеграм, а потом отправь сообщение"))
+        assertEquals(PhoneCommand.Open("telegram"), PhoneCommands.parse("Нокс, Telegram открой"))
+        assertNull(PhoneCommands.parse("Не открывай Telegram и не пиши Александру"))
+        assertNull(PhoneCommands.parse("Как открыть Telegram и написать сообщение?"))
+    }
     @Test fun noAccidentalActions() {
         assertNull(PhoneCommands.parse("Не открывай Telegram"))
         assertNull(PhoneCommands.parse("Как открыть Telegram?"))
