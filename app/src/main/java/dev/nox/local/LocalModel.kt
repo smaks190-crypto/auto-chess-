@@ -56,7 +56,7 @@ internal class LocalModel : AutoCloseable {
         val raw = generate(prompt, null, false, cancelled, {})
         return try {
             AgentProtocol.parse(raw)
-        } catch (e: RuntimeException) {
+        } catch (e: Exception) {
             // Retry only schema/JSON errors, never model failures or cancelled generation.
             throw AgentFormatException(e.message ?: "Неверный JSON ответа модели")
         }
