@@ -23,6 +23,8 @@ class MainActivity : Activity() {
     companion object {
         /** True only while the chat Activity is on screen; a bound Service is not enough. */
         @Volatile internal var isVisible = false
+        // onStart/onStop also cover a visible but paused split-screen Activity.
+        @Volatile internal var isOnScreen = false
     }
     private var service: NoxService? = null
     private var bound = false
@@ -68,6 +70,7 @@ class MainActivity : Activity() {
             val s = (binder as? NoxService.LocalBinder)?.service ?: return
             service = s
             s.listener = { render() }
+            s.syncOverlay()
             val loaded = s.loaded
             if (loaded != null) {
                 models.setSelection(loaded.index)
@@ -197,6 +200,7 @@ class MainActivity : Activity() {
             render()
         }
         settings.addView(textLabel("После включения Нокс автоматически слушает и возобновляет прослушивание после ответа. Микрофон отключается на время ответа и при блокировке экрана. Удерживай стрелку отправки в чате, чтобы включить или выключить фоновый голос. Также выключить можно здесь, в уведомлении или фразой «Нокс, перестань слушать».", 13f, muted))
+        settings.addView(textLabel("Облачко действий видно только вне Нокса. Нажми «Остановить», чтобы отменить текущую задачу. Для действий нужен доступ к плавающему облачку; голосовые ответы на сообщения настраиваются отдельно.", 13f, muted))
         addButton(settings, "Разрешить агенту управление экраном", false) {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
@@ -433,6 +437,17 @@ class MainActivity : Activity() {
             10 -> { saveSelection(importIndex); service?.selectModel(importIndex, gpu.isChecked, vision.isChecked, uri) }
             11 -> service?.prepareImage(uri)
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        isOnScreen = true
+        service?.syncOverlay()
+    }
+    override fun onStop() {
+        isOnScreen = false
+        service?.syncOverlay()
+        super.onStop()
     }
 
     override fun onResume() {
