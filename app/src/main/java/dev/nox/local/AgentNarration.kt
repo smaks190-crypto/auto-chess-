@@ -21,6 +21,8 @@ internal object AgentNarration {
     fun launch(app: String) = "Хорошо, открываю " + clean(app, 100) + "."
     fun click(label: String, resource: String): String = when {
         isSend(label) -> "Готовлю отправку, жду твоего подтверждения."
+        words(label.substringBefore(" / ")) in setOf("удалить", "удаление", "delete", "remove", "удалить навсегда", "delete permanently") ->
+            "Готовлю удаление, жду твоего подтверждения."
         isSearch(label, resource) -> "Открываю поиск."
         label.isNotBlank() -> "Перехожу к «" + clean(label, 120) + "»."
         else -> "Нажимаю на элемент без названия."
