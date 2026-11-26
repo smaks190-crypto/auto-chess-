@@ -9,7 +9,8 @@ internal sealed interface AgentDecision {
     data class Tool(val name: String, val arg: String, val text: String = "") : AgentDecision
     data class Finish(val answer: String) : AgentDecision
 }
-internal class AgentDenied(message: String = "Действие отменено пользователем. Задача остановлена.") : RuntimeException(message)
+internal open class AgentDenied(message: String = "Действие отменено пользователем. Задача остановлена.") : RuntimeException(message)
+internal class AgentUiTimeout : AgentDenied("Интерфейс не ответил вовремя. Результат действия неизвестен; задача остановлена без повтора.")
 internal class AgentFormatException(message: String) : IllegalArgumentException(message)
 internal class AgentToolUnavailable(message: String = "Управление экраном Нокс отключено в специальных возможностях. Открывать приложения можно и без него, но для чтения экрана и нажатий разрешение необходимо.") : IllegalStateException(message)
 
@@ -30,7 +31,7 @@ internal fun <T> awaitAgentUi(task: FutureTask<T>, timeoutMillis: Long = 5000): 
     } catch (e: ExecutionException) {
         throw (e.cause ?: e)
     } catch (_: TimeoutException) {
-        throw AgentDenied("Интерфейс не ответил вовремя. Результат действия неизвестен; задача остановлена без повтора.")
+        throw AgentUiTimeout()
     } catch (_: InterruptedException) {
         Thread.currentThread().interrupt()
         throw AgentDenied("Ожидание интерфейса прервано. Задача остановлена без повтора.")
@@ -66,7 +67,8 @@ internal fun <T> settleObservation(attempts: Int, pause: () -> Unit, observe: ()
     require(attempts in 1..5)
     repeat(attempts) { index ->
         if (index > 0) pause()
-        val current = observe()
+        // Only the read is retried. Cancellation, verification failures and unknown errors propagate.
+        val current = try { observe() } catch (_: AgentToolUnavailable) { null }
         if (current != null && verified(current)) return current
     }
     return null

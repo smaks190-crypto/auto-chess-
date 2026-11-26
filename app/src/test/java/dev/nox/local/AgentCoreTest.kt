@@ -4,6 +4,50 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AgentCoreTest {
+    @Test fun settleRecoversFromTemporaryServiceLossWithoutRepeatingMutation() {
+        var mutations = 0
+        var reads = 0
+        var pauses = 0
+        mutations++ // the caller dispatched exactly one mutation before observing
+        val value = settleObservation(5, { pauses++ }, {
+            if (++reads < 3) throw AgentToolUnavailable() else 95
+        }, { it == 95 })
+        assertEquals(95, value)
+        assertEquals(3, reads)
+        assertEquals(2, pauses)
+        assertEquals(1, mutations)
+    }
+
+    @Test fun settleExhaustsServiceLossAndReturnsNoEvidence() {
+        var reads = 0
+        assertNull(settleObservation<Int>(5, {}, { reads++; throw AgentToolUnavailable() }, { true }))
+        assertEquals(5, reads)
+    }
+
+    @Test fun settleDoesNotSwallowCancellation() {
+        var reads = 0
+        val denied = AgentDenied("Cancelled")
+        try {
+            settleObservation<Int>(5, {}, { reads++; throw denied }, { true })
+            fail("Cancellation must propagate")
+        } catch (e: AgentDenied) { assertSame(denied, e) }
+        assertEquals(1, reads)
+    }
+
+    @Test fun typedUnverifiedStopsBeforeAnotherModelDecisionOrMutation() {
+        var decisions = 0
+        var mutations = 0
+        val core = AgentCore(
+            decide = { decisions++; AgentDecision.Tool("click", "1") },
+            execute = { error("Legacy executor must not run") },
+            executeTyped = { mutations++; ToolOutcome.Unverified("SERVICE_RECONNECTING") },
+            cancelled = { false }
+        )
+        assertEquals("SERVICE_RECONNECTING", core.run("click", ""))
+        assertEquals(1, decisions)
+        assertEquals(1, mutations)
+    }
+
     @Test fun screenTextCannotTurnTypedSuccessIntoFailure() {
         var i = 0
         val core = AgentCore(decide = { if (i++ == 0) AgentDecision.Tool("observe","") else AgentDecision.Finish("done") },

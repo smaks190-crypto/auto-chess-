@@ -19,6 +19,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -74,12 +76,21 @@ internal class AndroidAgentTools(
         if (cancelled() || context.getSystemService(KeyguardManager::class.java)?.isDeviceLocked == true ||
             context.getSystemService(PowerManager::class.java)?.isInteractive != true) throw AgentDenied()
     }
-    private fun nav() = NoxNavigationService.current ?: throw AgentToolUnavailable()
-    private fun <T> ui(block: () -> T): T {
+    private fun nav(): NoxNavigationService {
+        NoxNavigationService.current?.let { return it }
+        val code = NoxNavigationService.connectionCode(context)
+        Log.w("NoxLC", "nav_missing code=$code pid=${android.os.Process.myPid()} t=${SystemClock.elapsedRealtime()}")
+        throw AgentToolUnavailable(when (code) {
+            "ACCESSIBILITY_DISABLED" -> "Управление экраном Нокс отключено в специальных возможностях."
+            "SERVICE_RECONNECTING", "BOUND" -> "Служба управления экраном временно недоступна; возможно, переподключается."
+            else -> "Не удалось проверить состояние службы управления экраном."
+        })
+    }
+    private fun <T> ui(timeoutMillis: Long = 5000, block: () -> T): T {
         checkActive()
         val task = FutureTask<T> { checkActive(); block() }
         if (!main.post(task)) throw AgentToolUnavailable("UI-поток недоступен. Задача остановлена.")
-        return awaitAgentUi(task)
+        return awaitAgentUi(task, timeoutMillis)
     }
     private fun pause(ms: Long) {
         var remaining = ms
@@ -98,8 +109,7 @@ internal class AndroidAgentTools(
             pkg != "com.android.settings" && pkg != "com.google.android.permissioncontroller" &&
             !pkg.contains("permissioncontroller") && !pkg.contains("packageinstaller")
     }
-    private fun readScreen(): Screen {
-        val root = nav().rootInActiveWindow ?: error("Активный экран недоступен")
+    private fun readScreen(root: AccessibilityNodeInfo = nav().rootInActiveWindow ?: error("Активный экран недоступен")): Screen {
         val pkg = root.packageName?.toString().orEmpty()
         require(permitted(pkg)) { "Этот экран не доступен агенту: " + pkg }
         require(permissions.allowed(pkg)) { "Нет разрешения на управление текущим приложением" }
@@ -156,22 +166,72 @@ internal class AndroidAgentTools(
         return describeGoal(screen)
     }
     private fun describeAfter(prefix: String, previous: Screen? = null, condition: (Screen) -> Boolean = { true }): ToolOutcome {
-        pause(150)
-        val screen = settleObservation(3, { pause(150) }, {
-            try {
-                ui {
-                    val root = nav().rootInActiveWindow ?: return@ui null
-                    if (previous != null && (root.windowId != previous.window || root.packageName?.toString() != previous.pkg)) return@ui null
-                    readScreen()
+        // This runs on the agent worker. Only bounded, read-only captures are posted to main.
+        check(Looper.myLooper() != Looper.getMainLooper()) { "Post-action settle must run off main" }
+        val started = SystemClock.elapsedRealtime()
+        val deadline = started + 3000L
+        var reason = "NO_ROOT"
+        Log.i("NoxLC", "settle_start pid=${android.os.Process.myPid()} t=$started thread=${Thread.currentThread().name}")
+        fun remaining() = (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+        fun waitForRead(ms: Long) { pause(minOf(ms, remaining())) }
+        fun read(): Screen? {
+            checkActive()
+            val budget = remaining()
+            if (budget == 0L) return null
+            return try {
+                ui(timeoutMillis = budget) {
+                    val root = nav().rootInActiveWindow
+                    if (root == null) {
+                        reason = "NO_ROOT"
+                        return@ui null
+                    }
+                    if (previous != null && (root.windowId != previous.window || root.packageName?.toString() != previous.pkg)) {
+                        reason = "WINDOW_CHANGED"
+                        return@ui null
+                    }
+                    readScreen(root)
                 }
-            } catch (e: AgentDenied) { throw e } catch (e: AgentToolUnavailable) { throw e } catch (_: Exception) { null }
-        }, condition)
-        if (screen == null) {
-            snapshot = null
-            return ToolOutcome.Unverified("Действие могло быть выполнено, но ожидаемый экран не подтверждён. Не повторяю автоматически.")
+            } catch (e: AgentUiTimeout) {
+                reason = "UI_TIMEOUT"
+                null
+            } catch (e: AgentDenied) {
+                throw e
+            } catch (e: AgentToolUnavailable) {
+                reason = NoxNavigationService.connectionCode(context).let { if (it == "BOUND") "SERVICE_UNAVAILABLE" else it }
+                throw e // settleObservation retries only the read, never the mutation.
+            } catch (_: Exception) {
+                reason = "READ_FAILED"
+                null
+            }
         }
-        snapshot = screen
-        return ToolOutcome.Ok(prefix + "\n" + describeGoal(screen), screen.pkg)
+        try {
+            waitForRead(150)
+            val screen = settleObservation(5, { waitForRead(650) }, ::read) { observed ->
+                checkActive()
+                if (condition(observed)) true else { reason = "EXPECT_NOT_MET"; false }
+            }
+            checkActive()
+            if (screen == null) {
+                snapshot = null
+                val detail = when (reason) {
+                    "SERVICE_RECONNECTING", "SERVICE_UNAVAILABLE" -> "Служба управления экраном временно недоступна."
+                    "ACCESSIBILITY_DISABLED" -> "Служба управления экраном отключена в специальных возможностях."
+                    "UI_TIMEOUT" -> "Интерфейс не ответил вовремя."
+                    "EXPECT_NOT_MET" -> "Ожидаемое изменение экрана не подтверждено."
+                    else -> "Не удалось подтвердить состояние экрана."
+                }
+                return ToolOutcome.Unverified("$detail Результат действия неизвестен; не повторяю автоматически. [$reason]")
+            }
+            reason = "VERIFIED"
+            snapshot = screen
+            return ToolOutcome.Ok(prefix + "\n" + describeGoal(screen), screen.pkg)
+        } catch (e: AgentDenied) {
+            reason = "CANCELLED"
+            snapshot = null
+            throw e
+        } finally {
+            Log.i("NoxLC", "settle_end reason=$reason elapsedMs=${SystemClock.elapsedRealtime() - started} pid=${android.os.Process.myPid()} thread=${Thread.currentThread().name}")
+        }
     }
     private fun choose(label: String, options: List<String>): Int {
         checkActive()
