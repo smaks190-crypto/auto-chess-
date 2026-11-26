@@ -13,7 +13,7 @@ internal sealed interface PhoneCommand {
 
 internal object PhoneCommands {
     private const val APP = "[\\p{L}\\p{N}][\\p{L}\\p{N} ._+-]{0,60}"
-    private val compound = Regex("^(?:открой|запусти)\\s+($APP?)(?:\\s*,\\s*|\\s+)(?:(?:и|а)\\s+)?(?:потом\\s+)?(напиши\\b.*|отправь\\b.*|найди\\b.*|нажми\\b.*|позвони\\b.*|введи\\b.*|открой\\b.*|запусти\\b.*)$")
+    private val compound = Regex("^(?:открой|запусти)\\s+($APP?)(?:\\s*,\\s*|\\s+)(?:(?:и|а)\\s+)?(?:потом\\s+)?((?:напиши|отправь|найди|нажми|позвони|введи|открой|запусти)(?:\\s+.*)?)$")
     private val open = Regex("^(?:открой|запусти)\\s+($APP)$")
     private val reverseOpen = Regex("^($APP)\\s+(?:открой|запусти)$")
 
