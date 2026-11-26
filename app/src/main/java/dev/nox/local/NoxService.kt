@@ -94,7 +94,7 @@ class NoxService : Service() {
         status = message + if (delay != null && background) " · повторю" else ""
         publish()
     }
-    private var bubble: CameraRing? = null
+    @Volatile private var bubble: CameraRing? = null
     private var caption: ConnectedCaption? = null
     private var captionTop = 0
     private var captionX = 0
@@ -850,7 +850,12 @@ class NoxService : Service() {
             val deadline = SystemClock.elapsedRealtime() + 240_000L
             val stop = { destroyed || generationCancelled || SystemClock.elapsedRealtime() >= deadline }
             val response = if (image == null) {
-                val tools = AndroidAgentTools(applicationContext, stop) { label -> announceAgent(label, stop) }
+                val tools = AndroidAgentTools(applicationContext, stop,
+                    announce = { label -> announceAgent(label, stop) },
+                    canLaunchDirectly = {
+                        MainActivity.isVisible ||
+                            (background && bubble != null && Settings.canDrawOverlays(this))
+                    })
                 AgentCore(
                     decide = { model.decide(it, stop) },
                     execute = { tools.execute(it) },
