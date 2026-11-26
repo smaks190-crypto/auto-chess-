@@ -5,7 +5,10 @@ import android.app.*
 import android.content.*
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.graphics.PixelFormat
+import android.graphics.*
+import android.content.res.Configuration
+import android.speech.tts.UtteranceProgressListener
+import android.text.TextUtils
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.*
@@ -30,7 +33,15 @@ class NoxService : Service() {
     private var offlineTts = false
     private var speechId = 0
     private var voiceEpoch = 0
-    private var bubble: TextView? = null
+    private var bubble: CameraRing? = null
+    private var touchTarget: View? = null
+    private var caption: TextView? = null
+    private var captionTop = 0
+    private var activeSpeech: String? = null
+    private var spokenText = ""
+    private var visibleSpeechEnd = 0
+    private var speaking = false
+    private var voiceLevel = 0f
     private var lastNotificationStatus: String? = null
     @Volatile private var destroyed = false
     @Volatile private var cancelled = false
@@ -71,6 +82,34 @@ class NoxService : Service() {
                     val engine = tts
                     val voice = engine?.voices?.firstOrNull { it.locale.language == "ru" && !it.isNetworkConnectionRequired }
                     if (voice != null) offlineTts = engine?.setVoice(voice) == TextToSpeech.SUCCESS
+                    engine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                        override fun onStart(utteranceId: String) {
+                            main.post {
+                                if (activeSpeech != utteranceId || destroyed) return@post
+                                speaking = true
+                                publish()
+                                // Some offline engines do not provide range callbacks.
+                                main.postDelayed({
+                                    if (activeSpeech == utteranceId && speaking && visibleSpeechEnd == 0) {
+                                        visibleSpeechEnd = spokenText.length
+                                        publish()
+                                    }
+                                }, 900)
+                            }
+                        }
+                        override fun onRangeStart(utteranceId: String, start: Int, end: Int, frame: Int) {
+                            main.post {
+                                if (activeSpeech != utteranceId || destroyed) return@post
+                                speaking = true
+                                visibleSpeechEnd = maxOf(visibleSpeechEnd, end.coerceIn(0, spokenText.length))
+                                publish()
+                            }
+                        }
+                        override fun onDone(utteranceId: String) = finishSpeech(utteranceId)
+                        @Deprecated("Deprecated by Android")
+                        override fun onError(utteranceId: String) = finishSpeech(utteranceId)
+                        override fun onStop(utteranceId: String, interrupted: Boolean) = finishSpeech(utteranceId)
+                    })
                 }
             }
         }
@@ -113,7 +152,7 @@ class NoxService : Service() {
             background = true
             lastNotificationStatus = null
             syncOverlay()
-            status = if (overlayVisible) "Фоновый голос включён · нажми круг Нокс"
+            status = if (overlayVisible) "Фоновый голос включён · нажми под кольцом Нокс"
                 else "Фоновый голос включён · кнопка в уведомлении"
         } catch (e: Exception) {
             background = false
@@ -127,7 +166,7 @@ class NoxService : Service() {
     internal fun disableBackground() {
         voiceEpoch++
         stopListening()
-        tts?.stop()
+        stopSpeech()
         background = false
         removeOverlay()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -136,60 +175,162 @@ class NoxService : Service() {
         publish()
     }
 
+    private fun dp(value: Float): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
+
+    private inner class CameraRing(context: Context, private val radius: Float) : View(context) {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val violet = 0xFFB6A1FF.toInt()
+        init { contentDescription = "Нокс — голосовая команда" }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val t = SystemClock.uptimeMillis() / 1000.0
+            val active = listening || busy || speaking
+            val pulse = when {
+                listening -> 0.3f + 0.7f * voiceLevel
+                speaking -> (0.6 + 0.4 * kotlin.math.sin(t * 9)).toFloat()
+                else -> 0f
+            }
+            val cx = width / 2f
+            val cy = height / 2f
+            paint.style = Paint.Style.STROKE
+            paint.shader = null
+            paint.color = violet
+            paint.alpha = if (active) 42 + (pulse * 45).toInt() else 22
+            paint.strokeWidth = dp(4f).toFloat()
+            canvas.drawCircle(cx, cy, radius + dp(1f), paint)
+            paint.strokeWidth = dp(1.5f).toFloat()
+            paint.alpha = if (active) 145 + (pulse * 105).toInt() else 135
+            canvas.drawCircle(cx, cy, radius, paint)
+            if (busy && !listening && !speaking) {
+                paint.alpha = 255
+                paint.strokeWidth = dp(2f).toFloat()
+                paint.strokeCap = Paint.Cap.ROUND
+                canvas.drawArc(cx - radius, cy - radius, cx + radius, cy + radius,
+                    ((t * 220) % 360).toFloat(), 85f, false, paint)
+            }
+            if (active) postInvalidateOnAnimation()
+        }
+    }
+
     internal fun syncOverlay() {
         if (!background || !Settings.canDrawOverlays(this)) { removeOverlay(); return }
         if (bubble != null) return
         val wm = requireNotNull(getSystemService(WindowManager::class.java))
-        val density = resources.displayMetrics.density
-        fun dp(value: Int) = (value * density + 0.5f).toInt()
         val metrics = wm.currentWindowMetrics
         val bounds = metrics.bounds
         val cutout = metrics.windowInsets.displayCutout?.boundingRectTop
         val centeredCutout = cutout?.takeIf {
-            !it.isEmpty && it.width() <= dp(48) &&
-                kotlin.math.abs(it.centerX() - bounds.width() / 2) <= dp(48) &&
+            !it.isEmpty && it.width() <= dp(48f) &&
+                kotlin.math.abs(it.centerX() - bounds.width() / 2) <= dp(48f) &&
                 bounds.height() > bounds.width()
         }
-        val height = dp(34)
-        val width = dp(112)
-        val params = WindowManager.LayoutParams(width, height, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            if (centeredCutout != null) {
-                flags = flags or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+        val cameraWidth = centeredCutout?.width() ?: dp(20f)
+        val radius = cameraWidth / 2f + dp(2f)
+        val size = (2 * (radius + dp(5f))).toInt()
+        val statusBottom = metrics.windowInsets.getInsetsIgnoringVisibility(WindowInsets.Type.statusBars()).top
+        val ringX = centeredCutout?.let { it.centerX() - bounds.width() / 2 } ?: 0
+        val ringY = centeredCutout?.let { (it.centerY() - size / 2).coerceAtLeast(0) }
+            ?: (statusBottom + dp(4f))
+        fun params(w: Int, h: Int, top: Int, touchable: Boolean) =
+            WindowManager.LayoutParams(w, h, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    (if (touchable) 0 else WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE),
+                PixelFormat.TRANSLUCENT).apply {
+                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
                 layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
                 setFitInsetsTypes(0)
-                x = centeredCutout.centerX() - bounds.width() / 2
-                y = (centeredCutout.centerY() - height / 2).coerceAtLeast(0)
-            } else {
-                // Devices without a centered portrait cutout keep the capsule below system bars.
-                y = dp(4)
+                x = ringX
+                y = top
+                if (!touchable) alpha = 0.8f
             }
+        val ring = CameraRing(this, radius)
+        if (centeredCutout == null) ring.setOnClickListener { listen() }
+        runCatching { wm.addView(ring, params(size, size, ringY, centeredCutout == null)) }
+            .onSuccess { bubble = ring }
+        if (bubble == null) return
+        val targetTop = maxOf(statusBottom, centeredCutout?.bottom ?: 0) + dp(2f)
+        if (centeredCutout != null) {
+            // The system status bar owns touches above this position.
+            val target = View(this).apply {
+                contentDescription = "Нокс — начать слушать"
+                setOnClickListener { listen() }
+            }
+            runCatching { wm.addView(target, params(dp(44f), dp(24f), targetTop, true)) }
+                .onSuccess { touchTarget = target }
         }
+        captionTop = if (centeredCutout != null) targetTop + dp(26f) else ringY + size + dp(6f)
+        syncCaption()
+    }
+
+    private fun syncCaption() {
+        val wm = getSystemService(WindowManager::class.java) ?: return
+        if (bubble == null || !speaking || spokenText.isBlank()) {
+            caption?.let { runCatching { wm.removeView(it) } }
+            caption = null
+            return
+        }
+        val shown = spokenText.take(visibleSpeechEnd).takeLast(240)
+        val text = shown.ifBlank { "…" }
+        if (caption != null) { caption?.text = text; return }
         val view = TextView(this).apply {
-            text = "N"; textSize = 13f
-            gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            setPadding(dp(10), 0, dp(12), 0)
-            contentDescription = "Нокс — голосовая команда"
-            setTextColor(0xFFB6A1FF.toInt())
+            this.text = text
+            textSize = 14f
+            setTextColor(0xFFF4F0FF.toInt())
+            gravity = Gravity.CENTER
+            setPadding(dp(12f), dp(8f), dp(12f), dp(8f))
+            maxLines = 4
+            ellipsize = TextUtils.TruncateAt.END
             background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = height / 2f
-                setColor(0xFF08080B.toInt())
+                cornerRadius = dp(18f).toFloat()
+                setColor(0xFF16121F.toInt())
             }
-            setOnClickListener { listen() }
         }
-        runCatching { wm.addView(view, params) }.onSuccess { bubble = view }
+        val width = minOf(dp(280f), wm.currentWindowMetrics.bounds.width() - dp(32f)).coerceAtLeast(dp(80f))
+        val p = WindowManager.LayoutParams(width, WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            setFitInsetsTypes(0)
+            y = captionTop
+            alpha = 0.8f
+        }
+        runCatching { wm.addView(view, p) }.onSuccess { caption = view }
     }
 
     private fun removeOverlay() {
-        bubble?.let { runCatching { getSystemService(WindowManager::class.java)?.removeView(it) } }
-        bubble = null
+        val wm = getSystemService(WindowManager::class.java)
+        listOfNotNull(bubble, touchTarget, caption).forEach { runCatching { wm?.removeView(it) } }
+        bubble = null; touchTarget = null; caption = null
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        removeOverlay()
+        syncOverlay()
+    }
+
+    private fun finishSpeech(id: String) {
+        main.post {
+            if (activeSpeech == id) {
+                activeSpeech = null; speaking = false; spokenText = ""; visibleSpeechEnd = 0
+                publish()
+            }
+        }
+    }
+
+    private fun stopSpeech() {
+        activeSpeech = null; speaking = false; spokenText = ""; visibleSpeechEnd = 0
+        tts?.stop()
+        syncCaption()
     }
 
     private fun publish() {
         if (destroyed) return
-        bubble?.text = when { listening -> "●"; busy -> "…"; else -> "N" }
+        bubble?.invalidate()
+        syncCaption()
         listener?.invoke()
         if (background && lastNotificationStatus != status &&
             (Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)) {
@@ -323,8 +464,15 @@ class NoxService : Service() {
 
     private fun complete(text: String, speak: Boolean) {
         partial = ""; history.add(Turn(false, text)); status = "На связи"
-        if (speak && offlineTts) tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "nox-" + (++speechId))
-        else if (speak) status = "Русский офлайн-голос недоступен"
+        if (speak && offlineTts) {
+            stopSpeech()
+            val id = "nox-" + (++speechId)
+            activeSpeech = id; spokenText = text; visibleSpeechEnd = 0
+            if (tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, id) != TextToSpeech.SUCCESS) {
+                stopSpeech()
+                status = "Не удалось озвучить ответ"
+            }
+        } else if (speak) status = "Русский офлайн-голос недоступен"
         publish()
     }
 
@@ -337,7 +485,7 @@ class NoxService : Service() {
             !SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) {
             status = "Офлайн-распознавание речи недоступно или нет разрешения"; publish(); return
         }
-        tts?.stop()
+        stopSpeech()
         stopListening()
         val token = ++speechId
         try {
@@ -346,7 +494,13 @@ class NoxService : Service() {
             recognizer?.setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) {}
                 override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {}
+                override fun onRmsChanged(rmsdB: Float) {
+                    if (token == speechId) {
+                        val level = if (rmsdB.isFinite()) ((rmsdB + 2f) / 12f).coerceIn(0f, 1f) else 0f
+                        voiceLevel = voiceLevel * 0.65f + level * 0.35f
+                        bubble?.invalidate()
+                    }
+                }
                 override fun onBufferReceived(buffer: ByteArray?) {}
                 override fun onEndOfSpeech() { if (token == speechId) { status = "Распознаю…"; publish() } }
                 override fun onPartialResults(partialResults: Bundle?) {}
@@ -372,7 +526,7 @@ class NoxService : Service() {
 
     private fun stopListening() {
         speechId++
-        recognizer?.destroy(); recognizer = null; listening = false
+        recognizer?.destroy(); recognizer = null; listening = false; voiceLevel = 0f
     }
 
     internal fun benchmark(index: Int, gpu: Boolean, vision: Boolean) {
@@ -420,7 +574,7 @@ class NoxService : Service() {
 
     override fun onDestroy() {
         destroyed = true; cancelled = true
-        stopListening(); removeOverlay(); tts?.stop(); tts?.shutdown()
+        stopListening(); stopSpeech(); removeOverlay(); tts?.shutdown()
         listener = null
         worker.execute { runCatching { model.close() } }
         worker.shutdown()
