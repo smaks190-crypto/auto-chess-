@@ -44,7 +44,8 @@ internal class AndroidAgentTools(
     private val cancelled: () -> Boolean,
     announce: (String) -> Unit,
     private val canLaunchDirectly: () -> Boolean = { false },
-    private val goal: GoalState = GoalState("")
+    private val goal: GoalState = GoalState(""),
+    private val announceApproved: (String) -> Unit = announce
 ) {
     private val actionGate = AgentActionGate(cancelled, announce)
     private val main = Handler(Looper.getMainLooper())
@@ -54,6 +55,7 @@ internal class AndroidAgentTools(
     private var activeUiBudget: UiOperationBudget? = null
     private val apps = mutableMapOf<String, String>()
     private var snapshot: Screen? = null
+    private var calcPlan: CalcPlanPermit? = null
     private var expectedLaunch: String? = null
     private val grantPrefs = context.getSharedPreferences("nox_agent_grants", Context.MODE_PRIVATE)
     private val permissions = AgentPermissionPolicy(
@@ -266,6 +268,7 @@ internal class AndroidAgentTools(
     }
 
     fun verifyFinish(): String? {
+        if (calcPlan?.complete() == false) return null
         val previous = snapshot ?: return null
         val current = ui {
             require(nav().rootInActiveWindow?.packageName?.toString() == previous.pkg) { "Экран изменился" }
@@ -286,7 +289,7 @@ internal class AndroidAgentTools(
         snapshot = screen
         return describeGoal(screen)
     }
-    private fun describeAfter(prefix: String, previous: Screen? = null, condition: (Screen) -> Boolean = { true }): ToolOutcome {
+    private fun describeAfter(prefix: String, previous: Screen? = null, fastRead: Boolean = false, condition: (Screen) -> Boolean = { true }): ToolOutcome {
         // This runs on the agent worker. Only bounded, read-only captures are posted to main.
         check(Looper.myLooper() != Looper.getMainLooper()) { "Post-action settle must run off main" }
         val started = SystemClock.elapsedRealtime()
@@ -326,8 +329,8 @@ internal class AndroidAgentTools(
             }
         }
         try {
-            waitForRead(150)
-            val screen = settleObservation(5, { waitForRead(650) }, ::read) { observed ->
+            waitForRead(if (fastRead) 100 else 150)
+            val screen = settleObservation(5, { waitForRead(if (fastRead) 300 else 650) }, ::read) { observed ->
                 checkActive()
                 if (condition(observed)) true else { reason = "EXPECT_NOT_MET"; false }
             }
@@ -476,16 +479,50 @@ internal class AndroidAgentTools(
         }
         val beforeGoal = goalObservation(before)
         goal.reject(beforeGoal, action.name, target.resource)?.let {
+            if (calcPlan != null) { calcPlan?.revoke(); throw AgentDenied("План изменился. Задача остановлена.") }
             return ToolOutcome.RejectedBeforeAction(it + "\n" + describeGoal(before))
         }
         authorize(before.pkg)
         val actionText = if (action.name == "type") "Ввести «" + action.text.take(1000) + "»"
             else "Нажать «" + target.label.ifBlank { target.kind + " " + target.resource } + "»"
-        actionGate.before(if (action.name == "type") AgentNarration.type(target.hint.ifBlank { target.label }, target.resource, action.text)
-            else AgentNarration.click(target.label, target.resource))
-        if (!AgentPermissionPolicy.safeAction(before.pkg, action.name, target.label, target.resource, target.kind))
-            confirmed(appLabel(before.pkg) + " · " + before.pkg + "\n" + actionText)
-        pause(250)
+        val narration = if (action.name == "type") AgentNarration.type(target.hint.ifBlank { target.label }, target.resource, action.text)
+            else AgentNarration.click(target.label, target.resource)
+        val safe = AgentPermissionPolicy.safeAction(before.pkg, action.name, target.label, target.resource, target.kind)
+        if (calcPlan == null && safe) {
+            val sequence = goal.approvedSequence(beforeGoal)
+            if (sequence != null && sequence.firstOrNull() == target.resource) {
+                val keys = sequence.joinToString(" ") { resource ->
+                    when (val key = resource.substringAfterLast('_')) {
+                        "add" -> "+"
+                        "sub" -> "−"
+                        "equal" -> "="
+                        else -> key.removePrefix("0")
+                    }
+                }
+                actionGate.before("План калькулятора: " + keys)
+                if (choose("Калькулятор · выполнить только эти клавиши по порядку:\n" + keys +
+                        "\nПосле каждой клавиши проверю экран. При отклонении остановлюсь.",
+                        listOf("Выполнить план", "Отмена")) != 0) throw AgentDenied()
+                checkActive()
+                pause(250) // allow the approval overlay to disappear before verifying the screen
+                calcPlan = CalcPlanPermit(before.pkg, before.window, sequence,
+                    SystemClock.elapsedRealtime() + 30000L, SystemClock::elapsedRealtime)
+            }
+        }
+        val plan = calcPlan
+        if (plan != null) {
+            if (!safe || action.name != "click" || !plan.allows(before.pkg, before.window, target.resource)) {
+                plan.revoke()
+                throw AgentDenied("Разрешённый план изменился или истёк. Задача остановлена.")
+            }
+            checkActive()
+            announceApproved(narration)
+            checkActive()
+        } else {
+            actionGate.before(narration)
+            if (!safe) confirmed(appLabel(before.pkg) + " · " + before.pkg + "\n" + actionText)
+            pause(250)
+        }
         snapshot = null
         val accepted = try {
             ui {
@@ -505,21 +542,44 @@ internal class AndroidAgentTools(
                         })
                     } else {
                         if (!node.isClickable) throw NodeChanged("CAPABILITY")
+                        if (plan != null && !plan.dispatch(before.pkg, before.window, target.resource))
+                            throw AgentDenied("Разрешённый план истёк или изменился. Действие не выполнено.")
                         node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     }
                 }
             }
-        } catch (e: NodeChanged) { return staleNode(e) }
-        goal.mutation()
-        if (!accepted) return ToolOutcome.Unverified("Android не подтвердил действие. Повторять не буду.")
-        return describeAfter("Android принял действие: " + actionText + ". Проверяй фактический результат.",
-            if (goal.arithmetic) before else null) { after ->
-            !goal.arithmetic || goal.afterClick(beforeGoal, target.resource, goalObservation(after))
+        } catch (e: NodeChanged) {
+            if (plan != null) { plan.revoke(); throw AgentDenied("Экран изменился. План остановлен; действие не выполнено.") }
+            return staleNode(e)
+        } catch (e: Exception) {
+            plan?.revoke()
+            throw e
         }
+        goal.mutation()
+        if (!accepted) {
+            plan?.revoke()
+            return ToolOutcome.Unverified("Android не подтвердил действие. Повторять не буду.")
+        }
+        val outcome = try {
+            describeAfter("Android принял действие: " + actionText + ". Проверяй фактический результат.",
+                if (goal.arithmetic) before else null, fastRead = plan != null) { after ->
+                !goal.arithmetic || goal.afterClick(beforeGoal, target.resource, goalObservation(after))
+            }
+        } catch (e: Exception) { plan?.revoke(); throw e }
+        if (plan != null) {
+            if (outcome is ToolOutcome.Ok) {
+                if (!plan.verified()) throw AgentDenied("План потерял подтверждение. Задача остановлена.")
+            } else plan.revoke()
+        }
+        return outcome
     }
 
     fun execute(action: AgentDecision.Tool): ToolOutcome {
         checkActive()
+        if (calcPlan != null && action.name != "click") {
+            calcPlan?.revoke()
+            throw AgentDenied("Для разрешённого плана допустимы только подтверждённые клавиши. Задача остановлена.")
+        }
         if (goal.arithmetic && action.name !in setOf("apps", "launch", "observe", "click"))
             return ToolOutcome.RejectedBeforeAction("Для этой задачи нужны только кнопки калькулятора.")
         if (action.name == "launch" && !goal.allowsLaunch(action.arg))

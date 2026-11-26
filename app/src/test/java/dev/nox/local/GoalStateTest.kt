@@ -12,6 +12,37 @@ class GoalStateTest {
             GoalNode(key + "04", "4 / 4"),
             GoalNode("$pkg:id/calc_handle_btn_converter", "Конвертация единиц")
         ))
+    @Test fun actualSamsungResultSuffixVerifiesOnlyAfterEquals() {
+        val g = GoalState("Open Calculator and calculate 37+58")
+        assertNull(g.finish(screen(g, "95 Результат вычисления")))
+        val before = screen(g, "37 Плюс 58")
+        g.mutation()
+        assertFalse(g.afterClick(before, key + "equal", screen(g, "94 Результат вычисления")))
+        assertFalse(g.afterClick(before, key + "equal", screen(g, "95 Результат вычисления мусор")))
+        assertTrue(g.afterClick(before, key + "equal", screen(g, "95 Результат вычисления")))
+        assertEquals("В калькуляторе подтверждено: 37+58 = 95.", g.finish(screen(g, "95 Результат вычисления")))
+    }
+
+    @Test fun negativeResultSuffixAndEnglishResult() {
+        val g = GoalState("Open Calculator and calculate 37-58")
+        val before = screen(g, "37-58")
+        g.mutation()
+        assertTrue(g.afterClick(before, key + "equal", screen(g, "−21 Результат вычисления")))
+        assertNotNull(g.finish(screen(g, "-21 Calculation result")))
+    }
+
+    @Test fun exactPlanIsOnlyRemainingKeysAndNeverImplicitClear() {
+        val g = GoalState("Open Calculator and calculate 37+58")
+        assertEquals(listOf("03", "07", "add", "05", "08", "equal").map { key + it },
+            g.approvedSequence(screen(g, "")))
+        assertEquals(listOf("05", "08", "equal").map { key + it },
+            g.approvedSequence(screen(g, "37 Плюс")))
+        assertNull(g.approvedSequence(screen(g, "95 Результат вычисления")))
+        assertNull(g.approvedSequence(screen(g, "", "other.app")))
+        val ambiguous = GoalState("Open Calculator and calculate 37+58 and send it")
+        assertNull(ambiguous.approvedSequence(screen(ambiguous, "")))
+    }
+
     @Test fun samsungSpokenPlusIsVerifiedAndNextKeyIsFive() {
         val g = GoalState("Open Calculator and calculate 37+58 using the buttons")
         val before = screen(g, "37")

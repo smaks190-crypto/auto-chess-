@@ -56,14 +56,19 @@ internal class GoalState(private val request: String) {
     private fun value(o: GoalObservation): String? {
         if (o.pkg != CALC) return null
         val raw = o.nodes.singleOrNull { it.resource == FORMULA }?.label ?: return null
-        val v = raw.substringBefore(" / ").trim()
+        val field = raw.substringBefore(" / ").trim()
+        val resultSuffix = Regex("\\s+(?:Результат вычисления|Calculation result|Result of calculation)$", RegexOption.IGNORE_CASE)
+        val hasResultSuffix = resultSuffix.containsMatchIn(field)
+        val v = field.replace(resultSuffix, "")
             .replace(Regex("^(?:Поле ввода в калькуляторе|Calculator input field)(?=\\s|$)", RegexOption.IGNORE_CASE), "")
             // Samsung speaks operator names in its Accessibility EditText.
             // Replace whole words only; never discard arbitrary unrecognized text.
             .replace(Regex("(?<!\\p{L})(?:плюс|plus)(?!\\p{L})", RegexOption.IGNORE_CASE), "+")
             .replace(Regex("(?<!\\p{L})(?:минус|minus)(?!\\p{L})", RegexOption.IGNORE_CASE), "-")
             .replace(" ", "").replace("\u00a0", "").replace("\u202f", "").replace('−','-')
-        return v.takeIf { it.matches(Regex("[0-9+\\-]*")) }
+        return v.takeIf {
+            it.matches(Regex(if (hasResultSuffix) "-?[0-9]+" else "[0-9+\\-]*"))
+        }
     }
     private fun wantedKey(o: GoalObservation): String? {
         val f = formula ?: return null
@@ -73,6 +78,20 @@ internal class GoalState(private val request: String) {
         if (!f.startsWith(prefix) || prefix.length >= f.length) return "clear"
         return when (val ch = f[prefix.length]) { '+' -> "add"; '-' -> "sub"; else -> "0" + ch }
     }
+    // Only an exact, already-recognized arithmetic task can authorize a batch.
+    // A non-prefix display (including a prior result) is handled by the ordinary
+    // single-action path; clearing the screen is not implicitly approved.
+    fun approvedSequence(o: GoalObservation): List<String>? {
+        if (!fastArithmetic || verifiedEqualsSeq != null || o.seq <= lastMutation) return null
+        val f = formula ?: return null
+        val v = value(o) ?: return null
+        val prefix = if (v == "0" && !f.startsWith("0")) "" else v
+        if (!f.startsWith(prefix)) return null
+        return f.drop(prefix.length).map { ch ->
+            KEY + when (ch) { '+' -> "add"; '-' -> "sub"; else -> "0" + ch }
+        } + (KEY + "equal")
+    }
+
     fun fastResource(o: GoalObservation): String? {
         if (!fastArithmetic || verifiedEqualsSeq != null || o.seq <= lastMutation) return null
         return wantedKey(o)?.let { KEY + it }
