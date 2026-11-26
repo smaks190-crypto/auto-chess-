@@ -28,6 +28,18 @@ class AgentProtocolTest {
             AgentProtocol.parse("""{"tool":"click","arg":"1234"}""")
         }
     }
+    @Test fun acceptsNumericNodeIdsAndOmittedEmptyArguments() {
+        assertEquals(AgentDecision.Tool("click", "12"),
+            AgentProtocol.parse("""{"tool":"click","arg":12}"""))
+        assertEquals(AgentDecision.Tool("observe", ""),
+            AgentProtocol.parse("""{"tool":"observe"}"""))
+    }
+    @Test fun invalidNodeIdHasActionableDiagnostic() {
+        val e = assertThrows(IllegalArgumentException::class.java) {
+            AgentProtocol.parse("""{"tool":"click","arg":0}""")
+        }
+        assertTrue(e.message.orEmpty().contains("ID"))
+    }
     @Test fun trailingTextRejected() {
         assertThrows(IllegalArgumentException::class.java) {
             AgentProtocol.parse("""{"tool":"home","arg":""} extra""")
