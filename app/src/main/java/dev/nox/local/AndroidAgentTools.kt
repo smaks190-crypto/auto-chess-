@@ -28,10 +28,12 @@ import java.util.concurrent.TimeoutException
 /** One instance per user task. Screen data and node handles never leave the device. */
 internal class AndroidAgentTools(
     private val context: Context,
-    private val cancelled: () -> Boolean
+    private val cancelled: () -> Boolean,
+    announce: (String) -> Unit
 ) {
+    private val actionGate = AgentActionGate(cancelled, announce)
     private val main = Handler(Looper.getMainLooper())
-    private val apps = mutableSetOf<String>()
+    private val apps = mutableMapOf<String, String>()
     private var snapshot: Screen? = null
 
     private data class Node(val id: String, val path: List<Int>, val label: String, val kind: String,
@@ -179,6 +181,7 @@ internal class AndroidAgentTools(
         }
         val actionText = if (action.name == "type") "Ввести «" + action.text.take(1000) + "»"
             else "Нажать «" + target.label.ifBlank { target.kind + " " + target.resource } + "»"
+        actionGate.before(if (action.name == "type") "Сейчас введу текст: " + action.text.take(160) else "Сейчас нажму: " + target.label.ifBlank { target.kind + " " + target.resource }.take(120))
         confirmed(before.pkg + "\n" + actionText)
         pause(250)
         snapshot = null
@@ -215,11 +218,12 @@ internal class AndroidAgentTools(
                     .filter { permitted(it.second) }
                     .filter { action.arg.isBlank() || it.first.contains(action.arg, true) || it.second.contains(action.arg, true) }
                     .sortedBy { it.first.lowercase(Locale.ROOT) }.take(80)
-                apps.addAll(list.map { it.second })
+                list.forEach { apps[it.second] = it.first }
                 list.joinToString("\n") { it.first + " = " + it.second }.ifBlank { "Не найдено. Попробуй другое написание или пустой поиск." }
             }
             "launch" -> {
                 require(action.arg in apps && permitted(action.arg)) { "Сначала получи точный пакет через apps" }
+                actionGate.before("Сейчас открою " + apps.getValue(action.arg).take(100))
                 snapshot = null
                 ui {
                     val launch = context.packageManager.getLaunchIntentForPackage(action.arg) ?: error("Нет запускаемого экрана")
@@ -242,6 +246,7 @@ internal class AndroidAgentTools(
             "observe" -> observe()
             "click", "type" -> actOnNode(action)
             "back", "home" -> {
+                actionGate.before(if (action.name == "back") "Сейчас вернусь назад" else "Сейчас выйду на главный экран")
                 snapshot = null
                 val ok = ui { nav().performGlobalAction(if (action.name == "back") AccessibilityService.GLOBAL_ACTION_BACK
                     else AccessibilityService.GLOBAL_ACTION_HOME) }
@@ -250,6 +255,7 @@ internal class AndroidAgentTools(
             "scroll" -> {
                 val before = snapshot ?: error("Сначала используй observe")
                 val target = before.nodes.firstOrNull { it.scrollable && it.enabled } ?: error("Нет доступной прокрутки")
+                actionGate.before(if (action.arg == "down") "Сейчас прокручу экран вниз" else "Сейчас прокручу экран вверх")
                 snapshot = null
                 val ok = ui {
                     require(readScreen() == before) { "Экран изменился" }
@@ -260,11 +266,14 @@ internal class AndroidAgentTools(
                 }
                 describeAfter(if (ok) "Прокрутка принята." else "Прокрутка не выполнена.")
             }
-            "volume" -> ui {
+            "volume" -> {
+                actionGate.before(if (action.arg == "up") "Сейчас увеличу громкость" else "Сейчас уменьшу громкость")
+                ui {
                 val audio = requireNotNull(context.getSystemService(AudioManager::class.java))
                 audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,
                     if (action.arg == "up") AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI)
                 "Громкость медиа: " + audio.getStreamVolume(AudioManager.STREAM_MUSIC) + " из " + audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                }
             }
             else -> error("Неизвестный инструмент")
         }
