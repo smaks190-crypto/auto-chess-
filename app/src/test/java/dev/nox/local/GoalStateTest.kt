@@ -41,6 +41,26 @@ class GoalStateTest {
         assertFalse(g.afterClick(before,key + "add",screen(g,"2")))
         assertTrue(g.afterClick(before,key + "add",screen(g,"2+")))
     }
+    @Test fun clearAcceptsRealSamsungEmptyFieldAndThenAllowsFirstDigit() {
+        val g = GoalState("Open Calculator and calculate 37+58")
+        val before = screen(g,"22")
+        g.mutation()
+        val empty = screen(g,"")
+        assertTrue(g.afterClick(before,key + "clear",empty))
+        assertNull(g.reject(empty,"click",key + "03"))
+        assertNotNull(g.reject(empty,"click",key + "07"))
+        g.mutation()
+        assertTrue(g.afterClick(empty,key + "03",screen(g,"3")))
+    }
+    @Test fun missingOrUnrecognizedFieldIsNotAnEmptyField() {
+        val g = GoalState("Open Calculator and calculate 2+2")
+        val before = screen(g,"22")
+        g.mutation()
+        assertFalse(g.afterClick(before,key + "clear",GoalObservation(g.sequence(),pkg,emptyList())))
+        assertFalse(g.afterClick(before,key + "clear",screen(g,"loading")))
+        assertFalse(g.afterClick(before,key + "clear",screen(g,"","other.app")))
+        assertTrue(g.afterClick(before,key + "clear",screen(g,"0")))
+    }
     @Test fun wrongEqualsDoesNotConfirmEvenIfResultExistsAsKey() {
         val g = GoalState("Open Calculator and calculate 37+58")
         val before = screen(g,"37+58")
