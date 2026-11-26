@@ -12,6 +12,66 @@ class GoalStateTest {
             GoalNode(key + "04", "4 / 4"),
             GoalNode("$pkg:id/calc_handle_btn_converter", "Конвертация единиц")
         ))
+    @Test fun samsungSpokenPlusIsVerifiedAndNextKeyIsFive() {
+        val g = GoalState("Open Calculator and calculate 37+58 using the buttons")
+        val before = screen(g, "37")
+        g.mutation()
+        val after = screen(g, "37 Плюс ")
+        assertTrue(g.afterClick(before, key + "add", after))
+        assertEquals(key + "05", g.fastResource(after))
+        g.mutation()
+        assertTrue(g.afterClick(after, key + "05", screen(g, "37 Плюс 5")))
+    }
+
+    @Test fun localizedMinusAndEnglishPlusAreVerified() {
+        val g = GoalState("Open Calculator and calculate 37-58")
+        val before = screen(g, "37")
+        g.mutation()
+        assertTrue(g.afterClick(before, key + "sub", screen(g, "37 МИНУС ")))
+        val h = GoalState("Open Calculator and calculate 37+58")
+        val b = screen(h, "37")
+        h.mutation()
+        assertTrue(h.afterClick(b, key + "add", screen(h, "37 Plus ")))
+    }
+
+    @Test fun unknownWordsAndUnsupportedOperatorsRemainRejected() {
+        val g = GoalState("Open Calculator and calculate 37+58")
+        for (bad in listOf("37 Плюсик", "37 Умножить", "37 plus error", "37 Плюс Плюс")) {
+            val before = screen(g, "37")
+            g.mutation()
+            assertFalse(g.afterClick(before, key + "add", screen(g, bad)))
+        }
+    }
+
+    @Test fun deterministicPathRequiresSingleExplicitTaskAndFreshScreen() {
+        val g = GoalState("Open Calculator and calculate 37+58 using the buttons")
+        val old = screen(g, "37")
+        assertEquals(key + "add", g.fastResource(old))
+        g.mutation()
+        assertNull(g.fastResource(old))
+        assertNull(g.fastResource(screen(g, "37", "other.app")))
+        assertNull(GoalState("Open Calculator and calculate 37+58 and send it to Telegram").let {
+            it.fastResource(screen(it, "37"))
+        })
+    }
+
+    @Test fun fullLocalizedSequenceCanFinishOnlyAfterEquals() {
+        val g = GoalState("Open Calculator and calculate 37+58 using the buttons")
+        var before = screen(g, "")
+        val transitions = listOf("03" to "3", "07" to "37", "add" to "37 Плюс ",
+            "05" to "37 Плюс 5", "08" to "37 Плюс 58", "equal" to "95")
+        for ((button, value) in transitions) {
+            assertEquals(key + button, g.fastResource(before))
+            assertFalse(g.fastFinish(before))
+            g.mutation()
+            val after = screen(g, value)
+            assertTrue(g.afterClick(before, key + button, after))
+            before = after
+        }
+        assertTrue(g.fastFinish(before))
+        assertEquals("В калькуляторе подтверждено: 37+58 = 95.", g.finish(screen(g,"95")))
+    }
+
     @Test fun keyFourIsNotResultAndWrongButtonBlocked() {
         val g = GoalState("Open Calculator and calculate 2+2 using buttons")
         assertNull(g.finish(screen(g,"0")))

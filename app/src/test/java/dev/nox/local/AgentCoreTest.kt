@@ -4,6 +4,42 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AgentCoreTest {
+    @Test fun verifiedFastStepsUseSameTypedExecutorAndFreshFinishGate() {
+        var modelCalls = 0
+        var fastCalls = 0
+        var checks = 0
+        val actions = mutableListOf<String>()
+        val core = AgentCore(
+            decide = { modelCalls++; AgentDecision.Tool("launch", "calc") },
+            execute = { error("Legacy executor disabled") }, cancelled = { false },
+            goal = GoalState("Open Calculator and calculate 37+58"),
+            executeTyped = { actions.add(it.name); ToolOutcome.Ok("verified", "calc") },
+            fastDecision = { if (++fastCalls <= 2) AgentDecision.Tool("click", fastCalls.toString()) else AgentDecision.Finish("") },
+            verifyFinish = { checks++; "verified result" }
+        )
+        assertEquals("verified result", core.run("Open Calculator and calculate 37+58", ""))
+        assertEquals(listOf("launch", "click", "click"), actions)
+        assertEquals(1, modelCalls)
+        assertEquals(1, checks)
+    }
+
+    @Test fun uncertainFastActionStopsWithoutAnotherDecisionOrClick() {
+        var modelCalls = 0
+        var fastCalls = 0
+        var clicks = 0
+        val core = AgentCore(
+            decide = { modelCalls++; AgentDecision.Tool("launch", "calc") },
+            execute = { error("Legacy executor disabled") }, cancelled = { false },
+            goal = GoalState("Open Calculator and calculate 37+58"),
+            executeTyped = { if (it.name == "launch") ToolOutcome.Ok("verified", "calc")
+                else { clicks++; ToolOutcome.Unverified("unknown") } },
+            fastDecision = { fastCalls++; AgentDecision.Tool("click", "1") }
+        )
+        assertEquals("unknown", core.run("Open Calculator and calculate 37+58", ""))
+        assertEquals(1, clicks)
+        assertEquals(1, fastCalls)
+        assertEquals(1, modelCalls)
+    }
     @Test fun settleRecoversFromTemporaryServiceLossWithoutRepeatingMutation() {
         var mutations = 0
         var reads = 0

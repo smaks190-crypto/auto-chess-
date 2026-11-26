@@ -933,6 +933,7 @@ class NoxService : Service() {
                     cancelled = stop,
                     goal = goal,
                     verifyFinish = tools::verifyFinish,
+                    fastDecision = tools::fastDecision,
                     progress = { step -> main.post {
                         if (!destroyed && generating && !generationCancelled) {
                             if (step.endsWith(" · анализ")) agentActionLabel = null

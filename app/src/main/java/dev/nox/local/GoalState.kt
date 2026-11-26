@@ -32,6 +32,14 @@ internal class GoalState(private val request: String) {
         val a = BigInteger(it.groupValues[1]); val b = BigInteger(it.groupValues[3])
         (if (it.groupValues[2] == "+") a + b else a - b).toString()
     }
+    // Only unambiguous, explicitly requested calculator jobs use the shortcut.
+    // Other requests continue through the normal model/executor path.
+    private val fastArithmetic = formula != null && run {
+        val expr = "[0-9]{1,12}\\s*[+−-]\\s*[0-9]{1,12}"
+        val en = "(?:open (?:the )?calculator and calculate\\s+$expr(?:\\s+using (?:the )?buttons)?|calculate\\s+$expr\\s+(?:in|using) (?:the )?calculator)"
+        val ru = "(?:(?:открой|запусти) калькулятор и (?:посчитай|вычисли|рассчитай|сложи)\\s+$expr(?:\\s+(?:кнопками|с помощью кнопок))?|(?:посчитай|вычисли|рассчитай)\\s+$expr\\s+в калькуляторе)"
+        Regex("(?:$en|$ru)[.!]?").matches(normalized.trim())
+    }
     private val openTarget = Regex("^(?:открой|запусти|open|launch)\\s+([\\p{L}0-9 ._-]+)$", RegexOption.IGNORE_CASE)
         .matchEntire(request.trim())?.groupValues?.get(1)?.trim()
     val supported: Boolean get() = formula != null || openTarget != null
@@ -49,7 +57,11 @@ internal class GoalState(private val request: String) {
         if (o.pkg != CALC) return null
         val raw = o.nodes.singleOrNull { it.resource == FORMULA }?.label ?: return null
         val v = raw.substringBefore(" / ").trim()
-            .removePrefix("Поле ввода в калькуляторе").removePrefix("Calculator input field")
+            .replace(Regex("^(?:Поле ввода в калькуляторе|Calculator input field)(?=\\s|$)", RegexOption.IGNORE_CASE), "")
+            // Samsung speaks operator names in its Accessibility EditText.
+            // Replace whole words only; never discard arbitrary unrecognized text.
+            .replace(Regex("(?<!\\p{L})(?:плюс|plus)(?!\\p{L})", RegexOption.IGNORE_CASE), "+")
+            .replace(Regex("(?<!\\p{L})(?:минус|minus)(?!\\p{L})", RegexOption.IGNORE_CASE), "-")
             .replace(" ", "").replace("\u00a0", "").replace("\u202f", "").replace('−','-')
         return v.takeIf { it.matches(Regex("[0-9+\\-]*")) }
     }
@@ -61,6 +73,12 @@ internal class GoalState(private val request: String) {
         if (!f.startsWith(prefix) || prefix.length >= f.length) return "clear"
         return when (val ch = f[prefix.length]) { '+' -> "add"; '-' -> "sub"; else -> "0" + ch }
     }
+    fun fastResource(o: GoalObservation): String? {
+        if (!fastArithmetic || verifiedEqualsSeq != null || o.seq <= lastMutation) return null
+        return wantedKey(o)?.let { KEY + it }
+    }
+    fun fastFinish(o: GoalObservation): Boolean = fastArithmetic && finish(o) != null
+
     fun hint(o: GoalObservation): String? = if (verifiedEqualsSeq != null) "Вычисление проверено. Заверши задачу." else wantedKey(o)?.let { key ->
         "Проверка цели: требуется кнопка " + KEY + key + ". Выбери её ID из текущего экрана."
     }

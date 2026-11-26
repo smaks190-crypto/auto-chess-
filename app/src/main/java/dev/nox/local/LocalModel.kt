@@ -14,6 +14,8 @@ import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import java.io.File
+import android.os.SystemClock
+import android.util.Log
 
 /** All calls are owned by a single worker thread. No network client. */
 internal class LocalModel : AutoCloseable {
@@ -56,7 +58,12 @@ internal class LocalModel : AutoCloseable {
         generate(prompt, null, false, cancelled, {})
 
     fun decide(prompt: String, cancelled: () -> Boolean): AgentDecision {
-        val raw = generate(prompt, null, false, cancelled, {})
+        val started = SystemClock.elapsedRealtime()
+        val raw = try {
+            generate(prompt, null, false, cancelled, {})
+        } finally {
+            Log.i("NoxPlan", "source=MODEL elapsedMs=${SystemClock.elapsedRealtime() - started} promptChars=${prompt.length}")
+        }
         return try {
             AgentProtocol.parse(raw)
         } catch (e: Exception) {

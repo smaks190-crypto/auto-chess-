@@ -246,6 +246,25 @@ internal class AndroidAgentTools(
     private fun describeGoal(screen: Screen): String = screen.describe() +
         (goal.hint(goalObservation(screen))?.let { "\n" + it } ?: "")
 
+    /** Derive only one next action from the last independently verified snapshot.
+     *  The ordinary executor still checks permission, veto, identity and postcondition.
+     */
+    fun fastDecision(): AgentDecision? {
+        val current = snapshot ?: return null
+        if (!goal.arithmetic || !goal.allowsLaunch(current.pkg)) return null
+        val observed = goalObservation(current)
+        if (goal.fastFinish(observed)) {
+            Log.i("NoxPlan", "source=VERIFIED_GOAL action=finish")
+            return AgentDecision.Finish("") // AgentCore requires another fresh finish verification.
+        }
+        val resource = goal.fastResource(observed) ?: return null
+        val node = current.nodes.singleOrNull { it.resource == resource } ?: return null
+        if (!node.enabled || !node.clickable || !node.identity.visible || node.identity.password) return null
+        if (goal.reject(observed, "click", node.resource) != null) return null
+        Log.i("NoxPlan", "source=VERIFIED_GOAL action=click")
+        return AgentDecision.Tool("click", node.id)
+    }
+
     fun verifyFinish(): String? {
         val previous = snapshot ?: return null
         val current = ui {

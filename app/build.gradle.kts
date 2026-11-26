@@ -45,8 +45,8 @@ android {
         applicationId = "dev.nox.local"
         minSdk = 31
         targetSdk = 36
-        versionCode = 15
-        versionName = "0.4.10-ui-safety-dev"
+        versionCode = 16
+        versionName = "0.4.11-verified-fast-path-dev"
         manifestPlaceholders["noxAppLabel"] = "N.O.X."
         manifestPlaceholders["noxNavigationLabel"] = "Нокс — навигация"
         ndk { abiFilters += "arm64-v8a" }
