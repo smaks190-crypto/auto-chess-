@@ -27,16 +27,18 @@ internal object LivePerception {
     @Volatile var visualSummary = ""
     @Volatile var frames = 0L
     @Volatile var audioSamples = 0L
+    @Volatile var audioStatus = ""
+    @Synchronized fun diagnostics(session: Long, value: String) { if (active && session == epoch) audioStatus = value }
     @Volatile var epoch = 0L
     @Synchronized fun begin(): Long {
         epoch++
-        buffer.clear(); visualSummary = ""; frames = 0; audioSamples = 0
+        buffer.clear(); visualSummary = ""; frames = 0; audioSamples = 0; audioStatus = ""
         active = true
         return epoch
     }
     @Synchronized fun end() {
         active = false; epoch++
-        buffer.clear(); visualSummary = ""; frames = 0; audioSamples = 0
+        buffer.clear(); visualSummary = ""; frames = 0; audioSamples = 0; audioStatus = ""
     }
     @Synchronized fun frame(session: Long, jpeg: ByteArray, now: Long) {
         if (active && session == epoch) { buffer.frame(jpeg, now); frames++ }
@@ -214,6 +216,9 @@ class PerceptionService : Service() {
                     if (!running || session != LivePerception.epoch) return
                     r.startRecording()
                     check(r.recordingState == AudioRecord.RECORDSTATE_RECORDING)
+                    asr.setWords(true)
+                    val diag = AudioDiag(rate,SystemClock.elapsedRealtime())
+                    var lastReport = 0L
                     LivePerception.status = "Экран и потоковая речь · локально"
                     val samples = ShortArray(1600)
                     while (running && session == LivePerception.epoch) {
@@ -222,10 +227,29 @@ class PerceptionService : Service() {
                         if (n == 0) { Thread.sleep(20); continue }
                         if (!running || session != LivePerception.epoch) break
                         LivePerception.samples(session,n)
+                        val now = SystemClock.elapsedRealtime()
                         if (asr.acceptWaveForm(samples,n)) {
-                            LivePerception.speech(session, JSONObject(asr.result).optString("text"), true)
+                            val json = JSONObject(asr.result)
+                            val text = json.optString("text")
+                            val words = json.optJSONArray("result")
+                            val end = words?.optJSONObject(words.length() - 1)?.optDouble("end")?.takeIf { it.isFinite() && it >= 0 }
+                            diag.recognized(now,text.isNotBlank(),end?.let { (it * 1000).toLong() })
+                            LivePerception.speech(session, text, true)
                         } else {
-                            LivePerception.speech(session, JSONObject(asr.partialResult).optString("partial"), false)
+                            val partial = JSONObject(asr.partialResult).optString("partial")
+                            diag.recognized(now,partial.isNotBlank())
+                            LivePerception.speech(session, partial, false)
+                        }
+                        val metrics = diag.frame(samples,n,now)
+                        if (now - lastReport >= 1000) {
+                            lastReport = now
+                            val report = "RMS " + "%.1f".format(java.util.Locale.ROOT,metrics.rmsDb) +
+                                " dBFS · peak " + metrics.peak + " · clip " + metrics.clipped +
+                                " · тишина " + metrics.silentMs + " мс · Δclock " + metrics.clockDeltaMs +
+                                " мс · первый текст " + (metrics.firstTextMs?.toString() ?: "нет") +
+                                " мс · конец слова " + (metrics.lastWordEndMs?.toString() ?: "нет")
+                            LivePerception.diagnostics(session,report)
+                            android.util.Log.i("NoxAudioDiag",report)
                         }
                     }
                 }
