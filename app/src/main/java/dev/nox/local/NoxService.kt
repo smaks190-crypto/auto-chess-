@@ -33,6 +33,68 @@ class NoxService : Service() {
     private var offlineTts = false
     private var speechId = 0
     private var voiceEpoch = 0
+    private var loopBlocked = false
+    private var recognitionFailures = 0
+    private var retryAt = 0L
+    private var clientBound = false
+    private var receiverRegistered = false
+    private val restartVoice = Runnable { if (canAutoListen()) listen() }
+    private val releaseIdle = Runnable {
+        if (!clientBound && !background && !busy && !listening && activeSpeech == null) stopSelf()
+    }
+    private val recognitionTimeout = Runnable {
+        if (listening) recognitionFailed(SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
+    }
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == Intent.ACTION_SCREEN_OFF) {
+                stopListening()
+                stopSpeech()
+                status = if (background) "Голос приостановлен до разблокировки" else status
+            }
+            publish()
+        }
+    }
+    private fun unlocked(): Boolean =
+        getSystemService(KeyguardManager::class.java)?.isDeviceLocked != true &&
+            getSystemService(PowerManager::class.java)?.isInteractive == true
+
+    private fun canAutoListen(): Boolean = !destroyed && VoiceLoopPolicy.canListen(
+        background, busy, listening, activeSpeech != null || speaking, unlocked(), loopBlocked)
+
+    private fun syncVoiceLoop() {
+        if (!canAutoListen()) {
+            main.removeCallbacks(restartVoice)
+            return
+        }
+        if (!main.hasCallbacks(restartVoice)) {
+            main.postDelayed(restartVoice, maxOf(350L, retryAt - SystemClock.uptimeMillis()))
+        }
+    }
+
+    private fun syncIdleLifetime() {
+        if (clientBound || background || busy || listening || activeSpeech != null) {
+            main.removeCallbacks(releaseIdle)
+        } else if (!main.hasCallbacks(releaseIdle)) main.postDelayed(releaseIdle, 60_000L)
+    }
+
+    private fun recognitionFailed(error: Int) {
+        stopListening()
+        recognitionFailures = (recognitionFailures + 1).coerceAtMost(100)
+        val delay = VoiceLoopPolicy.retryDelay(error, recognitionFailures)
+        loopBlocked = delay == null
+        retryAt = SystemClock.uptimeMillis() + (delay ?: 0L)
+        status = when (error) {
+            SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
+                if (background) "На связи · слушаю снова" else "Не расслышала"
+            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Разреши доступ к микрофону"
+            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED, SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ->
+                "Установи русский офлайн-пакет распознавания"
+            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Микрофон занят · повторю"
+            else -> "Ошибка распознавания (" + error + ")" + if (delay != null && background) " · повторю" else ""
+        }
+        publish()
+    }
     private var bubble: CameraRing? = null
     private var touchTarget: View? = null
     private var caption: ConnectedCaption? = null
@@ -84,6 +146,14 @@ class NoxService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        val screenFilter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_USER_PRESENT)
+            addAction(Intent.ACTION_SCREEN_ON)
+        }
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(screenReceiver, screenFilter, Context.RECEIVER_NOT_EXPORTED)
+        else registerReceiver(screenReceiver, screenFilter)
+        receiverRegistered = true
         val wallpaper = WallpaperManager.getInstance(this)
         runCatching { wallpaper.addOnColorsChangedListener(wallpaperColorsListener, main) }
         worker.execute {
@@ -136,14 +206,31 @@ class NoxService : Service() {
         }
     }
 
-    override fun onBind(intent: Intent?): IBinder = binder
+    override fun onBind(intent: Intent?): IBinder {
+        clientBound = true
+        syncIdleLifetime()
+        return binder
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        clientBound = false
+        syncIdleLifetime()
+        return true
+    }
+
+    override fun onRebind(intent: Intent?) {
+        super.onRebind(intent)
+        clientBound = true
+        syncIdleLifetime()
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ENABLE -> enableBackground()
-            LISTEN -> if (background) listen() else stopSelf()
+            LISTEN -> if (background) { loopBlocked = false; retryAt = 0L; listen() }
             STOP -> disableBackground()
-            else -> if (!background) stopSelf()
+            KEEP_ALIVE -> syncIdleLifetime()
+            else -> syncIdleLifetime()
         }
         return START_NOT_STICKY
     }
@@ -171,10 +258,12 @@ class NoxService : Service() {
         try {
             startForeground(ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
             background = true
+            loopBlocked = false
+            recognitionFailures = 0
+            retryAt = 0L
             lastNotificationStatus = null
             syncOverlay()
-            status = if (overlayVisible) "Фоновый голос включён · нажми под кольцом Нокс"
-                else "Фоновый голос включён · кнопка в уведомлении"
+            status = "Фоновый голос включён · слушаю автоматически"
         } catch (e: Exception) {
             background = false
             removeOverlay()
@@ -190,8 +279,9 @@ class NoxService : Service() {
         stopSpeech()
         background = false
         removeOverlay()
+        main.removeCallbacks(restartVoice)
         stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        syncIdleLifetime()
         status = "Фоновый голос выключен"
         publish()
     }
@@ -440,6 +530,8 @@ class NoxService : Service() {
         if (destroyed) return
         bubble?.invalidate()
         syncCaption()
+        syncVoiceLoop()
+        syncIdleLifetime()
         listener?.invoke()
         if (background && lastNotificationStatus != status &&
             (Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)) {
@@ -449,7 +541,9 @@ class NoxService : Service() {
     }
 
     private fun runWork(label: String, work: () -> String, finish: (String) -> Unit = {}) {
-        if (busy || listening || destroyed) return
+        if (busy || destroyed) return
+        if (listening) stopListening()
+        if (activeSpeech != null || speaking) stopSpeech()
         busy = true; status = label; publish()
         worker.execute {
             val result = runCatching(work)
@@ -465,7 +559,8 @@ class NoxService : Service() {
     }
 
     internal fun selectModel(index: Int, gpu: Boolean, vision: Boolean, uri: Uri? = null) {
-        if (busy || listening) return
+        if (busy) return
+        if (listening) stopListening()
         val pkg = ModelDownload.catalog[index]
         val target = modelFile(index)
         val config = Loaded(index, gpu && !pkg.cpuOnly, vision && pkg.vision)
@@ -529,12 +624,13 @@ class NoxService : Service() {
     }
 
     internal fun removeImage() {
-        if (!busy && !listening) { attachedImage?.delete(); attachedImage = null; publish() }
+        if (!busy) { attachedImage?.delete(); attachedImage = null; publish() }
     }
 
     internal fun ask(command: String, image: File? = null, speak: Boolean = false, deep: Boolean = false) {
         val text = command.trim()
-        if (text.isEmpty() || busy || listening || destroyed) return
+        if (text.isEmpty() || busy || destroyed) return
+        if (listening) stopListening()
         if (text.length > 2000) { status = "Команда слишком длинная"; publish(); return }
         val previous = history.takeLast(4).joinToString("\n") { (if (it.user) "Пользователь: " else "Нокс: ") + it.text.take(350) }
         val voiceToken = voiceEpoch
@@ -543,9 +639,17 @@ class NoxService : Service() {
         val direct = if (image == null) PhoneCommands.parse(text) else null
         if (direct != null) {
             val start = SystemClock.elapsedRealtime()
-            val response = runCatching { PhoneActions.execute(this, direct) }.getOrElse { "Не удалось: " + (it.message ?: it.javaClass.simpleName) }
-            elapsedMs = SystemClock.elapsedRealtime() - start
-            complete(response, speak); return
+            if (direct is PhoneCommand.Open) {
+                runWork("Открываю приложение…", { PhoneActions.execute(this, direct) }, {
+                    elapsedMs = SystemClock.elapsedRealtime() - start
+                    complete(it, speak && voiceToken == voiceEpoch)
+                })
+            } else {
+                val response = runCatching { PhoneActions.execute(this, direct) }.getOrElse { "Не удалось: " + (it.message ?: it.javaClass.simpleName) }
+                elapsedMs = SystemClock.elapsedRealtime() - start
+                complete(response, speak)
+            }
+            return
         }
         val config = loaded
         if (config == null || (image != null && !config.vision)) {
@@ -573,6 +677,11 @@ class NoxService : Service() {
 
     private fun complete(text: String, speak: Boolean) {
         partial = ""; history.add(Turn(false, text)); status = "На связи"
+        if (speak && !offlineTts) {
+            val engine = tts
+            val voice = runCatching { engine?.voices?.firstOrNull { it.locale.language == "ru" && !it.isNetworkConnectionRequired } }.getOrNull()
+            if (voice != null) offlineTts = runCatching { engine?.setVoice(voice) == TextToSpeech.SUCCESS }.getOrDefault(false)
+        }
         if (speak && offlineTts) {
             stopSpeech()
             val id = "nox-" + (++speechId)
@@ -580,20 +689,39 @@ class NoxService : Service() {
             if (tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, id) != TextToSpeech.SUCCESS) {
                 stopSpeech()
                 status = "Не удалось озвучить ответ"
+            } else {
+                main.postDelayed({
+                    if (activeSpeech == id && !speaking) {
+                        stopSpeech()
+                        status = "Озвучивание не запустилось"
+                        publish()
+                    }
+                }, 8000L)
+                main.postDelayed({
+                    if (activeSpeech == id) {
+                        stopSpeech()
+                        status = "Озвучивание остановлено по тайм-ауту"
+                        publish()
+                    }
+                }, 180_000L)
             }
         } else if (speak) status = "Русский офлайн-голос недоступен"
         publish()
     }
 
-    internal fun clearChat() { if (!busy && !listening) { history.clear(); partial = ""; publish() } }
+    internal fun clearChat() { if (!busy) { history.clear(); partial = ""; publish() } }
 
     internal fun listen() {
-        if (destroyed || busy || listening) return
-        if (getSystemService(KeyguardManager::class.java)?.isDeviceLocked == true) { status = "Разблокируй телефон для голосовой команды"; publish(); return }
+        if (destroyed || listening || activeSpeech != null || speaking) return
+        if (busy) { status = "Подожди, Нокс занят…"; publish(); return }
+        main.removeCallbacks(restartVoice)
+        if (!unlocked()) { status = "Разблокируй телефон для голосовой команды"; publish(); return }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED ||
             !SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) {
+            loopBlocked = true
             status = "Офлайн-распознавание речи недоступно или нет разрешения"; publish(); return
         }
+        loopBlocked = false
         stopSpeech()
         stopListening()
         val token = ++speechId
@@ -611,18 +739,27 @@ class NoxService : Service() {
                     }
                 }
                 override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() { if (token == speechId) { status = "Распознаю…"; publish() } }
+                override fun onEndOfSpeech() {
+                    if (token == speechId) {
+                        main.removeCallbacks(recognitionTimeout)
+                        main.postDelayed(recognitionTimeout, 6000L)
+                        status = "Распознаю…"; publish()
+                    }
+                }
                 override fun onPartialResults(partialResults: Bundle?) {}
                 override fun onEvent(eventType: Int, params: Bundle?) {}
                 override fun onError(error: Int) {
                     if (token != speechId) return
-                    stopListening(); status = "Не удалось распознать речь: " + error; publish()
+                    recognitionFailed(error)
                 }
                 override fun onResults(results: Bundle?) {
                     if (token != speechId) return
                     val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                    if (text.isNullOrBlank()) { recognitionFailed(SpeechRecognizer.ERROR_NO_MATCH); return }
                     stopListening()
-                    if (text.isNullOrBlank()) { status = "Не расслышала"; publish() } else ask(text, speak = true)
+                    recognitionFailures = 0; retryAt = 0L
+                    if (!unlocked()) { publish(); return }
+                    ask(text, speak = true)
                 }
             })
             recognizer?.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -630,16 +767,24 @@ class NoxService : Service() {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
                 putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             })
-        } catch (e: Exception) { stopListening(); status = "Ошибка микрофона: " + e.message; publish() }
+            main.removeCallbacks(recognitionTimeout)
+            main.postDelayed(recognitionTimeout, 30_000L)
+        } catch (e: Exception) {
+            stopListening(); loopBlocked = true
+            status = "Ошибка микрофона: " + e.message; publish()
+        }
     }
 
     private fun stopListening() {
         speechId++
-        recognizer?.destroy(); recognizer = null; listening = false; voiceLevel = 0f
+        main.removeCallbacks(recognitionTimeout)
+        recognizer?.let { runCatching { it.cancel() }; runCatching { it.destroy() } }
+        recognizer = null; listening = false; voiceLevel = 0f
     }
 
     internal fun benchmark(index: Int, gpu: Boolean, vision: Boolean) {
-        if (busy || listening) return
+        if (busy) return
+        if (listening) stopListening()
         val file = modelFile(index)
         if (!file.isFile) { status = "Сначала скачай модель"; publish(); return }
         val pkg = ModelDownload.catalog[index]
@@ -684,6 +829,9 @@ class NoxService : Service() {
     override fun onDestroy() {
         runCatching { WallpaperManager.getInstance(this).removeOnColorsChangedListener(wallpaperColorsListener) }
         destroyed = true; cancelled = true
+        main.removeCallbacks(restartVoice)
+        main.removeCallbacks(releaseIdle)
+        if (receiverRegistered) { runCatching { unregisterReceiver(screenReceiver) }; receiverRegistered = false }
         stopListening(); stopSpeech(); removeOverlay(); tts?.shutdown()
         listener = null
         worker.execute { runCatching { model.close() } }
@@ -692,6 +840,7 @@ class NoxService : Service() {
     }
 
     companion object {
+        const val KEEP_ALIVE = "dev.nox.local.KEEP_ALIVE"
         const val ENABLE = "dev.nox.local.ENABLE_VOICE"
         const val LISTEN = "dev.nox.local.LISTEN"
         const val STOP = "dev.nox.local.STOP"
