@@ -140,42 +140,44 @@ class NoxService : Service() {
         if (!background || !Settings.canDrawOverlays(this)) { removeOverlay(); return }
         if (bubble != null) return
         val wm = requireNotNull(getSystemService(WindowManager::class.java))
-        val size = (resources.displayMetrics.density * 56).toInt()
-        val params = WindowManager.LayoutParams(size, size, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+        val density = resources.displayMetrics.density
+        fun dp(value: Int) = (value * density + 0.5f).toInt()
+        val metrics = wm.currentWindowMetrics
+        val bounds = metrics.bounds
+        val cutout = metrics.windowInsets.displayCutout?.boundingRectTop
+        val centeredCutout = cutout?.takeIf {
+            !it.isEmpty && it.width() <= dp(48) &&
+                kotlin.math.abs(it.centerX() - bounds.width() / 2) <= dp(48) &&
+                bounds.height() > bounds.width()
+        }
+        val height = dp(34)
+        val width = dp(112)
+        val params = WindowManager.LayoutParams(width, height, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = resources.displayMetrics.widthPixels - size - 12
-            y = resources.displayMetrics.heightPixels / 3
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            if (centeredCutout != null) {
+                flags = flags or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                setFitInsetsTypes(0)
+                x = centeredCutout.centerX() - bounds.width() / 2
+                y = (centeredCutout.centerY() - height / 2).coerceAtLeast(0)
+            } else {
+                // Devices without a centered portrait cutout keep the capsule below system bars.
+                y = dp(4)
+            }
         }
         val view = TextView(this).apply {
-            text = "N"; textSize = 23f; gravity = Gravity.CENTER
+            text = "N"; textSize = 13f
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setPadding(dp(10), 0, dp(12), 0)
             contentDescription = "Нокс — голосовая команда"
-            setTextColor(0xFFE5DFFF.toInt())
-            background = GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                intArrayOf(0xFF5548A7.toInt(), 0xFF161329.toInt())).apply {
-                shape = GradientDrawable.OVAL; setStroke(2, 0xFFB6A1FF.toInt())
+            setTextColor(0xFFB6A1FF.toInt())
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = height / 2f
+                setColor(0xFF08080B.toInt())
             }
             setOnClickListener { listen() }
-        }
-        var startX = 0; var startY = 0; var touchX = 0f; var touchY = 0f
-        var moved = false
-        view.setOnTouchListener { v, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { startX = params.x; startY = params.y; touchX = event.rawX; touchY = event.rawY; moved = false; true }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = (event.rawX - touchX).toInt(); val dy = (event.rawY - touchY).toInt()
-                    if (kotlin.math.abs(dx) + kotlin.math.abs(dy) > ViewConfiguration.get(this).scaledTouchSlop) moved = true
-                    if (moved) {
-                        params.x = (startX + dx).coerceIn(0, (resources.displayMetrics.widthPixels - size).coerceAtLeast(0))
-                        params.y = (startY + dy).coerceIn(0, (resources.displayMetrics.heightPixels - size).coerceAtLeast(0))
-                        runCatching { wm.updateViewLayout(v, params) }
-                    }
-                    true
-                }
-                MotionEvent.ACTION_UP -> { if (!moved) v.performClick(); true }
-                MotionEvent.ACTION_CANCEL -> true
-                else -> false
-            }
         }
         runCatching { wm.addView(view, params) }.onSuccess { bubble = view }
     }
