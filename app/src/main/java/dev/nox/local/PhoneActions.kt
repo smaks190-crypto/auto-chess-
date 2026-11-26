@@ -27,12 +27,12 @@ class NoxNavigationService : AccessibilityService() {
 internal object PhoneActions {
     fun execute(context: Context, command: PhoneCommand): String {
         if (command == PhoneCommand.Greeting) return "Привет! Я на связи."
-        if (context.getSystemService(KeyguardManager::class.java).isDeviceLocked)
+        if (context.getSystemService(KeyguardManager::class.java)?.isDeviceLocked == true)
             return "Сначала разблокируй телефон."
         return when (command) {
             is PhoneCommand.Open -> open(context, command.app)
             is PhoneCommand.Volume -> {
-                val audio = context.getSystemService(AudioManager::class.java)
+                val audio = requireNotNull(context.getSystemService(AudioManager::class.java))
                 audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,
                     if (command.direction > 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER,
                     AudioManager.FLAG_SHOW_UI)
@@ -57,8 +57,9 @@ internal object PhoneActions {
             "ютьюб" to "youtube", "вк" to "vk", "браузер" to "chrome")
         val normalized = aliases[name] ?: name
         val pm = context.packageManager
+        val launcher = NoxNavigationService.current ?: context
         if (normalized == "настройки") {
-            context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            launcher.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             return "Отправила Android запрос на открытие настроек."
         }
         val candidates = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
@@ -68,7 +69,7 @@ internal object PhoneActions {
         if (candidates.isEmpty()) return "Не нашла приложение «" + name + "». Назови его как в меню телефона."
         if (candidates.size > 1) return "Найдено несколько приложений. Уточни название или имя пакета."
         val target = candidates.single().activityInfo
-        context.startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        launcher.startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
             .setClassName(target.packageName, target.name).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         // Background launch may be rejected by Android even without an exception.
         return "Отправила запрос на открытие «" + candidates.single().loadLabel(pm) + "»."
