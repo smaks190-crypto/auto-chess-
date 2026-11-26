@@ -20,6 +20,10 @@ import java.util.Locale
 
 /** Chat is a view of the session; the foreground service owns the model and microphone. */
 class MainActivity : Activity() {
+    companion object {
+        /** True only while the chat Activity is on screen; a bound Service is not enough. */
+        @Volatile internal var isVisible = false
+    }
     private var service: NoxService? = null
     private var bound = false
     private val catalog = ModelDownload.catalog
@@ -400,8 +404,18 @@ class MainActivity : Activity() {
         }
     }
 
-    override fun onResume() { super.onResume(); service?.listener = { render() }; service?.syncOverlay(); render() }
-    override fun onPause() { service?.listener = null; super.onPause() }
+    override fun onResume() {
+        super.onResume()
+        isVisible = true
+        service?.listener = { render() }
+        service?.syncOverlay()
+        render()
+    }
+    override fun onPause() {
+        isVisible = false
+        service?.listener = null
+        super.onPause()
+    }
     override fun onDestroy() {
         service?.listener = null
         if (bound) unbindService(connection)
