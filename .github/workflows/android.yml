@@ -1,8 +1,11 @@
 name: Android prototype
 on:
   pull_request:
-    branches: [main, 'chatgpt/nox-android']
+    branches: [main, 'chatgpt/nox-android', 'chatgpt/nox-attached-caption']
   workflow_dispatch:
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:

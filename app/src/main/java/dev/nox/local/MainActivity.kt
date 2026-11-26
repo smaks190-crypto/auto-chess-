@@ -39,6 +39,7 @@ class MainActivity : Activity() {
     private lateinit var deep: Switch
     private lateinit var modelButton: Button
     private lateinit var cancel: Button
+    private lateinit var stopGeneration: Button
     private lateinit var progress: ProgressBar
     private lateinit var backgroundButton: Button
     private lateinit var overlayButton: Button
@@ -70,7 +71,7 @@ class MainActivity : Activity() {
                 vision.isChecked = loaded.vision
             } else {
                 val index = models.selectedItemPosition
-                if (index in catalog.indices && !s.busy && !s.listening && s.modelFile(index).isFile) {
+                if (index in catalog.indices && !s.busy && s.modelFile(index).isFile) {
                     s.selectModel(index, gpu.isChecked, vision.isChecked)
                 }
             }
@@ -155,12 +156,17 @@ class MainActivity : Activity() {
         send = button("↑") {
             val s = service ?: return@button
             val command = input.text.toString()
-            if (command.isNotBlank() && !s.busy && !s.listening) {
+            if (command.isNotBlank() && !s.busy) {
                 s.ask(command, s.attachedImage, tts.isChecked, deep.isChecked)
                 input.text.clear()
             }
         }.apply { contentDescription = "Отправить"; setTextColor(bg); background = panel(accent, 24) }
         composer.addView(send, LinearLayout.LayoutParams(dp(48), dp(48)))
+        stopGeneration = button("■") { service?.cancelGeneration() }.apply {
+            contentDescription = "Остановить генерацию"
+            visibility = View.GONE
+        }
+        composer.addView(stopGeneration, LinearLayout.LayoutParams(dp(48), dp(48)))
         chatPage.addView(composer, LinearLayout.LayoutParams(-1, -2))
         root.addView(chatPage, LinearLayout.LayoutParams(-1, 0, 1f))
 
@@ -177,7 +183,7 @@ class MainActivity : Activity() {
             else startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + packageName)))
             render()
         }
-        settings.addView(textLabel("Нажми круг N поверх другого приложения или «Говорить» в уведомлении. Микрофон не слушает постоянно.", 13f, muted))
+        settings.addView(textLabel("После включения Нокс автоматически слушает и возобновляет прослушивание после ответа. Микрофон отключается на время ответа и при блокировке экрана. Выключить можно здесь, в уведомлении или фразой «Нокс, перестань слушать».", 13f, muted))
         addButton(settings, "Разрешить команды «Назад» и «Домой»", false) {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
@@ -200,6 +206,17 @@ class MainActivity : Activity() {
         settings.addView(progress)
         cancel = addButton(settings, "Отменить скачивание", false) { service?.cancelDownload() }.apply { visibility = View.GONE }
         addButton(settings, "Импортировать файл вручную") { importIndex = models.selectedItemPosition; pick(10, "*/*") }
+        addButton(settings, "Выбрать проверенную каталожную модель") {
+            val index = models.selectedItemPosition
+            val pkg = catalog[index]
+            AlertDialog.Builder(this).setTitle("Проверенная копия " + pkg.name)
+                .setMessage("Импортированные и прежние файлы останутся на устройстве. Если проверенной копии нет, потребуется скачать " + String.format(Locale.US, "%.2f", pkg.size / 1e9) + " ГБ.")
+                .setNegativeButton("Отмена", null)
+                .setPositiveButton("Продолжить") { _, _ ->
+                    saveSelection(index)
+                    service?.selectModel(index, gpu.isChecked, vision.isChecked, forceCatalog = true)
+                }.show()
+        }
         settings.addView(textLabel("Диагностика", 19f).apply { typeface = Typeface.DEFAULT_BOLD })
         addButton(settings, "Сравнительный тест") { service?.benchmark(models.selectedItemPosition, gpu.isChecked, vision.isChecked) }
         addButton(settings, "Журнал тестов") {
@@ -225,6 +242,7 @@ class MainActivity : Activity() {
         }
         gpu.setOnCheckedChangeListener { _, _ -> render() }
         vision.setOnCheckedChangeListener { _, _ -> render() }
+        runCatching { startService(Intent(this, NoxService::class.java).setAction(NoxService.KEEP_ALIVE)) }
         bound = bindService(Intent(this, NoxService::class.java), connection, BIND_AUTO_CREATE)
         render()
     }
@@ -241,9 +259,9 @@ class MainActivity : Activity() {
         val s = service
         val index = models.selectedItemPosition.coerceIn(catalog.indices)
         val pkg = catalog[index]
-        val busy = s == null || s.busy || s.listening
-        header.text = if (s == null) "Подключение…" else s.status
-        details.text = if (s == null) "" else (s.loaded?.let { catalog[it.index].name + if (it.gpu) " · GPU" else " · CPU" } ?: "Модель не загружена") +
+        val busy = s == null || s.busy
+        header.text = if (s == null) "Подключение…" else if (s.listening && s.recognizedText.isNotBlank()) "Слышу: " + s.recognizedText else s.status
+        details.text = if (s == null) "" else (s.loaded?.let { catalog[it.index].name + (if (it.imported) " · импорт" else " · каталог") + if (it.gpu) " · GPU" else " · CPU" } ?: "Модель не загружена") +
             (s.elapsedMs?.let { "\nПоследний ответ: " + it + " мс" } ?: "")
         val exists = s?.modelFile(index)?.isFile == true
         modelButton.text = if (exists) "Запустить " + pkg.name else "Скачать и запустить · " +
@@ -253,7 +271,10 @@ class MainActivity : Activity() {
         workControls.forEach { it.isEnabled = !busy }
         gpu.isEnabled = !busy && !pkg.cpuOnly
         vision.isEnabled = !busy && pkg.vision
-        send.isEnabled = !busy; mic.isEnabled = !busy
+        send.isEnabled = !busy
+        mic.isEnabled = !busy && s?.listening != true
+        send.visibility = if (s?.generating == true) View.GONE else View.VISIBLE
+        stopGeneration.visibility = if (s?.generating == true) View.VISIBLE else View.GONE
         progress.visibility = if (s?.progress != null) View.VISIBLE else View.GONE
         progress.progress = s?.progress ?: 0
         cancel.visibility = progress.visibility

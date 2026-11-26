@@ -19,7 +19,7 @@ class NoxNavigationService : AccessibilityService() {
         super.onDestroy()
     }
     companion object {
-        internal var current: NoxNavigationService? = null
+        @Volatile internal var current: NoxNavigationService? = null
             private set
     }
 }
@@ -31,6 +31,8 @@ internal object PhoneActions {
             return "Сначала разблокируй телефон."
         return when (command) {
             is PhoneCommand.Open -> open(context, command.app)
+            is PhoneCommand.OpenWithFollowUp -> open(context, command.app) +
+                " Второе действие пока не поддерживается. Сообщение не отправлено."
             is PhoneCommand.Volume -> {
                 val audio = requireNotNull(context.getSystemService(AudioManager::class.java))
                 audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,
@@ -53,7 +55,7 @@ internal object PhoneActions {
     }
 
     private fun open(context: Context, name: String): String {
-        val aliases = mapOf("телеграм" to "telegram", "ютуб" to "youtube",
+        val aliases = mapOf("телеграм" to "telegram", "телеграмм" to "telegram", "ютуб" to "youtube",
             "ютьюб" to "youtube", "вк" to "vk", "браузер" to "chrome")
         val normalized = aliases[name] ?: name
         val pm = context.packageManager
