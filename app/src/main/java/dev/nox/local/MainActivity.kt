@@ -102,6 +102,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.setDecorFitsSystemWindows(false)
         window.statusBarColor = bg; window.navigationBarColor = bg
         window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         val root = LinearLayout(this).apply {
@@ -109,6 +110,13 @@ class MainActivity : Activity() {
             setPadding(dp(16), dp(12), dp(16), dp(10))
         }
         setContentView(root)
+        root.setOnApplyWindowInsetsListener { view, insets ->
+            val bars = insets.getInsets(android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.displayCutout())
+            val ime = insets.getInsets(android.view.WindowInsets.Type.ime())
+            view.setPadding(dp(16) + bars.left, dp(12) + bars.top, dp(16) + bars.right, dp(10) + maxOf(bars.bottom, ime.bottom))
+            insets
+        }
+        root.requestApplyInsets()
         val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         val brand = textLabel("N.O.X.", 24f).apply { typeface = Typeface.DEFAULT_BOLD }
         top.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
@@ -341,7 +349,8 @@ class MainActivity : Activity() {
         }
     }
 
-    override fun onResume() { super.onResume(); service?.syncOverlay(); render() }
+    override fun onResume() { super.onResume(); service?.listener = { render() }; service?.syncOverlay(); render() }
+    override fun onPause() { service?.listener = null; super.onPause() }
     override fun onDestroy() {
         service?.listener = null
         if (bound) unbindService(connection)
