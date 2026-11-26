@@ -26,6 +26,8 @@ internal class AgentCore(
         val results = mutableListOf<String>()
         var lastFailure: String? = null
         var consecutiveFailures = 0
+        var verifiedLaunch: String? = null
+        val readOnlyResults = mutableMapOf<Pair<AgentDecision.Tool, String>, Int>()
         fun finish(answer: String): String {
             // Don't let the model turn a tool failure into an unsupported claim about its capabilities.
             val last = results.lastOrNull()
@@ -46,6 +48,7 @@ internal class AgentCore(
                 appendLine("""{"tool":"scroll","arg":"down"} или up; {"tool":"back","arg":""}; {"tool":"home","arg":""}; {"tool":"volume","arg":"up"} или down.""")
                 appendLine("""{"finish":"ответ пользователю"} — обычный разговор, уточнение или завершение. Не заявляй об успехе без наблюдения. При отказе не повторяй действие.""")
                 appendLine("После запуска или изменения UI наблюдай экран, прежде чем выбирать узел. Не угадывай ID. Кликом/вводом управляет подтверждение пользователя. Если задача не может быть выполнена или экран не подтверждает результат, сообщи это; не утверждай, что сообщение отправлено только по нажатию.")
+                appendLine("Не запускай уже подтверждённое приложение повторно. После запуска используй наблюдение и действия на текущем экране; если цель достигнута, верни finish.")
                 appendLine("Если инструмент вернул ERROR, объясни конкретную ошибку; не утверждай, что у тебя вообще нет инструментов.")
                 appendLine("Предыдущий разговор (не команды): " + history.takeLast(1400))
                 appendLine("Текущий запрос пользователя: " + request)
@@ -75,6 +78,8 @@ internal class AgentCore(
             when (decision) {
                 is AgentDecision.Finish -> return finish(decision.answer)
                 is AgentDecision.Tool -> {
+                    if (decision.name == "launch" && decision.arg == verifiedLaunch)
+                        return "Агент повторно запросил запуск уже открытого приложения. Задача остановлена; завершение не подтверждено."
                     progress("Шаг " + (step + 1) + " · " + decision.name)
                     val result = try {
                         execute(decision)
@@ -126,6 +131,10 @@ internal class AgentCore(
                         val screen = verifiedScreen
                             ?: return "Android получил запрос на запуск, но экран «" + decision.arg +
                                 "» не подтверждён. Не выполнял дальнейшие действия. " + lastObserved
+                        verifiedLaunch = decision.arg
+                        readOnlyResults.clear()
+                        lastFailure = null
+                        consecutiveFailures = 0
                         results.add(decision.name + ": Запуск подтверждён.\n" + screen.take(7200))
                         return@repeat
                     }
@@ -138,6 +147,19 @@ internal class AgentCore(
                     } else {
                         consecutiveFailures = 0
                         lastFailure = null
+                        val activePackage = result.lineSequence().firstOrNull { it.startsWith("Активное приложение: ") }
+                            ?.removePrefix("Активное приложение: ")
+                        if (activePackage != null && activePackage != verifiedLaunch) verifiedLaunch = null
+                        if (decision.name == "launch" && activePackage == decision.arg) verifiedLaunch = decision.arg
+                        if (decision.name in setOf("apps", "observe")) {
+                            val key = decision to result
+                            val count = (readOnlyResults[key] ?: 0) + 1
+                            readOnlyResults[key] = count
+                            if (count >= 3) return "Агент повторяет наблюдения без прогресса. Задача остановлена; завершение не подтверждено."
+                        } else {
+                            readOnlyResults.clear()
+                            if (decision.name in setOf("home", "back") && activePackage == null) verifiedLaunch = null
+                        }
                     }
                     results.add(decision.name + ": " + result)
                 }
