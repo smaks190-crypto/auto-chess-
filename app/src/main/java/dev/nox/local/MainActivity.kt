@@ -160,7 +160,16 @@ class MainActivity : Activity() {
                 s.ask(command, s.attachedImage, tts.isChecked, deep.isChecked)
                 input.text.clear()
             }
-        }.apply { contentDescription = "Отправить"; setTextColor(bg); background = panel(accent, 24) }
+        }.apply {
+            contentDescription = "Отправить. Удерживай для фонового голоса"
+            tooltipText = "Удерживай для переключения фонового голоса"
+            setTextColor(bg)
+            background = panel(accent, 24)
+            setOnLongClickListener {
+                toggleBackgroundVoice()
+                true // Consume the hold: releasing must not send or clear the draft.
+            }
+        }
         composer.addView(send, LinearLayout.LayoutParams(dp(48), dp(48)))
         stopGeneration = button("■") { service?.cancelGeneration() }.apply {
             contentDescription = "Остановить генерацию"
@@ -176,14 +185,14 @@ class MainActivity : Activity() {
         root.addView(settingsPage, LinearLayout.LayoutParams(-1, 0, 1f))
         settings.addView(textLabel("Голос вне приложения", 19f).apply { typeface = Typeface.DEFAULT_BOLD })
         backgroundButton = addButton(settings, "Включить фоновый голос", false) {
-            if (service?.background == true) service?.disableBackground() else voice(true)
+            toggleBackgroundVoice()
         }
         overlayButton = addButton(settings, "Разрешить плавающую кнопку", false) {
             if (Settings.canDrawOverlays(this)) service?.syncOverlay()
             else startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + packageName)))
             render()
         }
-        settings.addView(textLabel("После включения Нокс автоматически слушает и возобновляет прослушивание после ответа. Микрофон отключается на время ответа и при блокировке экрана. Выключить можно здесь, в уведомлении или фразой «Нокс, перестань слушать».", 13f, muted))
+        settings.addView(textLabel("После включения Нокс автоматически слушает и возобновляет прослушивание после ответа. Микрофон отключается на время ответа и при блокировке экрана. Удерживай стрелку отправки в чате, чтобы включить или выключить фоновый голос. Также выключить можно здесь, в уведомлении или фразой «Нокс, перестань слушать».", 13f, muted))
         addButton(settings, "Разрешить агенту управление экраном", false) {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
@@ -267,6 +276,7 @@ class MainActivity : Activity() {
         modelButton.text = if (exists) "Запустить " + pkg.name else "Скачать и запустить · " +
             String.format(Locale.US, "%.2f", pkg.size / 1e9) + " ГБ"
         backgroundButton.text = if (s?.background == true) "Выключить фоновый голос" else "Включить фоновый голос"
+        send.contentDescription = "Отправить. Удерживай, чтобы " + if (s?.background == true) "выключить фоновый голос" else "включить фоновый голос"
         overlayButton.text = if (Settings.canDrawOverlays(this)) "Плавающая кнопка разрешена" else "Разрешить плавающую кнопку"
         workControls.forEach { it.isEnabled = !busy }
         gpu.isEnabled = !busy && !pkg.cpuOnly
@@ -333,6 +343,11 @@ class MainActivity : Activity() {
     private fun saveSelection(index: Int) {
         prefs.edit().putInt("model_index", index).putBoolean("gpu", gpu.isChecked)
             .putBoolean("vision", vision.isChecked).apply()
+    }
+
+    private fun toggleBackgroundVoice() {
+        val s = service ?: return
+        if (s.background) s.disableBackground() else voice(true)
     }
 
     private fun voice(background: Boolean) {
