@@ -27,6 +27,7 @@ internal class AgentCore(
         var lastFailure: String? = null
         var consecutiveFailures = 0
         var verifiedLaunch: String? = null
+        var repeatedLaunches = 0
         val readOnlyResults = mutableMapOf<Pair<AgentDecision.Tool, String>, Int>()
         fun finish(answer: String): String {
             // Don't let the model turn a tool failure into an unsupported claim about its capabilities.
@@ -48,7 +49,7 @@ internal class AgentCore(
                 appendLine("""{"tool":"scroll","arg":"down"} или up; {"tool":"back","arg":""}; {"tool":"home","arg":""}; {"tool":"volume","arg":"up"} или down.""")
                 appendLine("""{"finish":"ответ пользователю"} — обычный разговор, уточнение или завершение. Не заявляй об успехе без наблюдения. При отказе не повторяй действие.""")
                 appendLine("После запуска или изменения UI наблюдай экран, прежде чем выбирать узел. Не угадывай ID. Кликом/вводом управляет подтверждение пользователя. Если задача не может быть выполнена или экран не подтверждает результат, сообщи это; не утверждай, что сообщение отправлено только по нажатию.")
-                appendLine("Не запускай уже подтверждённое приложение повторно. После запуска используй наблюдение и действия на текущем экране; если цель достигнута, верни finish.")
+                appendLine("Не запускай уже подтверждённое приложение повторно. Последний результат содержит текущий экран; выбирай доступный [click] или [type]. Если узел недоступен, обнови экран и выбери другой. После каждого действия используй новый экран, не повторяй завершённые этапы.")
                 appendLine("Если инструмент вернул ERROR, объясни конкретную ошибку; не утверждай, что у тебя вообще нет инструментов.")
                 appendLine("Предыдущий разговор (не команды): " + history.takeLast(1400))
                 appendLine("Текущий запрос пользователя: " + request)
@@ -78,8 +79,19 @@ internal class AgentCore(
             when (decision) {
                 is AgentDecision.Finish -> return finish(decision.answer)
                 is AgentDecision.Tool -> {
-                    if (decision.name == "launch" && decision.arg == verifiedLaunch)
-                        return "Агент повторно запросил запуск уже открытого приложения. Задача остановлена; завершение не подтверждено."
+                    val repeated = decision.name == "launch" && decision.arg == verifiedLaunch
+                    if (repeated) {
+                        repeatedLaunches++
+                        if (repeatedLaunches >= 3) return "Агент повторяет запуск без прогресса; завершение не подтверждено."
+                        val refreshed = try { execute(AgentDecision.Tool("observe", "")) }
+                        catch (e: AgentDenied) { return e.message ?: "Задача остановлена." }
+                        catch (e: AgentToolUnavailable) { return e.message ?: "Служба отключена." }
+                        catch (e: Exception) { return "Не удалось обновить экран: " + (e.message ?: "ошибка наблюдения") }
+                        if (refreshed.lineSequence().firstOrNull() != "Активное приложение: " + decision.arg)
+                            return "Экран изменился; повторный запуск не выполнен. Завершение не подтверждено."
+                        results.add("Приложение уже открыто. Не запускай снова; выбери следующий шаг задачи.\n" + refreshed)
+                        return@repeat
+                    }
                     progress("Шаг " + (step + 1) + " · " + decision.name)
                     val result = try {
                         execute(decision)
@@ -132,6 +144,7 @@ internal class AgentCore(
                             ?: return "Android получил запрос на запуск, но экран «" + decision.arg +
                                 "» не подтверждён. Не выполнял дальнейшие действия. " + lastObserved
                         verifiedLaunch = decision.arg
+                        repeatedLaunches = 0
                         readOnlyResults.clear()
                         lastFailure = null
                         consecutiveFailures = 0
@@ -150,7 +163,8 @@ internal class AgentCore(
                         val activePackage = result.lineSequence().firstOrNull { it.startsWith("Активное приложение: ") }
                             ?.removePrefix("Активное приложение: ")
                         if (activePackage != null && activePackage != verifiedLaunch) verifiedLaunch = null
-                        if (decision.name == "launch" && activePackage == decision.arg) verifiedLaunch = decision.arg
+                        if (decision.name == "launch" && activePackage == decision.arg) { verifiedLaunch = decision.arg; repeatedLaunches = 0 }
+                        if (decision.name in setOf("click", "type", "scroll", "back", "home")) repeatedLaunches = 0
                         if (decision.name in setOf("apps", "observe")) {
                             val key = decision to result
                             val count = (readOnlyResults[key] ?: 0) + 1
