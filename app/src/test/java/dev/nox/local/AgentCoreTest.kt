@@ -232,13 +232,29 @@ class AgentCoreTest {
             decide = { AgentDecision.Tool("launch", pkg) },
             execute = { action ->
                 executed.add(action.name)
-                "Запуск подтверждён: $pkg\nАктивное приложение: $pkg\n1 | Button | Поиск [click]"
+                val screen = "Активное приложение: $pkg\n1 | Button | Поиск [click]"
+                if (action.name == "launch") "Запуск подтверждён: $pkg\n" + screen else screen
             }, cancelled = { false }
         )
         val result = core.run("Открой Telegram и напиши сообщение", "")
-        assertEquals(listOf("launch"), executed)
+        assertEquals(listOf("launch", "observe", "observe"), executed)
         assertTrue(result.contains("повтор", ignoreCase = true))
         assertTrue(result.contains("не подтверждено"))
+    }
+
+    @Test fun duplicateLaunchRefreshesAndAllowsProgress() {
+        val pkg = "org.telegram.messenger"
+        val actions = mutableListOf<String>()
+        val script = listOf(AgentDecision.Tool("launch", pkg),
+            AgentDecision.Tool("launch", pkg), AgentDecision.Tool("click", "1"),
+            AgentDecision.Finish("Следующий экран открыт"))
+        var index = 0
+        val core = AgentCore(decide = { script[index++] }, execute = {
+            actions.add(it.name)
+            "Активное приложение: $pkg\n1 | Button | Поиск [click]"
+        }, cancelled = { false })
+        assertEquals("Следующий экран открыт", core.run("Открой поиск", ""))
+        assertEquals(listOf("launch", "observe", "click"), actions)
     }
 
     @Test fun repeatedReadOnlyCycleStopsBeforeStepLimit() {
