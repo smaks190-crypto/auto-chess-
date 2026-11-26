@@ -5,7 +5,7 @@ import java.security.MessageDigest
 /** Only explicit user-delimited fields are accepted. Model output cannot choose arbitrary checks. */
 internal data class DraftGoal(val recipient: String, val text: String)
 internal class GoalTemplateRegistry {
-    private val explicitDraft = Regex("""(?i)^подготовь\s+черновик\s+в\s+Telegram\s+для\s+«([^«»\r\n]{1,160})»\s*:\s*«([^«»]{1,4000})»\s*$""")
+    private val explicitDraft = Regex("""^подготовь\s+черновик\s+в\s+Telegram\s+для\s+«([^«»\r\n]{1,160})»\s*:\s*«([^«»]{1,4000})»\s*$""", RegexOption.IGNORE_CASE)
     fun draft(request: String): DraftGoal? {
         if (request.length > 4500) return null
         val m = explicitDraft.matchEntire(request.trim()) ?: return null
