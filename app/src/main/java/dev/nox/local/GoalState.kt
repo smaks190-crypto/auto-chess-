@@ -48,9 +48,10 @@ internal class GoalState(private val request: String) {
     private fun value(o: GoalObservation): String? {
         if (o.pkg != CALC) return null
         val raw = o.nodes.singleOrNull { it.resource == FORMULA }?.label ?: return null
-        val v = raw.substringBefore(" / ").removePrefix("Поле ввода в калькуляторе ").removePrefix("Calculator input field ")
+        val v = raw.substringBefore(" / ").trim()
+            .removePrefix("Поле ввода в калькуляторе").removePrefix("Calculator input field")
             .replace(" ", "").replace("\u00a0", "").replace("\u202f", "").replace('−','-')
-        return v.takeIf { it.matches(Regex("[0-9+\\-]+")) }
+        return v.takeIf { it.matches(Regex("[0-9+\\-]*")) }
     }
     private fun wantedKey(o: GoalObservation): String? {
         val f = formula ?: return null
@@ -82,7 +83,9 @@ internal class GoalState(private val request: String) {
             "sub" -> previous + "-"
             else -> (if (previous == "0" && formula?.startsWith("0") == false) "" else previous) + key.removePrefix("0")
         }
-        if (actual != next) return false
+        if (resource == KEY + "clear") {
+            if (actual != "" && actual != "0") return false
+        } else if (actual != next) return false
         if (resource == KEY + "equal" && previous == formula) verifiedEqualsSeq = after.seq
         return true
     }
