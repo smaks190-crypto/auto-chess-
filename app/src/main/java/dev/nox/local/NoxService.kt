@@ -9,7 +9,7 @@ import android.graphics.*
 import android.content.res.Configuration
 import android.speech.tts.UtteranceProgressListener
 import android.text.TextUtils
-import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.*
 import android.provider.Settings
@@ -35,8 +35,18 @@ class NoxService : Service() {
     private var voiceEpoch = 0
     private var bubble: CameraRing? = null
     private var touchTarget: View? = null
-    private var caption: TextView? = null
+    private var caption: ConnectedCaption? = null
     private var captionTop = 0
+    private var captionX = 0
+    private var captionNeck = 0
+    private var captionClosing = false
+    private var captionPalette = CaptionPalette.DARK
+    private val wallpaperColorsListener = WallpaperManager.OnColorsChangedListener { colors, which ->
+        if ((which and WallpaperManager.FLAG_SYSTEM) != 0 && !destroyed) {
+            captionPalette = CaptionPalette.forWallpaper(colors?.primaryColor?.toArgb())
+            caption?.applyPalette(captionPalette)
+        }
+    }
     private var activeSpeech: String? = null
     private var spokenText = ""
     private var visibleSpeechEnd = 0
@@ -74,6 +84,17 @@ class NoxService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        val wallpaper = WallpaperManager.getInstance(this)
+        runCatching { wallpaper.addOnColorsChangedListener(wallpaperColorsListener, main) }
+        worker.execute {
+            val color = runCatching { wallpaper.getWallpaperColors(WallpaperManager.FLAG_SYSTEM)?.primaryColor?.toArgb() }.getOrNull()
+            main.post {
+                if (!destroyed) {
+                    captionPalette = CaptionPalette.forWallpaper(color)
+                    caption?.applyPalette(captionPalette)
+                }
+            }
+        }
         requireNotNull(getSystemService(NotificationManager::class.java)).createNotificationChannel(
             NotificationChannel(CHANNEL, "Нокс — фоновый голос", NotificationManager.IMPORTANCE_LOW))
         tts = TextToSpeech(this) { result ->
@@ -259,32 +280,113 @@ class NoxService : Service() {
             runCatching { wm.addView(target, params(dp(44f), dp(24f), targetTop, true)) }
                 .onSuccess { touchTarget = target }
         }
-        captionTop = if (centeredCutout != null) targetTop + dp(26f) else ringY + size + dp(6f)
+        // Start at the lower edge of the visible ring, not below the touch target.
+        captionTop = ringY + size / 2 + radius.toInt() - dp(1f)
+        captionX = ringX
+        captionNeck = maxOf(dp(9f), statusBottom - captionTop + dp(4f))
         syncCaption()
+    }
+
+    private inner class CaptionShape(private val neck: Int, var palette: CaptionPalette) : Drawable() {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val shape = Path()
+        override fun draw(canvas: Canvas) {
+            val b = bounds
+            val inset = dp(2f).toFloat()
+            val l = b.left + inset
+            val r = b.right - inset
+            val top = b.top.toFloat()
+            val bottom = b.bottom - inset
+            val cx = (l + r) / 2f
+            val shoulder = top + neck
+            val corner = minOf(dp(18f).toFloat(), (bottom - shoulder) / 2f, (r - l) / 2f)
+            if (corner <= 0f) return
+            val stem = dp(5f).toFloat()
+            shape.reset()
+            shape.moveTo(cx - stem, top)
+            shape.cubicTo(cx - stem, shoulder, l + corner, shoulder, l + corner, shoulder)
+            shape.quadTo(l, shoulder, l, shoulder + corner)
+            shape.lineTo(l, bottom - corner)
+            shape.quadTo(l, bottom, l + corner, bottom)
+            shape.lineTo(r - corner, bottom)
+            shape.quadTo(r, bottom, r, bottom - corner)
+            shape.lineTo(r, shoulder + corner)
+            shape.quadTo(r, shoulder, r - corner, shoulder)
+            shape.cubicTo(r - corner, shoulder, cx + stem, shoulder, cx + stem, top)
+            shape.close()
+            paint.style = Paint.Style.FILL
+            paint.color = palette.fill
+            canvas.drawPath(shape, paint)
+            paint.style = Paint.Style.STROKE
+            paint.strokeJoin = Paint.Join.ROUND
+            paint.strokeWidth = dp(3f).toFloat()
+            paint.color = palette.text
+            canvas.drawPath(shape, paint)
+            paint.strokeWidth = dp(1f).toFloat()
+            paint.color = 0xFF9272EF.toInt()
+            canvas.drawPath(shape, paint)
+        }
+        override fun setAlpha(alpha: Int) { paint.alpha = alpha }
+        override fun setColorFilter(colorFilter: ColorFilter?) { paint.colorFilter = colorFilter }
+        @Suppress("DEPRECATION")
+        override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
+    }
+
+    private inner class ConnectedCaption(context: Context, neck: Int) : TextView(context) {
+        private val shape = CaptionShape(neck, captionPalette)
+        init {
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setPadding(dp(14f), neck + dp(10f), dp(14f), dp(10f))
+            maxLines = 4
+            ellipsize = TextUtils.TruncateAt.START
+            background = shape
+            applyPalette(captionPalette)
+        }
+        fun applyPalette(palette: CaptionPalette) {
+            shape.palette = palette
+            setTextColor(palette.text)
+            shape.invalidateSelf()
+        }
+        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+            super.onSizeChanged(w, h, oldw, oldh)
+            pivotX = w / 2f
+            pivotY = 0f
+        }
     }
 
     private fun syncCaption() {
         val wm = getSystemService(WindowManager::class.java) ?: return
         if (bubble == null || !speaking || spokenText.isBlank()) {
-            caption?.let { runCatching { wm.removeView(it) } }
-            caption = null
+            val view = caption ?: return
+            if (captionClosing) return
+            captionClosing = true
+            view.animate().cancel()
+            view.animate().scaleX(0.08f).scaleY(0.04f).setDuration(170L)
+                .withEndAction {
+                    if (caption === view && captionClosing) {
+                        runCatching { wm.removeView(view) }
+                        caption = null
+                        captionClosing = false
+                    }
+                }.start()
             return
         }
         val shown = spokenText.take(visibleSpeechEnd).takeLast(240)
         val text = shown.ifBlank { "…" }
-        if (caption != null) { caption?.text = text; return }
-        val view = TextView(this).apply {
-            this.text = text
-            textSize = 14f
-            setTextColor(0xFFF4F0FF.toInt())
-            gravity = Gravity.CENTER
-            setPadding(dp(12f), dp(8f), dp(12f), dp(8f))
-            maxLines = 4
-            ellipsize = TextUtils.TruncateAt.END
-            background = GradientDrawable().apply {
-                cornerRadius = dp(18f).toFloat()
-                setColor(0xFF16121F.toInt())
+        caption?.let { view ->
+            view.text = text
+            if (captionClosing) {
+                captionClosing = false
+                view.animate().cancel()
+                view.animate().scaleX(1f).scaleY(1f).setDuration(200L).start()
             }
+            return
+        }
+        val view = ConnectedCaption(this, captionNeck).apply {
+            this.text = text
+            scaleX = 0.08f
+            scaleY = 0.04f
         }
         val width = minOf(dp(280f), wm.currentWindowMetrics.bounds.width() - dp(32f)).coerceAtLeast(dp(80f))
         val p = WindowManager.LayoutParams(width, WindowManager.LayoutParams.WRAP_CONTENT,
@@ -294,14 +396,21 @@ class NoxService : Service() {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
             setFitInsetsTypes(0)
+            x = captionX
             y = captionTop
             alpha = 0.8f
         }
-        runCatching { wm.addView(view, p) }.onSuccess { caption = view }
+        runCatching { wm.addView(view, p) }.onSuccess {
+            caption = view
+            captionClosing = false
+            view.animate().scaleX(1f).scaleY(1f).setDuration(220L).start()
+        }
     }
 
     private fun removeOverlay() {
         val wm = getSystemService(WindowManager::class.java)
+        captionClosing = false
+        caption?.animate()?.cancel()
         listOfNotNull(bubble, touchTarget, caption).forEach { runCatching { wm?.removeView(it) } }
         bubble = null; touchTarget = null; caption = null
     }
@@ -573,6 +682,7 @@ class NoxService : Service() {
     }
 
     override fun onDestroy() {
+        runCatching { WallpaperManager.getInstance(this).removeOnColorsChangedListener(wallpaperColorsListener) }
         destroyed = true; cancelled = true
         stopListening(); stopSpeech(); removeOverlay(); tts?.shutdown()
         listener = null
