@@ -52,6 +52,9 @@ internal class LocalModel : AutoCloseable {
         return generate(prompt, image, deep, cancelled, update)
     }
 
+    fun classifyRequest(prompt: String, cancelled: () -> Boolean): String =
+        generate(prompt, null, false, cancelled, {})
+
     fun decide(prompt: String, cancelled: () -> Boolean): AgentDecision {
         val raw = generate(prompt, null, false, cancelled, {})
         return try {
