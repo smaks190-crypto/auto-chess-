@@ -69,9 +69,9 @@ internal class AgentCore(
                     return finish("Не удалось получить решение модели: " + (e.message ?: "ошибка генерации").take(180))
                 }
             }
-            if (action == null) return finish("Не удалось получить корректный JSON после трёх попыток. Последняя ошибка: " + formatError.take(180))
+            val decision = action ?: return finish("Не удалось получить корректный JSON после трёх попыток. Последняя ошибка: " + formatError.take(180))
             if (cancelled()) return "Задача отменена."
-            when (val decision = action) {
+            when (decision) {
                 is AgentDecision.Finish -> return finish(decision.answer)
                 is AgentDecision.Tool -> {
                     progress("Шаг " + (step + 1) + " · " + decision.name)
