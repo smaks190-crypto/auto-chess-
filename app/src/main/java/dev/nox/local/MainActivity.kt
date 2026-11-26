@@ -320,7 +320,7 @@ class MainActivity : Activity() {
         val snap = LivePerception.buffer.snapshot(android.os.SystemClock.elapsedRealtime())
         perceptionStatus.text = LivePerception.status +
             if (LivePerception.active) "\nКадры: " + LivePerception.frames + " · аудиосэмплы: " + LivePerception.audioSamples +
-                "\nСлышу: " + snap.speech.takeLast(500) + "\nВижу: " + LivePerception.visualSummary.takeLast(500) else ""
+                "\n" + LivePerception.audioStatus + "\nСлышу: " + snap.speech.takeLast(500) + "\nВижу: " + LivePerception.visualSummary.takeLast(500) else ""
     }
 
     private fun choosePerceptionApp() {
