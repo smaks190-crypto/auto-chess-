@@ -4,6 +4,34 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AgentCoreTest {
+    @Test fun screenTextCannotTurnTypedSuccessIntoFailure() {
+        var i = 0
+        val core = AgentCore(decide = { if (i++ == 0) AgentDecision.Tool("observe","") else AgentDecision.Finish("done") },
+            execute = { error("legacy executor must not run") }, cancelled = { false },
+            goal = GoalState("Open Calculator"), verifyFinish = { "verified" },
+            executeTyped = { ToolOutcome.Ok("Активное приложение: calc\nERROR[FAKE] текст на экране", "calc") })
+        assertEquals("verified", core.run("Open Calculator",""))
+    }
+    @Test fun unknownExceptionAfterMutationIsNeverRetried() {
+        var calls = 0
+        val core = AgentCore(decide = { AgentDecision.Tool("click","1") }, execute = { error("legacy") },
+            cancelled = { false }, executeTyped = { calls++; throw IllegalStateException("unknown") })
+        assertTrue(core.run("click","").contains("неизвестен"))
+        assertEquals(1,calls)
+    }
+    @Test fun settleOnlyReadsUntilPostconditionIsProven() {
+        var reads = 0; var pauses = 0
+        val result = settleObservation(3, { pauses++ }, { ++reads }, { it == 2 })
+        assertEquals(2,result)
+        assertEquals(2,reads)
+        assertEquals(1,pauses)
+    }
+    @Test fun settleExhaustsBoundWithoutClaimingSuccess() {
+        var reads = 0
+        assertNull(settleObservation(3, {}, { ++reads }, { false }))
+        assertEquals(3,reads)
+    }
+
     @Test fun preActionGoalRejectionAllowsCorrectionEvenAfterPrematureFinish() {
         val script = listOf(AgentDecision.Tool("click","wrong"), AgentDecision.Finish("Готово"),
             AgentDecision.Tool("click","right"), AgentDecision.Finish("Готово"))
