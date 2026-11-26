@@ -49,6 +49,16 @@ internal class LocalModel : AutoCloseable {
 
     fun chat(command: String, image: File?, deep: Boolean, cancelled: () -> Boolean, update: (String) -> Unit): String {
         val prompt = PromptPolicy.build(command) + "\nОтвечай естественно, кратко и по существу. Не перечисляй свои возможности без запроса."
+        return generate(prompt, image, deep, cancelled, update)
+    }
+
+    fun decide(prompt: String, cancelled: () -> Boolean): AgentDecision {
+        val raw = generate(prompt, null, false, cancelled, {})
+        return AgentProtocol.parse(raw)
+    }
+
+    private fun generate(prompt: String, image: File?, deep: Boolean, cancelled: () -> Boolean,
+        update: (String) -> Unit): String {
         val active = checkNotNull(engine) { "Сначала загрузите модель" }
         return active.createConversation().use { conversation ->
             val done = CountDownLatch(1)
