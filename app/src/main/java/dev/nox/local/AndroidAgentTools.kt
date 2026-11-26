@@ -276,7 +276,7 @@ internal class AndroidAgentTools(
 
     private fun actOnNode(action: AgentDecision.Tool): String {
         val before = snapshot ?: error("Сначала используй observe")
-        if (goal.arithmetic && !goal.allowsLaunch(before.pkg)) return "ERROR[GOAL_MISMATCH] Нужен экран калькулятора."
+        if (goal.arithmetic && !goal.allowsLaunch(before.pkg)) return AgentToolStatus.GOAL_REJECTED + "Нужен экран калькулятора."
         val target = before.nodes.firstOrNull { it.id == action.arg } ?: error("Неизвестный ID; обнови экран")
         if (!(target.enabled && if (action.name == "type") target.editable else target.clickable)) {
             snapshot = null
@@ -284,7 +284,7 @@ internal class AndroidAgentTools(
         }
         val beforeGoal = goalObservation(before)
         goal.reject(beforeGoal, action.name, target.resource)?.let {
-            return "ERROR[GOAL_MISMATCH] " + it
+            return AgentToolStatus.GOAL_REJECTED + it + "\n" + describeGoal(before)
         }
         authorize(before.pkg)
         val actionText = if (action.name == "type") "Ввести «" + action.text.take(1000) + "»"
@@ -328,9 +328,9 @@ internal class AndroidAgentTools(
     fun execute(action: AgentDecision.Tool): String {
         checkActive()
         if (goal.arithmetic && action.name !in setOf("apps", "launch", "observe", "click"))
-            return "ERROR[GOAL_MISMATCH] Для этой задачи нужны только кнопки калькулятора."
+            return AgentToolStatus.GOAL_REJECTED + "Для этой задачи нужны только кнопки калькулятора."
         if (action.name == "launch" && !goal.allowsLaunch(action.arg))
-            return "ERROR[GOAL_MISMATCH] Нужен калькулятор Samsung."
+            return AgentToolStatus.GOAL_REJECTED + "Нужен калькулятор Samsung."
         return when (action.name) {
             "apps" -> {
                 val pm = context.packageManager
