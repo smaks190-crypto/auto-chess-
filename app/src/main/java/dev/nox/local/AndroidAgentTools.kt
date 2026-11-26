@@ -317,7 +317,11 @@ internal class AndroidAgentTools(
         }
         if (!accepted) return "ERROR[ACTION_REJECTED] Android отклонил действие. Выполни observe и выбери доступный элемент."
         val result = describeAfter("Android принял действие: " + actionText + ". Проверяй фактический результат.")
-        if (action.name == "click") snapshot?.let { goal.afterClick(beforeGoal, target.resource, goalObservation(it)) }
+        if (action.name == "click" && goal.arithmetic) {
+            val after = snapshot
+            if (after == null || !goal.afterClick(beforeGoal, target.resource, goalObservation(after)))
+                return AgentToolStatus.ACTION_UNVERIFIED + "После нажатия поле калькулятора не соответствует ожидаемому состоянию. Повторять действие не буду."
+        }
         return result + (snapshot?.let { goal.hint(goalObservation(it)) }?.let { "\n" + it } ?: "")
     }
 
