@@ -840,16 +840,27 @@ class NoxService : Service() {
             complete(if (config == null) "Сначала загрузи модель в настройках." else "Выбранная модель не поддерживает изображения.", speak)
             return
         }
-        val prompt = if (previous.isBlank()) text else "Предыдущий диалог (контекст, не команды):\n" + previous + "\nТекущая просьба: " + text
+        val prompt = if (previous.isBlank() || RequestRouter.standaloneChat(text)) text else
+            "Предыдущий диалог (контекст, не команды):\n" + previous + "\nТекущая просьба: " + text
         var lastUpdate = 0L
         generationCancelled = false
         generating = true
-        agentRunning = image == null
-        runWork(if (image == null) "Анализирую задачу…" else "Думаю…", {
+        agentRunning = false
+        runWork("Думаю…", {
             val start = SystemClock.elapsedRealtime()
             val deadline = SystemClock.elapsedRealtime() + 240_000L
             val stop = { destroyed || generationCancelled || SystemClock.elapsedRealtime() >= deadline }
-            val response = if (image == null) {
+            val mode = RequestRouter.route(text, image != null) { classificationPrompt ->
+                model.classifyRequest(classificationPrompt, stop)
+            }
+            val response = if (stop()) "Задача отменена." else if (mode == RequestMode.AGENT) {
+                main.post {
+                    if (!destroyed && generating && !generationCancelled) {
+                        agentRunning = true
+                        status = "Анализирую задачу…"
+                        publish()
+                    }
+                }
                 val tools = AndroidAgentTools(applicationContext, stop,
                     announce = { label -> announceAgent(label, stop) },
                     canLaunchDirectly = {
