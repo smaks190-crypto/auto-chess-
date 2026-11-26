@@ -1,6 +1,13 @@
 package dev.nox.local
 
 import android.accessibilityservice.AccessibilityService
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
@@ -29,7 +36,8 @@ import java.util.concurrent.TimeoutException
 internal class AndroidAgentTools(
     private val context: Context,
     private val cancelled: () -> Boolean,
-    announce: (String) -> Unit
+    announce: (String) -> Unit,
+    private val canLaunchDirectly: () -> Boolean = { false }
 ) {
     private val actionGate = AgentActionGate(cancelled, announce)
     private val main = Handler(Looper.getMainLooper())
@@ -58,7 +66,7 @@ internal class AndroidAgentTools(
         if (cancelled() || context.getSystemService(KeyguardManager::class.java)?.isDeviceLocked == true ||
             context.getSystemService(PowerManager::class.java)?.isInteractive != true) throw AgentDenied()
     }
-    private fun nav() = NoxNavigationService.current ?: error("Разреши управление экраном Нокс в специальных возможностях")
+    private fun nav() = NoxNavigationService.current ?: throw AgentToolUnavailable()
     private fun <T> ui(block: () -> T): T {
         checkActive()
         val task = FutureTask<T> { checkActive(); block() }
@@ -174,6 +182,42 @@ internal class AndroidAgentTools(
         }
     }
 
+    /**
+     * A background service cannot reliably open another app on recent Android versions.
+     * A direct Activity PendingIntent in a user-tapped notification is the supported fallback.
+     * Do not trampoline through our service or claim that the target was opened on posting.
+     */
+    private fun offerLaunch(pkg: String, label: String, launchIntent: Intent): String {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            return AgentToolStatus.LAUNCH_NEEDS_TAP +
+                "Не могу открыть «" + label + "» из фона: для этого нужен доступ к уведомлениям. " +
+                "Разреши уведомления N.O.X. или открой его чат на экране и повтори команду."
+        }
+        val manager = requireNotNull(context.getSystemService(NotificationManager::class.java))
+        val channelId = "nox_launch_actions"
+        manager.createNotificationChannel(NotificationChannel(channelId, "Нокс — открытие приложений",
+            NotificationManager.IMPORTANCE_HIGH).apply {
+            description = "Подтверждение запуска приложения из фонового режима"
+        })
+        // The pending intent targets the app directly. A tap is a fresh user gesture.
+        val pending = PendingIntent.getActivity(context, pkg.hashCode(), Intent(launchIntent),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val notification = Notification.Builder(context, channelId)
+            .setSmallIcon(android.R.drawable.ic_menu_view)
+            .setContentTitle("N.O.X. · Открыть " + label)
+            .setContentText("Нажми, чтобы открыть приложение.")
+            .setContentIntent(pending)
+            .setAutoCancel(true)
+            .setTimeoutAfter(60_000L)
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .build()
+        manager.notify(pkg.hashCode(), notification)
+        return AgentToolStatus.LAUNCH_NEEDS_TAP +
+            "Я подготовил открытие «" + label + "». Нажми уведомление N.O.X. для запуска. " +
+            "Пока ты не нажмёшь его, приложение не открыто."
+    }
+
     private fun actOnNode(action: AgentDecision.Tool): String {
         val before = snapshot ?: error("Сначала используй observe")
         val target = before.nodes.firstOrNull { it.id == action.arg } ?: error("Неизвестный ID; обнови экран")
@@ -225,11 +269,27 @@ internal class AndroidAgentTools(
             }
             "launch" -> {
                 require(action.arg in apps && permitted(action.arg)) { "Сначала получи точный пакет через apps" }
-                actionGate.before(AgentNarration.launch(apps.getValue(action.arg)))
+                val label = apps.getValue(action.arg)
+                actionGate.before(AgentNarration.launch(label))
                 snapshot = null
-                ui {
-                    val launch = context.packageManager.getLaunchIntentForPackage(action.arg) ?: error("Нет запускаемого экрана")
-                    nav().startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                val launch = context.packageManager.getLaunchIntentForPackage(action.arg)
+                    ?: error("У приложения «" + label + "» нет запускаемого экрана")
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                if (!canLaunchDirectly()) return offerLaunch(action.arg, label, launch)
+                try {
+                    // Starting activities needs no Accessibility permission when our activity is
+                    // visible, or our visible overlay qualifies for Android's BAL exemption.
+                    ui { context.startActivity(launch) }
+                } catch (e: SecurityException) {
+                    // Android may deny a start from the foreground service even with its overlay.
+                    return offerLaunch(action.arg, label, launch)
+                } catch (e: android.content.ActivityNotFoundException) {
+                    return "ERROR[APP_NOT_FOUND] Не удалось найти экран запуска для «" + label + "»."
+                }
+                if (NoxNavigationService.current == null) {
+                    return AgentToolStatus.LAUNCH_UNVERIFIED +
+                        "Отправил Android команду открыть «" + label + "», но проверить результат без " +
+                        "службы специальных возможностей не могу."
                 }
                 var lastScreen: Screen? = null
                 repeat(6) {
@@ -242,8 +302,8 @@ internal class AndroidAgentTools(
                     }
                 }
                 snapshot = lastScreen
-                "Запуск НЕ подтверждён: " + action.arg + "\n" +
-                    (lastScreen?.describe() ?: "Активный экран недоступен")
+                return AgentToolStatus.LAUNCH_UNVERIFIED +
+                    "Android получил запрос на запуск «" + label + "», но экран приложения пока не подтверждён."
             }
             "observe" -> observe()
             "click", "type" -> actOnNode(action)
