@@ -155,12 +155,23 @@ internal class AndroidAgentTools(
         snapshot = screen
         return describeGoal(screen)
     }
-    private fun describeAfter(prefix: String): String {
-        pause(500)
-        val view = try { observe() } catch (e: AgentDenied) { throw e } catch (e: AgentToolUnavailable) { throw e } catch (e: Exception) {
-            return AgentToolStatus.ACTION_UNVERIFIED + "Действие могло быть выполнено, но экран не подтверждён. Не повторяю автоматически. " + (e.message ?: e.javaClass.simpleName)
+    private fun describeAfter(prefix: String, previous: Screen? = null, condition: (Screen) -> Boolean = { true }): ToolOutcome {
+        pause(150)
+        val screen = settleObservation(3, { pause(150) }, {
+            try {
+                ui {
+                    val root = nav().rootInActiveWindow ?: return@ui null
+                    if (previous != null && (root.windowId != previous.window || root.packageName?.toString() != previous.pkg)) return@ui null
+                    readScreen()
+                }
+            } catch (e: AgentDenied) { throw e } catch (e: AgentToolUnavailable) { throw e } catch (_: Exception) { null }
+        }, condition)
+        if (screen == null) {
+            snapshot = null
+            return ToolOutcome.Unverified("Действие могло быть выполнено, но ожидаемый экран не подтверждён. Не повторяю автоматически.")
         }
-        return prefix + "\n" + (snapshot?.describe() ?: view)
+        snapshot = screen
+        return ToolOutcome.Ok(prefix + "\n" + describeGoal(screen), screen.pkg)
     }
     private fun choose(label: String, options: List<String>): Int {
         checkActive()
@@ -243,12 +254,12 @@ internal class AndroidAgentTools(
      * A direct Activity PendingIntent in a user-tapped notification is the supported fallback.
      * Do not trampoline through our service or claim that the target was opened on posting.
      */
-    private fun offerLaunch(pkg: String, label: String, launchIntent: Intent): String {
+    private fun offerLaunch(pkg: String, label: String, launchIntent: Intent): ToolOutcome {
         if (Build.VERSION.SDK_INT >= 33 &&
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            return AgentToolStatus.LAUNCH_NEEDS_TAP +
+            return ToolOutcome.NeedsUserTap(
                 "Не могу открыть «" + label + "» из фона: для этого нужен доступ к уведомлениям. " +
-                "Разреши уведомления N.O.X. или открой его чат на экране и повтори команду."
+                "Разреши уведомления N.O.X. или открой его чат на экране и повтори команду.")
         }
         val manager = requireNotNull(context.getSystemService(NotificationManager::class.java))
         val channelId = "nox_launch_actions"
@@ -269,22 +280,22 @@ internal class AndroidAgentTools(
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .build()
         manager.notify(pkg.hashCode(), notification)
-        return AgentToolStatus.LAUNCH_NEEDS_TAP +
+        return ToolOutcome.NeedsUserTap(
             "Я подготовил открытие «" + label + "». Нажми уведомление N.O.X. для запуска. " +
-            "Пока ты не нажмёшь его, приложение не открыто."
+            "Пока ты не нажмёшь его, приложение не открыто.")
     }
 
-    private fun actOnNode(action: AgentDecision.Tool): String {
-        val before = snapshot ?: error("Сначала используй observe")
-        if (goal.arithmetic && !goal.allowsLaunch(before.pkg)) return AgentToolStatus.GOAL_REJECTED + "Нужен экран калькулятора."
-        val target = before.nodes.firstOrNull { it.id == action.arg } ?: error("Неизвестный ID; обнови экран")
+    private fun actOnNode(action: AgentDecision.Tool): ToolOutcome {
+        val before = snapshot ?: return ToolOutcome.RejectedBeforeAction("Сначала используй observe")
+        if (goal.arithmetic && !goal.allowsLaunch(before.pkg)) return ToolOutcome.RejectedBeforeAction("Нужен экран калькулятора.")
+        val target = before.nodes.firstOrNull { it.id == action.arg } ?: return ToolOutcome.RejectedBeforeAction("Неизвестный ID; обнови экран")
         if (!(target.enabled && if (action.name == "type") target.editable else target.clickable)) {
             snapshot = null
-            return "ERROR[UNSUPPORTED_NODE] Узел не поддерживает это действие. Выбери другой доступный узел после observe."
+            return ToolOutcome.RejectedBeforeAction("UNSUPPORTED_NODE: узел не поддерживает это действие. Выбери другой доступный узел после observe.")
         }
         val beforeGoal = goalObservation(before)
         goal.reject(beforeGoal, action.name, target.resource)?.let {
-            return AgentToolStatus.GOAL_REJECTED + it + "\n" + describeGoal(before)
+            return ToolOutcome.RejectedBeforeAction(it + "\n" + describeGoal(before))
         }
         authorize(before.pkg)
         val actionText = if (action.name == "type") "Ввести «" + action.text.take(1000) + "»"
@@ -315,22 +326,19 @@ internal class AndroidAgentTools(
                 node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             }
         }
-        if (!accepted) return "ERROR[ACTION_REJECTED] Android отклонил действие. Выполни observe и выбери доступный элемент."
-        val result = describeAfter("Android принял действие: " + actionText + ". Проверяй фактический результат.")
-        if (action.name == "click" && goal.arithmetic) {
-            val after = snapshot
-            if (after == null || !goal.afterClick(beforeGoal, target.resource, goalObservation(after)))
-                return AgentToolStatus.ACTION_UNVERIFIED + "После нажатия поле калькулятора не соответствует ожидаемому состоянию. Повторять действие не буду."
+        if (!accepted) return ToolOutcome.Unverified("Android не подтвердил действие. Повторять не буду.")
+        return describeAfter("Android принял действие: " + actionText + ". Проверяй фактический результат.",
+            if (goal.arithmetic) before else null) { after ->
+            !goal.arithmetic || goal.afterClick(beforeGoal, target.resource, goalObservation(after))
         }
-        return result + (snapshot?.let { goal.hint(goalObservation(it)) }?.let { "\n" + it } ?: "")
     }
 
-    fun execute(action: AgentDecision.Tool): String {
+    fun execute(action: AgentDecision.Tool): ToolOutcome {
         checkActive()
         if (goal.arithmetic && action.name !in setOf("apps", "launch", "observe", "click"))
-            return AgentToolStatus.GOAL_REJECTED + "Для этой задачи нужны только кнопки калькулятора."
+            return ToolOutcome.RejectedBeforeAction("Для этой задачи нужны только кнопки калькулятора.")
         if (action.name == "launch" && !goal.allowsLaunch(action.arg))
-            return AgentToolStatus.GOAL_REJECTED + "Нужен калькулятор Samsung."
+            return ToolOutcome.RejectedBeforeAction("Нужен калькулятор Samsung.")
         return when (action.name) {
             "apps" -> {
                 val pm = context.packageManager
@@ -341,7 +349,7 @@ internal class AndroidAgentTools(
                     .filter { action.arg.isBlank() || it.first.contains(action.arg, true) || it.second.contains(action.arg, true) }
                     .sortedBy { it.first.lowercase(Locale.ROOT) }.take(80)
                 list.forEach { apps[it.second] = it.first }
-                list.joinToString("\n") { it.first + " = " + it.second }.ifBlank { "Не найдено. Попробуй другое написание или пустой поиск." }
+                ToolOutcome.Ok(list.joinToString("\n") { it.first + " = " + it.second }.ifBlank { "Не найдено. Попробуй другое написание или пустой поиск." })
             }
             "launch" -> {
                 require(action.arg in apps && permitted(action.arg)) { "Сначала получи точный пакет через apps" }
@@ -355,7 +363,7 @@ internal class AndroidAgentTools(
                 if (already?.pkg == action.arg) {
                     expectedLaunch = null
                     snapshot = already
-                    return "Приложение уже открыто; продолжай с текущего экрана.\n" + describeGoal(already)
+                    return ToolOutcome.Ok("Приложение уже открыто; продолжай с текущего экрана.\n" + describeGoal(already), already.pkg)
                 }
                 expectedLaunch = action.arg
                 actionGate.before(AgentNarration.launch(label))
@@ -373,12 +381,12 @@ internal class AndroidAgentTools(
                     // Android may deny a start from the foreground service even with its overlay.
                     return offerLaunch(action.arg, label, launch)
                 } catch (e: android.content.ActivityNotFoundException) {
-                    return "ERROR[APP_NOT_FOUND] Не удалось найти экран запуска для «" + label + "»."
+                    return ToolOutcome.Failed("ERROR[APP_NOT_FOUND] Не удалось найти экран запуска для «" + label + "».")
                 }
                 if (NoxNavigationService.current == null) {
-                    return AgentToolStatus.LAUNCH_UNVERIFIED +
+                    return ToolOutcome.Unverified(
                         "Отправил Android команду открыть «" + label + "», но проверить результат без " +
-                        "службы специальных возможностей не могу."
+                        "службы специальных возможностей не могу.")
                 }
                 repeat(6) {
                     pause(500)
@@ -389,16 +397,16 @@ internal class AndroidAgentTools(
                     if (observed?.pkg == action.arg) {
                         expectedLaunch = null
                         snapshot = observed
-                        return "Запуск подтверждён: " + action.arg + "\n" + describeGoal(observed)
+                        return ToolOutcome.Ok("Запуск подтверждён: " + action.arg + "\n" + describeGoal(observed), observed.pkg)
                     }
                 }
                 snapshot = null
                 // Accessibility is connected, but Android may still be switching windows.
                 // AgentCore performs bounded read-only observations; no clicks until verified.
-                return AgentToolStatus.LAUNCH_RECHECK +
-                    "Android получил запрос на запуск «" + label + "», но экран ещё не подтвердил переход."
+                return ToolOutcome.LaunchRecheck(
+                    "Android получил запрос на запуск «" + label + "», но экран ещё не подтвердил переход.")
             }
-            "observe" -> observe()
+            "observe" -> ToolOutcome.Ok(observe(), snapshot?.pkg)
             "click", "type" -> actOnNode(action)
             "back", "home" -> {
                 val pkg = ui { nav().rootInActiveWindow?.packageName?.toString().orEmpty() }
@@ -409,7 +417,7 @@ internal class AndroidAgentTools(
                 goal.mutation()
                 val ok = ui { require(nav().rootInActiveWindow?.packageName?.toString() == pkg && permissions.allowed(pkg)) { "Экран изменился" }; nav().performGlobalAction(if (action.name == "back") AccessibilityService.GLOBAL_ACTION_BACK
                     else AccessibilityService.GLOBAL_ACTION_HOME) }
-                if (ok) describeAfter("Android принял навигацию.") else "ERROR[ACTION_REJECTED] Навигация отклонена."
+                if (ok) describeAfter("Android принял навигацию.") else ToolOutcome.Unverified("Навигация не подтверждена Android.")
             }
             "scroll" -> {
                 val before = snapshot ?: error("Сначала используй observe")
@@ -426,7 +434,7 @@ internal class AndroidAgentTools(
                     n.performAction(if (action.arg == "down") AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
                 }
                 if (ok) describeAfter("Прокрутка принята.")
-                else "ERROR[ACTION_REJECTED] Прокрутка не выполнена. Обнови экран."
+                else ToolOutcome.Unverified("Прокрутка не подтверждена Android.")
             }
             "volume" -> {
                 confirmed("Изменить громкость устройства")
@@ -437,7 +445,7 @@ internal class AndroidAgentTools(
                 val audio = requireNotNull(context.getSystemService(AudioManager::class.java))
                 audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,
                     if (action.arg == "up") AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI)
-                "Громкость медиа: " + audio.getStreamVolume(AudioManager.STREAM_MUSIC) + " из " + audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                ToolOutcome.Ok("Громкость медиа: " + audio.getStreamVolume(AudioManager.STREAM_MUSIC) + " из " + audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC))
                 }
             }
             else -> error("Неизвестный инструмент")
