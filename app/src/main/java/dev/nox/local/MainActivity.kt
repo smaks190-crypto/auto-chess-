@@ -132,7 +132,7 @@ class MainActivity : Activity() {
         chatPage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         chatScroll = ScrollView(this).apply { isFillViewport = true }
         messages = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.BOTTOM }
-        chatScroll.addView(messages, ScrollView.LayoutParams(-1, -2))
+        chatScroll.addView(messages, FrameLayout.LayoutParams(-1, -2))
         chatPage.addView(chatScroll, LinearLayout.LayoutParams(-1, 0, 1f))
         attachment = textLabel("", 13f, muted).apply {
             visibility = View.GONE; setOnClickListener { service?.removeImage() }
