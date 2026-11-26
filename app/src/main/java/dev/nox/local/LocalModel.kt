@@ -11,13 +11,13 @@ import java.io.File
 internal class LocalModel : AutoCloseable {
     private var engine: Engine? = null
 
-    fun load(file: File, gpu: Boolean) {
+    fun load(file: File, gpu: Boolean, vision: Boolean = true) {
         require(file.isFile && file.length() > 0) { "Файл модели отсутствует" }
         close()
         val candidate = Engine(EngineConfig(
             modelPath = file.absolutePath,
             backend = if (gpu) Backend.GPU() else Backend.CPU(),
-            visionBackend = Backend.GPU()
+            visionBackend = if (vision) Backend.GPU() else null
         ))
         try {
             candidate.initialize()
