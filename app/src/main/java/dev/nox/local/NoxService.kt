@@ -919,7 +919,8 @@ class NoxService : Service() {
                         publish()
                     }
                 }
-                val tools = AndroidAgentTools(applicationContext, stop,
+                val goal = GoalState(text)
+                val tools = AndroidAgentTools(applicationContext, stop, goal = goal,
                     announce = { label -> announceAgent(label, stop) },
                     canLaunchDirectly = {
                         MainActivity.isVisible ||
@@ -929,6 +930,8 @@ class NoxService : Service() {
                     decide = { model.decide(it, stop) },
                     execute = { tools.execute(it) },
                     cancelled = stop,
+                    goal = goal,
+                    verifyFinish = tools::verifyFinish,
                     progress = { step -> main.post {
                         if (!destroyed && generating && !generationCancelled) {
                             if (step.endsWith(" · анализ")) agentActionLabel = null
