@@ -37,7 +37,6 @@ class NoxService : Service() {
     private var agentRunning = false
     @Volatile private var stopMicReady = false
     private var narration: CompletableFuture<Boolean>? = null
-    private var agentStopControl: Pair<WindowManager, View>? = null
     private var loopBlocked = false
     private var recognitionFailures = 0
     private var retryAt = 0L
@@ -577,9 +576,7 @@ class NoxService : Service() {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         removeOverlay()
-        removeAgentStopControl()
         syncOverlay()
-        syncAgentStopControl()
     }
 
     private fun finishSpeech(id: String, success: Boolean) {
@@ -611,48 +608,6 @@ class NoxService : Service() {
         activeSpeech = null; speaking = false; spokenText = ""; visibleSpeechEnd = 0
         tts?.stop()
         syncCaption()
-    }
-
-    private fun removeAgentStopControl() {
-        val control = agentStopControl ?: return
-        agentStopControl = null
-        runCatching { control.first.removeViewImmediate(control.second) }
-    }
-
-    private fun syncAgentStopControl() {
-        if (!agentRunning || !generating || generationCancelled || !unlocked() || destroyed) {
-            removeAgentStopControl()
-            return
-        }
-        if (agentStopControl != null) return
-        val appOverlay = Settings.canDrawOverlays(this)
-        val owner = if (appOverlay) this else NoxNavigationService.current ?: return
-        val wm = owner.getSystemService(WindowManager::class.java) ?: return
-        val control = TextView(owner).apply {
-            text = "■ Стоп"
-            contentDescription = "Остановить задачу Нокс"
-            textSize = 15f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            setPadding(dp(12f), dp(9f), dp(12f), dp(9f))
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(0xFFD02035.toInt())
-                cornerRadius = dp(14f).toFloat()
-            }
-            isClickable = true
-            filterTouchesWhenObscured = true
-            setOnClickListener { cancelGeneration() }
-        }
-        val params = WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            if (appOverlay) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-            PixelFormat.TRANSLUCENT).apply {
-                gravity = Gravity.BOTTOM or Gravity.END
-                x = dp(12f)
-                y = dp(80f)
-            }
-        runCatching { wm.addView(control, params) }.onSuccess { agentStopControl = wm to control }
     }
 
     /** Worker waits for the real TTS completion, then leaves a veto window before any mutation. */
@@ -712,6 +667,7 @@ class NoxService : Service() {
                     checkStop()
                     Thread.sleep(100L)
                 }
+                if (!stopMicReady) throw AgentDenied("Не удалось возобновить голосовую остановку. Действие не выполнено.")
             }
             val vetoDeadline = SystemClock.elapsedRealtime() + 3000L
             while (SystemClock.elapsedRealtime() < vetoDeadline) {
@@ -730,7 +686,6 @@ class NoxService : Service() {
         if (destroyed) return
         bubble?.invalidate()
         syncCaption()
-        syncAgentStopControl()
         syncVoiceLoop()
         syncIdleLifetime()
         listener?.invoke()
@@ -1087,7 +1042,7 @@ class NoxService : Service() {
         main.removeCallbacks(releaseIdle)
         if (receiverRegistered) { runCatching { unregisterReceiver(screenReceiver) }; receiverRegistered = false }
         stopListening(); recognizer?.close(); recognizer = null
-        stopSpeech(); removeOverlay(); removeAgentStopControl(); tts?.shutdown()
+        stopSpeech(); removeOverlay(); tts?.shutdown()
         listener = null
         worker.execute { runCatching { model.close() } }
         worker.shutdown()
