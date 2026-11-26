@@ -46,6 +46,7 @@ class NoxService : Service() {
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == Intent.ACTION_SCREEN_OFF) {
+                if (generating) generationCancelled = true
                 voiceEpoch++
                 stopListening()
                 stopSpeech()
@@ -272,6 +273,7 @@ class NoxService : Service() {
         when (intent?.action) {
             ENABLE -> enableBackground()
             LISTEN -> if (background) { loopBlocked = false; retryAt = 0L; listen() }
+            CANCEL_TASK -> cancelGeneration()
             STOP -> disableBackground()
             KEEP_ALIVE -> syncIdleLifetime()
             else -> syncIdleLifetime()
@@ -289,7 +291,8 @@ class NoxService : Service() {
             .setContentTitle("N.O.X. · локальный ассистент").setContentText(status.take(100))
             .setContentIntent(chat).setOngoing(true).setOnlyAlertOnce(true)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
-            .addAction(Notification.Action.Builder(android.R.drawable.ic_btn_speak_now, "Говорить", action(LISTEN, 2)).build())
+            .addAction(if (generating) Notification.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel, "Отменить задачу", action(CANCEL_TASK, 4)).build()
+                else Notification.Action.Builder(android.R.drawable.ic_btn_speak_now, "Говорить", action(LISTEN, 2)).build())
             .addAction(Notification.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel, "Остановить", action(STOP, 3)).build())
             .build()
     }
@@ -318,6 +321,7 @@ class NoxService : Service() {
     }
 
     internal fun disableBackground() {
+        if (generating) generationCancelled = true
         voiceEpoch++
         stopListening()
         stopSpeech()
@@ -740,21 +744,6 @@ class NoxService : Service() {
         history.add(Turn(true, text)); partial = ""; elapsedMs = null
         if (history.size > 60) history.subList(0, history.size - 60).clear()
         persistHistory()
-        val direct = if (image == null) PhoneCommands.parse(text) else null
-        if (direct != null) {
-            val start = SystemClock.elapsedRealtime()
-            if (direct is PhoneCommand.Open || direct is PhoneCommand.OpenWithFollowUp) {
-                runWork("Открываю приложение…", { PhoneActions.execute(this, direct) }, {
-                    elapsedMs = SystemClock.elapsedRealtime() - start
-                    complete(it, speak && voiceToken == voiceEpoch)
-                })
-            } else {
-                val response = runCatching { PhoneActions.execute(this, direct) }.getOrElse { "Не удалось: " + (it.message ?: it.javaClass.simpleName) }
-                elapsedMs = SystemClock.elapsedRealtime() - start
-                complete(response, speak)
-            }
-            return
-        }
         val config = loaded
         if (config == null || (image != null && !config.vision)) {
             complete(if (config == null) "Сначала загрузи модель в настройках." else "Выбранная модель не поддерживает изображения.", speak)
@@ -764,9 +753,23 @@ class NoxService : Service() {
         var lastUpdate = 0L
         generationCancelled = false
         generating = true
-        runWork("Думаю…", {
+        runWork(if (image == null) "Анализирую задачу…" else "Думаю…", {
             val start = SystemClock.elapsedRealtime()
-            val response = model.chat(prompt, image, deep, { destroyed || generationCancelled }) { chunk ->
+            val deadline = SystemClock.elapsedRealtime() + 240_000L
+            val stop = { destroyed || generationCancelled || SystemClock.elapsedRealtime() >= deadline }
+            val response = if (image == null) {
+                val tools = AndroidAgentTools(applicationContext, stop)
+                AgentCore(
+                    decide = { model.decide(it, stop) },
+                    execute = { tools.execute(it) },
+                    cancelled = stop,
+                    progress = { step -> main.post {
+                        if (!destroyed && generating && !generationCancelled) {
+                            status = step; publish()
+                        }
+                    } }
+                ).run(text, previous)
+            } else model.chat(prompt, image, deep, stop) { chunk ->
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastUpdate >= 80) {
                     lastUpdate = now
@@ -951,6 +954,7 @@ class NoxService : Service() {
         const val ENABLE = "dev.nox.local.ENABLE_VOICE"
         const val LISTEN = "dev.nox.local.LISTEN"
         const val STOP = "dev.nox.local.STOP"
+        const val CANCEL_TASK = "dev.nox.local.CANCEL_TASK"
         private const val CHANNEL = "nox_voice"
         private const val ID = 100
     }
