@@ -47,6 +47,7 @@ class NoxService : Service() {
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == Intent.ACTION_SCREEN_OFF) {
+                voiceEpoch++
                 stopListening()
                 stopSpeech()
                 status = if (background) "Голос приостановлен до разблокировки" else status
@@ -794,12 +795,12 @@ class NoxService : Service() {
         if (history.size > 60) history.subList(0, history.size - 60).clear()
         persistHistory()
         status = "На связи"
-        if (speak && !offlineTts) {
+        if (speak && unlocked() && !offlineTts) {
             val engine = tts
             val voice = runCatching { engine?.voices?.firstOrNull { it.locale.language == "ru" && !it.isNetworkConnectionRequired } }.getOrNull()
             if (voice != null) offlineTts = runCatching { engine?.setVoice(voice) == TextToSpeech.SUCCESS }.getOrDefault(false)
         }
-        if (speak && offlineTts) {
+        if (speak && unlocked() && offlineTts) {
             stopSpeech()
             val id = "nox-" + (++speechId)
             activeSpeech = id; spokenText = text; visibleSpeechEnd = 0
@@ -823,7 +824,7 @@ class NoxService : Service() {
                     }
                 }, 180_000L)
             }
-        } else if (speak) {
+        } else if (speak && unlocked()) {
             status = "Русский офлайн-голос недоступен"
             holdCaption(text)
         }
