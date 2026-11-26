@@ -45,8 +45,8 @@ android {
         applicationId = "dev.nox.local"
         minSdk = 31
         targetSdk = 36
-        versionCode = 6
-        versionName = "0.4.1-agent-dev"
+        versionCode = 7
+        versionName = "0.4.2-agent-dev"
         ndk { abiFilters += "arm64-v8a" }
     }
     compileOptions {
