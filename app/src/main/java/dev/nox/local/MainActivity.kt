@@ -58,6 +58,13 @@ class MainActivity : Activity() {
     private var pendingVoice = false
     private var pendingBackground = false
     private var importIndex = 0
+    private var perceptionUid = -1
+    private lateinit var perceptionButton: Button
+    private lateinit var perceptionStatus: TextView
+    private val perceptionUi = android.os.Handler(android.os.Looper.getMainLooper())
+    private val perceptionRefresh = object : Runnable {
+        override fun run() { renderPerception(); perceptionUi.postDelayed(this, 750) }
+    }
     private val bg = 0xFF08090C.toInt()
     private val surface = 0xFF171922.toInt()
     private val ink = 0xFFF0EFF5.toInt()
@@ -207,6 +214,18 @@ class MainActivity : Activity() {
         settings.addView(textLabel("Агент запрашивает доступ к каждому приложению. Проверенные безопасные действия выполняются самостоятельно; неизвестные и критические требуют отдельного подтверждения.", 13f, muted))
         addButton(settings, "Разрешения агента") { showAgentGrants() }
 
+        settings.addView(textLabel("Зрение и слух", 19f).apply { typeface = Typeface.DEFAULT_BOLD })
+        perceptionButton = addButton(settings, "Включить восприятие", false) {
+            if (LivePerception.active) stopService(Intent(this, PerceptionService::class.java))
+            else choosePerceptionApp()
+        }
+        perceptionStatus = textLabel("", 13f, muted)
+        settings.addView(perceptionStatus)
+        addButton(settings, "Обсудить увиденное и услышанное") {
+            service?.reviewPerception()
+            if (settingsPage.visibility == View.VISIBLE) toggleSettings()
+        }
+        settings.addView(textLabel("Выбери приложение для звука и в системном окне Android выбери тот же экран. Захват продолжается вне чата до остановки или блокировки экрана. Аудио и кадры не сохраняются; распознанная речь и краткий контекст хранятся в памяти.", 13f, muted))
         settings.addView(textLabel("Модель", 19f).apply { typeface = Typeface.DEFAULT_BOLD })
         models = Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, catalog.map { it.name })
@@ -293,6 +312,32 @@ class MainActivity : Activity() {
                 .setNegativeButton("Отмена", null).show()
         }
         dialog.show()
+    }
+
+    private fun renderPerception() {
+        if (!::perceptionStatus.isInitialized) return
+        perceptionButton.text = if (LivePerception.active) "Остановить восприятие" else "Включить восприятие"
+        val snap = LivePerception.buffer.snapshot(android.os.SystemClock.elapsedRealtime())
+        perceptionStatus.text = LivePerception.status +
+            if (LivePerception.active) "\nКадры: " + LivePerception.frames + " · аудиосэмплы: " + LivePerception.audioSamples +
+                "\nСлышу: " + snap.speech.takeLast(500) + "\nВижу: " + LivePerception.visualSummary.takeLast(500) else ""
+    }
+
+    private fun choosePerceptionApp() {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 32)
+            return
+        }
+        val apps = packageManager.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+            .filter { it.activityInfo.packageName != packageName && it.activityInfo.packageName !in setOf("dev.nox.local", "dev.nox.local.dev", "com.android.settings") }
+            .distinctBy { it.activityInfo.packageName }.sortedBy { it.loadLabel(packageManager).toString().lowercase(Locale.ROOT) }
+        if (apps.isEmpty()) return
+        AlertDialog.Builder(this).setTitle("Какое приложение смотреть и слушать?")
+            .setItems(apps.map { it.loadLabel(packageManager).toString() }.toTypedArray()) { _, index ->
+                perceptionUid = apps[index].activityInfo.applicationInfo.uid
+                val manager = getSystemService(android.media.projection.MediaProjectionManager::class.java)
+                startActivityForResult(manager.createScreenCaptureIntent(), 31)
+            }.setNegativeButton("Отмена", null).show()
     }
 
     private fun toggleSettings() {
@@ -408,6 +453,10 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, results)
+        if (requestCode == 32) {
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) choosePerceptionApp()
+            return
+        }
         if (requestCode != 12) return
         val bg = pendingBackground; val local = pendingVoice
         pendingBackground = false; pendingVoice = false
@@ -431,6 +480,18 @@ class MainActivity : Activity() {
     @Deprecated("Prototype document picker")
     override fun onActivityResult(request: Int, result: Int, data: Intent?) {
         super.onActivityResult(request, result, data)
+        if (request == 31) {
+            if (result == RESULT_OK && data != null && perceptionUid >= 0) {
+                runCatching {
+                    startService(Intent(this, NoxService::class.java).setAction(NoxService.KEEP_ALIVE))
+                    startForegroundService(Intent(this, PerceptionService::class.java).setAction(PerceptionService.START)
+                        .putExtra(PerceptionService.RESULT, result).putExtra(PerceptionService.TOKEN, data)
+                        .putExtra(PerceptionService.UID, perceptionUid))
+                }.onFailure { perceptionStatus.text = "Не удалось запустить: " + it.message }
+            }
+            perceptionUid = -1
+            return
+        }
         if (result != RESULT_OK) return
         val uri = data?.data ?: return
         when (request) {
@@ -442,10 +503,13 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         isOnScreen = true
+        perceptionUi.removeCallbacks(perceptionRefresh)
+        perceptionUi.post(perceptionRefresh)
         service?.syncOverlay()
     }
     override fun onStop() {
         isOnScreen = false
+        perceptionUi.removeCallbacks(perceptionRefresh)
         service?.syncOverlay()
         super.onStop()
     }
