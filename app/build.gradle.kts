@@ -47,7 +47,18 @@ android {
         targetSdk = 36
         versionCode = 8
         versionName = "0.4.3-agent-dev"
+        manifestPlaceholders["noxAppLabel"] = "N.O.X."
+        manifestPlaceholders["noxNavigationLabel"] = "Нокс — навигация"
         ndk { abiFilters += "arm64-v8a" }
+    }
+    buildTypes {
+        create("dev") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-parallel"
+            manifestPlaceholders["noxAppLabel"] = "N.O.X. Dev"
+            manifestPlaceholders["noxNavigationLabel"] = "Нокс Dev — навигация"
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
