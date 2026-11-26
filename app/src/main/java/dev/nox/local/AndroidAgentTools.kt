@@ -141,7 +141,7 @@ internal class AndroidAgentTools(
     }
     private fun describeAfter(prefix: String): String {
         pause(500)
-        val view = runCatching { observe() }.getOrElse { "Экран не подтверждён: " + it.message }
+        val view = try { observe() } catch (e: AgentDenied) { throw e } catch (e: AgentToolUnavailable) { throw e } catch (e: Exception) { "Экран не подтверждён: " + e.message }
         return prefix + "\n" + view
     }
     private fun choose(label: String, options: List<String>): Int {
@@ -313,7 +313,10 @@ internal class AndroidAgentTools(
                 require(action.arg in apps && permitted(action.arg)) { "Сначала получи точный пакет через apps" }
                 val label = apps.getValue(action.arg)
                 authorize(action.arg)
-                val already = runCatching { ui { readScreen() } }.getOrNull()
+                val already = runCatching { ui {
+                    require(nav().rootInActiveWindow?.packageName?.toString() == action.arg) { "Другое приложение" }
+                    readScreen()
+                } }.getOrNull()
                 if (already?.pkg == action.arg) {
                     expectedLaunch = null
                     snapshot = already
@@ -341,11 +344,12 @@ internal class AndroidAgentTools(
                         "Отправил Android команду открыть «" + label + "», но проверить результат без " +
                         "службы специальных возможностей не могу."
                 }
-                var lastScreen: Screen? = null
                 repeat(6) {
                     pause(500)
-                    lastScreen = runCatching { ui { readScreen() } }.getOrNull()
-                    val observed = lastScreen
+                    val observed = runCatching { ui {
+                        require(nav().rootInActiveWindow?.packageName?.toString() == action.arg) { "Переход ещё не подтверждён" }
+                        readScreen()
+                    } }.getOrNull()
                     if (observed?.pkg == action.arg) {
                         expectedLaunch = null
                         snapshot = observed
