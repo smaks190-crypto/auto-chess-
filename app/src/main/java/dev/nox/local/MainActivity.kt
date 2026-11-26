@@ -206,6 +206,17 @@ class MainActivity : Activity() {
         settings.addView(progress)
         cancel = addButton(settings, "Отменить скачивание", false) { service?.cancelDownload() }.apply { visibility = View.GONE }
         addButton(settings, "Импортировать файл вручную") { importIndex = models.selectedItemPosition; pick(10, "*/*") }
+        addButton(settings, "Выбрать проверенную каталожную модель") {
+            val index = models.selectedItemPosition
+            val pkg = catalog[index]
+            AlertDialog.Builder(this).setTitle("Проверенная копия " + pkg.name)
+                .setMessage("Импортированные и прежние файлы останутся на устройстве. Если проверенной копии нет, потребуется скачать " + String.format(Locale.US, "%.2f", pkg.size / 1e9) + " ГБ.")
+                .setNegativeButton("Отмена", null)
+                .setPositiveButton("Продолжить") { _, _ ->
+                    saveSelection(index)
+                    service?.selectModel(index, gpu.isChecked, vision.isChecked, forceCatalog = true)
+                }.show()
+        }
         settings.addView(textLabel("Диагностика", 19f).apply { typeface = Typeface.DEFAULT_BOLD })
         addButton(settings, "Сравнительный тест") { service?.benchmark(models.selectedItemPosition, gpu.isChecked, vision.isChecked) }
         addButton(settings, "Журнал тестов") {
@@ -250,7 +261,7 @@ class MainActivity : Activity() {
         val pkg = catalog[index]
         val busy = s == null || s.busy
         header.text = if (s == null) "Подключение…" else s.status
-        details.text = if (s == null) "" else (s.loaded?.let { catalog[it.index].name + if (it.gpu) " · GPU" else " · CPU" } ?: "Модель не загружена") +
+        details.text = if (s == null) "" else (s.loaded?.let { catalog[it.index].name + (if (it.imported) " · импорт" else " · каталог") + if (it.gpu) " · GPU" else " · CPU" } ?: "Модель не загружена") +
             (s.elapsedMs?.let { "\nПоследний ответ: " + it + " мс" } ?: "")
         val exists = s?.modelFile(index)?.isFile == true
         modelButton.text = if (exists) "Запустить " + pkg.name else "Скачать и запустить · " +
