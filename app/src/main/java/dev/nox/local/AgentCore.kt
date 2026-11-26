@@ -42,7 +42,9 @@ internal class AgentCore(
     private val execute: (AgentDecision.Tool) -> String,
     private val cancelled: () -> Boolean,
     private val maxSteps: Int = 14,
-    private val progress: (String) -> Unit = {}
+    private val progress: (String) -> Unit = {},
+    private val goal: GoalState? = null,
+    private val verifyFinish: () -> String? = { null }
 ) {
     fun run(request: String, history: String): String {
         val results = mutableListOf<String>()
@@ -50,6 +52,7 @@ internal class AgentCore(
         var consecutiveFailures = 0
         var verifiedLaunch: String? = null
         var repeatedLaunches = 0
+        var rejectedFinishes = 0
         val readOnlyResults = mutableMapOf<Pair<AgentDecision.Tool, String>, Int>()
         fun finish(answer: String): String {
             // Don't let the model turn a tool failure into an unsupported claim about its capabilities.
@@ -100,7 +103,20 @@ internal class AgentCore(
             val decision = action ?: return finish("Не удалось получить корректный JSON после трёх попыток. Последняя ошибка: " + formatError.take(180))
             if (cancelled()) return "Задача отменена."
             when (decision) {
-                is AgentDecision.Finish -> return finish(decision.answer)
+                is AgentDecision.Finish -> {
+                    if (goal == null) return finish(decision.answer) // legacy simulated tool tests
+                    if (results.lastOrNull()?.contains("ERROR[") == true) return finish(decision.answer)
+                    if (!goal.supported) return "Задача остановлена: независимая проверка этой цели пока не поддерживается. Завершение не подтверждено."
+                    val verified = try { verifyFinish() }
+                    catch (e: AgentDenied) { return e.message ?: "Задача остановлена." }
+                    catch (e: AgentToolUnavailable) { return e.message ?: "Служба отключена." }
+                    catch (_: Exception) { null }
+                    if (cancelled()) return "Задача отменена."
+                    if (verified != null) return verified
+                    if (++rejectedFinishes >= 2) return "UNVERIFIED_FINISH: результат не подтверждён свежим экраном."
+                    results.add("Finish отклонён: цель не подтверждена. Обнови экран и продолжай только необходимые действия.")
+                    return@repeat
+                }
                 is AgentDecision.Tool -> {
                     val repeated = decision.name == "launch" && decision.arg == verifiedLaunch
                     if (repeated) {
