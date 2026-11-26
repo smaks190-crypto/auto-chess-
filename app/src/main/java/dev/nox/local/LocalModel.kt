@@ -32,10 +32,10 @@ internal class LocalModel : AutoCloseable {
         val prompt = PromptPolicy.build(command)
         val active = checkNotNull(engine) { "Сначала загрузите модель" }
         return active.createConversation().use { conversation ->
-            if (image == null) conversation.sendMessage(prompt).text
+            if (image == null) conversation.sendMessage(prompt).toString()
             else conversation.sendMessage(Contents.of(
                 Content.ImageFile(image.absolutePath), Content.Text(prompt)
-            )).text
+            )).toString()
         }
     }
 
