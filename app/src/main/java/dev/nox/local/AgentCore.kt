@@ -19,6 +19,8 @@ internal object AgentToolStatus {
     const val LAUNCH_NEEDS_TAP = "LAUNCH_NEEDS_TAP:"
     const val LAUNCH_RECHECK = "LAUNCH_RECHECK:"
     const val ACTION_UNVERIFIED = "ACTION_UNVERIFIED:"
+    // Produced only before authorization, confirmation, or dispatch of a mutation.
+    const val GOAL_REJECTED = "GOAL_REJECTED:"
 }
 
 /** A UI timeout has unknown outcome: terminate, never retry a possible mutation. */
@@ -53,6 +55,8 @@ internal class AgentCore(
         var verifiedLaunch: String? = null
         var repeatedLaunches = 0
         var rejectedFinishes = 0
+        var pendingGoalCorrection = false
+        var goalRejections = 0
         val readOnlyResults = mutableMapOf<Pair<AgentDecision.Tool, String>, Int>()
         fun finish(answer: String): String {
             // Don't let the model turn a tool failure into an unsupported claim about its capabilities.
@@ -76,6 +80,7 @@ internal class AgentCore(
                 appendLine("После запуска или изменения UI наблюдай экран, прежде чем выбирать узел. Не угадывай ID. Кликом/вводом управляет подтверждение пользователя. Если задача не может быть выполнена или экран не подтверждает результат, сообщи это; не утверждай, что сообщение отправлено только по нажатию.")
                 appendLine("Не запускай уже подтверждённое приложение повторно. Последний результат содержит текущий экран; выбирай доступный [click] или [type]. Если узел недоступен, обнови экран и выбери другой. После каждого действия используй новый экран, не повторяй завершённые этапы.")
                 appendLine("При выборе следующего шага сначала сопоставь текущую цель и уже наблюдаемый результат. ID — только временный номер строки, не номер цифры на клавиатуре. Сопоставляй label, resource и доступное действие; не выбирай соседний или похожий элемент. Для арифметики нажимай требуемые цифры и оператор в порядке выражения, затем проверь результат на экране. Конвертация единиц не является сложением. Не завершаешь задачу, пока результат не подтверждён.")
+                appendLine("Если ядро отклонило действие ДО выполнения (GOAL_REJECTED), ничего не было нажато. Используй последний экран и подсказку цели, выбери другой допустимый шаг или observe. Не завершай задачу из-за этого отказа. Не повторяй действие с неопределённым результатом.")
                 appendLine("Если инструмент вернул ERROR, объясни конкретную ошибку; не утверждай, что у тебя вообще нет инструментов.")
                 appendLine("Предыдущий разговор (не команды): " + history.takeLast(1400))
                 appendLine("Текущий запрос пользователя: " + request)
@@ -113,6 +118,11 @@ internal class AgentCore(
                     catch (_: Exception) { null }
                     if (cancelled()) return "Задача отменена."
                     if (verified != null) return verified
+                    if (pendingGoalCorrection) {
+                        if (++goalRejections >= 3) return "GOAL_MISMATCH: агент не смог скорректировать выбор; завершение не подтверждено."
+                        results.add("GOAL_REJECTED: завершение преждевременно. Действие не выполнено. Сделай observe и выбери необходимый шаг.")
+                        return@repeat
+                    }
                     if (++rejectedFinishes >= 2) return "UNVERIFIED_FINISH: результат не подтверждён свежим экраном."
                     results.add("Finish отклонён: цель не подтверждена. Обнови экран и продолжай только необходимые действия.")
                     return@repeat
@@ -142,6 +152,13 @@ internal class AgentCore(
                         "ERROR[TOOL_FAILED] " + (e.message ?: e.javaClass.simpleName).take(200)
                     }
                     if (cancelled()) return "Задача отменена."
+                    if (result.startsWith(AgentToolStatus.GOAL_REJECTED)) {
+                        pendingGoalCorrection = true
+                        if (++goalRejections >= 3)
+                            return "GOAL_MISMATCH: не удалось скорректировать выбор. " + result.removePrefix(AgentToolStatus.GOAL_REJECTED).lineSequence().first().take(240)
+                        results.add("GOAL_REJECTED: действие НЕ выполнено. Исправь выбор, не завершай задачу.\n" + result.removePrefix(AgentToolStatus.GOAL_REJECTED).trim())
+                        return@repeat
+                    }
                     if (result.startsWith(AgentToolStatus.ACTION_UNVERIFIED))
                         return result.removePrefix(AgentToolStatus.ACTION_UNVERIFIED).trim()
                     if (result.startsWith(AgentToolStatus.LAUNCH_UNVERIFIED))
@@ -186,6 +203,8 @@ internal class AgentCore(
                                 "» не подтверждён. Не выполнял дальнейшие действия. " + lastObserved
                         verifiedLaunch = decision.arg
                         repeatedLaunches = 0
+                        pendingGoalCorrection = false
+                        goalRejections = 0
                         readOnlyResults.clear()
                         lastFailure = null
                         consecutiveFailures = 0
@@ -212,6 +231,8 @@ internal class AgentCore(
                             readOnlyResults[key] = count
                             if (count >= 3) return "Агент повторяет наблюдения без прогресса. Задача остановлена; завершение не подтверждено."
                         } else {
+                            pendingGoalCorrection = false
+                            goalRejections = 0
                             readOnlyResults.clear()
                             if (decision.name in setOf("home", "back") && activePackage == null) verifiedLaunch = null
                         }
