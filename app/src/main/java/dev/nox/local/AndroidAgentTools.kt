@@ -37,7 +37,8 @@ internal class AndroidAgentTools(
     private val context: Context,
     private val cancelled: () -> Boolean,
     announce: (String) -> Unit,
-    private val canLaunchDirectly: () -> Boolean = { false }
+    private val canLaunchDirectly: () -> Boolean = { false },
+    private val goal: GoalState = GoalState("")
 ) {
     private val actionGate = AgentActionGate(cancelled, announce)
     private val main = Handler(Looper.getMainLooper())
@@ -128,6 +129,21 @@ internal class AndroidAgentTools(
         return Screen(pkg, root.windowId, nodes)
     }
 
+    private fun goalObservation(screen: Screen) = GoalObservation(goal.sequence(), screen.pkg,
+        screen.nodes.map { GoalNode(it.resource, it.label) })
+    private fun describeGoal(screen: Screen): String = screen.describe() +
+        (goal.hint(goalObservation(screen))?.let { "\n" + it } ?: "")
+
+    fun verifyFinish(): String? {
+        val previous = snapshot ?: return null
+        val current = ui {
+            require(nav().rootInActiveWindow?.packageName?.toString() == previous.pkg) { "Экран изменился" }
+            readScreen()
+        }
+        snapshot = current
+        return goal.finish(goalObservation(current))
+    }
+
     private fun observe(): String {
         snapshot = null
         val pkg = ui { nav().rootInActiveWindow?.packageName?.toString().orEmpty() }
@@ -137,7 +153,7 @@ internal class AndroidAgentTools(
         val screen = ui { readScreen().also { require(it.pkg == pkg) { "Активное приложение изменилось" } } }
         expectedLaunch = null
         snapshot = screen
-        return screen.describe()
+        return describeGoal(screen)
     }
     private fun describeAfter(prefix: String): String {
         pause(500)
@@ -265,6 +281,10 @@ internal class AndroidAgentTools(
             snapshot = null
             return "ERROR[UNSUPPORTED_NODE] Узел не поддерживает это действие. Выбери другой доступный узел после observe."
         }
+        val beforeGoal = goalObservation(before)
+        goal.reject(beforeGoal, action.name, target.resource)?.let {
+            return "ERROR[GOAL_MISMATCH] " + it
+        }
         authorize(before.pkg)
         val actionText = if (action.name == "type") "Ввести «" + action.text.take(1000) + "»"
             else "Нажать «" + target.label.ifBlank { target.kind + " " + target.resource } + "»"
@@ -274,6 +294,7 @@ internal class AndroidAgentTools(
             confirmed(appLabel(before.pkg) + " · " + before.pkg + "\n" + actionText)
         pause(250)
         snapshot = null
+        goal.mutation()
         val accepted = ui {
             require(permissions.allowed(before.pkg)) { "Разрешение отозвано" }
             val current = readScreen()
@@ -294,7 +315,9 @@ internal class AndroidAgentTools(
             }
         }
         if (!accepted) return "ERROR[ACTION_REJECTED] Android отклонил действие. Выполни observe и выбери доступный элемент."
-        return describeAfter("Android принял действие: " + actionText + ". Проверяй фактический результат.")
+        val result = describeAfter("Android принял действие: " + actionText + ". Проверяй фактический результат.")
+        if (action.name == "click") snapshot?.let { goal.afterClick(beforeGoal, target.resource, goalObservation(it)) }
+        return result + (snapshot?.let { goal.hint(goalObservation(it)) }?.let { "\n" + it } ?: "")
     }
 
     fun execute(action: AgentDecision.Tool): String {
@@ -315,6 +338,7 @@ internal class AndroidAgentTools(
                 require(action.arg in apps && permitted(action.arg)) { "Сначала получи точный пакет через apps" }
                 val label = apps.getValue(action.arg)
                 authorize(action.arg)
+                goal.launched(action.arg, label)
                 val already = runCatching { ui {
                     require(nav().rootInActiveWindow?.packageName?.toString() == action.arg) { "Другое приложение" }
                     readScreen()
@@ -322,11 +346,12 @@ internal class AndroidAgentTools(
                 if (already?.pkg == action.arg) {
                     expectedLaunch = null
                     snapshot = already
-                    return "Приложение уже открыто; продолжай с текущего экрана.\n" + already.describe()
+                    return "Приложение уже открыто; продолжай с текущего экрана.\n" + describeGoal(already)
                 }
                 expectedLaunch = action.arg
                 actionGate.before(AgentNarration.launch(label))
                 snapshot = null
+                goal.mutation()
                 val launch = context.packageManager.getLaunchIntentForPackage(action.arg)
                     ?: error("У приложения «" + label + "» нет запускаемого экрана")
                 launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -355,7 +380,7 @@ internal class AndroidAgentTools(
                     if (observed?.pkg == action.arg) {
                         expectedLaunch = null
                         snapshot = observed
-                        return "Запуск подтверждён: " + action.arg + "\n" + observed.describe()
+                        return "Запуск подтверждён: " + action.arg + "\n" + describeGoal(observed)
                     }
                 }
                 snapshot = null
@@ -372,9 +397,10 @@ internal class AndroidAgentTools(
                 confirmed(appLabel(pkg) + "\n" + if (action.name == "back") "Назад" else "На главный экран")
                 actionGate.before(if (action.name == "back") "Возвращаюсь назад." else "Перехожу на главный экран.")
                 snapshot = null
+                goal.mutation()
                 val ok = ui { require(nav().rootInActiveWindow?.packageName?.toString() == pkg && permissions.allowed(pkg)) { "Экран изменился" }; nav().performGlobalAction(if (action.name == "back") AccessibilityService.GLOBAL_ACTION_BACK
                     else AccessibilityService.GLOBAL_ACTION_HOME) }
-                describeAfter(if (ok) "Android принял навигацию." else "Навигация отклонена.")
+                if (ok) describeAfter("Android принял навигацию.") else "ERROR[ACTION_REJECTED] Навигация отклонена."
             }
             "scroll" -> {
                 val before = snapshot ?: error("Сначала используй observe")
@@ -382,6 +408,7 @@ internal class AndroidAgentTools(
                 val target = before.nodes.firstOrNull { it.scrollable && it.enabled } ?: error("Нет доступной прокрутки")
                 actionGate.before(if (action.arg == "down") "Листаю вниз." else "Листаю вверх.")
                 snapshot = null
+                goal.mutation()
                 val ok = ui {
                     require(readScreen() == before) { "Экран изменился" }
                     var n = nav().rootInActiveWindow ?: error("Экран исчез")
@@ -395,6 +422,8 @@ internal class AndroidAgentTools(
             "volume" -> {
                 confirmed("Изменить громкость устройства")
                 actionGate.before(if (action.arg == "up") "Увеличиваю громкость." else "Уменьшаю громкость.")
+                goal.mutation()
+                snapshot = null
                 ui {
                 val audio = requireNotNull(context.getSystemService(AudioManager::class.java))
                 audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,
