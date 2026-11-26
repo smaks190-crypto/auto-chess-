@@ -17,6 +17,9 @@ import android.view.*
 import android.widget.TextView
 import java.io.File
 import java.util.concurrent.Executors
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 class NoxService : Service() {
     internal data class Turn(val user: Boolean, val text: String)
@@ -31,6 +34,10 @@ class NoxService : Service() {
     private var offlineTts = false
     private var speechId = 0
     private var voiceEpoch = 0
+    private var agentRunning = false
+    @Volatile private var stopMicReady = false
+    private var narration: CompletableFuture<Boolean>? = null
+    private var agentStopControl: Pair<WindowManager, View>? = null
     private var loopBlocked = false
     private var recognitionFailures = 0
     private var retryAt = 0L
@@ -60,7 +67,8 @@ class NoxService : Service() {
             getSystemService(PowerManager::class.java)?.isInteractive == true
 
     private fun canAutoListen(): Boolean = !destroyed && VoiceLoopPolicy.canListen(
-        background, busy, listening, activeSpeech != null || speaking, unlocked(), loopBlocked)
+        background, busy && !(agentRunning && !generationCancelled), listening,
+        activeSpeech != null || speaking, unlocked(), loopBlocked)
 
     private fun syncVoiceLoop() {
         if (!canAutoListen()) {
@@ -124,7 +132,9 @@ class NoxService : Service() {
     internal fun cancelGeneration() {
         if (!generating) return
         generationCancelled = true
-        status = "Отменяю генерацию…"
+        stopListening()
+        stopSpeech()
+        status = "Останавливаю задачу…"
         publish()
     }
     internal var listener: (() -> Unit)? = null
@@ -136,7 +146,7 @@ class NoxService : Service() {
         private set
     internal var listening = false
         private set
-    internal var background = false
+    @Volatile internal var background = false
         private set
     internal var progress: Int? = null
         private set
@@ -241,10 +251,10 @@ class NoxService : Service() {
                                 publish()
                             }
                         }
-                        override fun onDone(utteranceId: String) = finishSpeech(utteranceId)
+                        override fun onDone(utteranceId: String) = finishSpeech(utteranceId, true)
                         @Deprecated("Deprecated by Android")
-                        override fun onError(utteranceId: String) = finishSpeech(utteranceId)
-                        override fun onStop(utteranceId: String, interrupted: Boolean) = finishSpeech(utteranceId)
+                        override fun onError(utteranceId: String) = finishSpeech(utteranceId, false)
+                        override fun onStop(utteranceId: String, interrupted: Boolean) = finishSpeech(utteranceId, false)
                     })
                 }
             }
@@ -567,15 +577,20 @@ class NoxService : Service() {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         removeOverlay()
+        removeAgentStopControl()
         syncOverlay()
+        syncAgentStopControl()
     }
 
-    private fun finishSpeech(id: String) {
+    private fun finishSpeech(id: String, success: Boolean) {
         main.post {
             if (activeSpeech == id) {
                 activeSpeech = null; speaking = false
+                val pending = narration
+                narration = null
                 holdCaption(spokenText)
                 publish()
+                pending?.complete(success)
             }
         }
     }
@@ -589,6 +604,8 @@ class NoxService : Service() {
     }
 
     private fun stopSpeech() {
+        narration?.complete(false)
+        narration = null
         main.removeCallbacks(expireCaption)
         captionHoldUntil = 0L
         activeSpeech = null; speaking = false; spokenText = ""; visibleSpeechEnd = 0
@@ -596,10 +613,124 @@ class NoxService : Service() {
         syncCaption()
     }
 
+    private fun removeAgentStopControl() {
+        val control = agentStopControl ?: return
+        agentStopControl = null
+        runCatching { control.first.removeViewImmediate(control.second) }
+    }
+
+    private fun syncAgentStopControl() {
+        if (!agentRunning || !generating || generationCancelled || !unlocked() || destroyed) {
+            removeAgentStopControl()
+            return
+        }
+        if (agentStopControl != null) return
+        val appOverlay = Settings.canDrawOverlays(this)
+        val owner = if (appOverlay) this else NoxNavigationService.current ?: return
+        val wm = owner.getSystemService(WindowManager::class.java) ?: return
+        val control = TextView(owner).apply {
+            text = "■ Стоп"
+            contentDescription = "Остановить задачу Нокс"
+            textSize = 15f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(dp(12f), dp(9f), dp(12f), dp(9f))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xFFD02035.toInt())
+                cornerRadius = dp(14f).toFloat()
+            }
+            isClickable = true
+            filterTouchesWhenObscured = true
+            setOnClickListener { cancelGeneration() }
+        }
+        val params = WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            if (appOverlay) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT).apply {
+                gravity = Gravity.BOTTOM or Gravity.END
+                x = dp(12f)
+                y = dp(80f)
+            }
+        runCatching { wm.addView(control, params) }.onSuccess { agentStopControl = wm to control }
+    }
+
+    /** Worker waits for the real TTS completion, then leaves a veto window before any mutation. */
+    private fun announceAgent(label: String, cancelled: () -> Boolean) {
+        val done = CompletableFuture<Boolean>()
+        main.post {
+            if (destroyed || cancelled() || !unlocked() || !agentRunning) {
+                done.complete(false)
+                return@post
+            }
+            stopListening()
+            stopSpeech()
+            val engine = tts
+            if (!offlineTts) {
+                val voice = runCatching { engine?.voices?.firstOrNull {
+                    it.locale.language == "ru" && !it.isNetworkConnectionRequired
+                } }.getOrNull()
+                if (voice != null) offlineTts = runCatching {
+                    engine?.setVoice(voice) == TextToSpeech.SUCCESS
+                }.getOrDefault(false)
+            }
+            if (!offlineTts || engine == null) {
+                done.complete(false)
+                return@post
+            }
+            val id = "agent-" + (++speechId)
+            narration = done
+            activeSpeech = id
+            spokenText = label
+            visibleSpeechEnd = label.length
+            status = label
+            if (engine.speak(label, TextToSpeech.QUEUE_FLUSH, null, id) != TextToSpeech.SUCCESS) {
+                stopSpeech()
+            }
+            publish()
+        }
+        fun checkStop() {
+            if (cancelled()) throw AgentDenied()
+        }
+        try {
+            val deadline = SystemClock.elapsedRealtime() + 30_000L
+            var spoken = false
+            while (SystemClock.elapsedRealtime() < deadline) {
+                checkStop()
+                try {
+                    if (!done.get(100, TimeUnit.MILLISECONDS))
+                        throw AgentDenied("Не удалось озвучить действие. Задача остановлена до выполнения.")
+                    spoken = true
+                    break
+                } catch (_: TimeoutException) {}
+            }
+            if (!spoken) throw AgentDenied("Озвучивание не завершилось. Действие не выполнено.")
+            // Give Vosk time to resume (if the foreground voice mode is enabled).
+            if (background) {
+                val readyDeadline = SystemClock.elapsedRealtime() + 5000L
+                while (!stopMicReady && SystemClock.elapsedRealtime() < readyDeadline) {
+                    checkStop()
+                    Thread.sleep(100L)
+                }
+            }
+            val vetoDeadline = SystemClock.elapsedRealtime() + 3000L
+            while (SystemClock.elapsedRealtime() < vetoDeadline) {
+                checkStop()
+                Thread.sleep(100L)
+            }
+            checkStop()
+        } finally {
+            if (!done.isDone) main.post {
+                if (narration === done) { stopSpeech(); publish() }
+            }
+        }
+    }
+
     private fun publish() {
         if (destroyed) return
         bubble?.invalidate()
         syncCaption()
+        syncAgentStopControl()
         syncVoiceLoop()
         syncIdleLifetime()
         listener?.invoke()
@@ -620,10 +751,15 @@ class NoxService : Service() {
             main.post {
                 if (!destroyed) {
                     val wasCancelled = generating && generationCancelled
+                    if (agentRunning) {
+                        agentRunning = false
+                        stopListening()
+                        stopSpeech()
+                    }
                     generating = false
                     busy = false; progress = null
                     if (wasCancelled) {
-                        partial = ""; status = "Генерация отменена"
+                        partial = ""; status = "Задача остановлена"
                     } else result.fold(onSuccess = { status = "Готово"; finish(it) },
                         onFailure = { partial = ""; status = "Ошибка: " + (it.message ?: it.javaClass.simpleName) })
                     publish()
@@ -753,12 +889,13 @@ class NoxService : Service() {
         var lastUpdate = 0L
         generationCancelled = false
         generating = true
+        agentRunning = image == null
         runWork(if (image == null) "Анализирую задачу…" else "Думаю…", {
             val start = SystemClock.elapsedRealtime()
             val deadline = SystemClock.elapsedRealtime() + 240_000L
             val stop = { destroyed || generationCancelled || SystemClock.elapsedRealtime() >= deadline }
             val response = if (image == null) {
-                val tools = AndroidAgentTools(applicationContext, stop)
+                val tools = AndroidAgentTools(applicationContext, stop) { label -> announceAgent(label, stop) }
                 AgentCore(
                     decide = { model.decide(it, stop) },
                     execute = { tools.execute(it) },
@@ -829,7 +966,9 @@ class NoxService : Service() {
 
     internal fun listen() {
         if (destroyed || listening || activeSpeech != null || speaking) return
-        if (busy) { status = "Подожди, Нокс занят…"; publish(); return }
+        val stopOnly = agentRunning && busy && !generationCancelled
+        if (busy && !stopOnly) { status = "Подожди, Нокс занят…"; publish(); return }
+        if (stopOnly && !background) return
         main.removeCallbacks(restartVoice)
         if (!unlocked()) { status = "Разблокируй телефон для голосовой команды"; publish(); return }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -842,14 +981,16 @@ class NoxService : Service() {
         try {
             val engine = recognizer ?: SilentRecognizer(applicationContext).also { recognizer = it }
             listening = true
-            status = "Запускаю локальное распознавание…"; publish()
+            if (!stopOnly) status = "Запускаю локальное распознавание…"
+            publish()
             main.postDelayed(recognitionTimeout, 60_000L)
             engine.start(object : SilentRecognizer.Listener {
                 override fun onReady() {
                     if (token != speechId || !listening) return
                     main.removeCallbacks(recognitionTimeout)
                     if (!unlocked()) { stopListening(); publish(); return }
-                    status = "Слушаю…"; publish()
+                    if (stopOnly) stopMicReady = true else status = "Слушаю…"
+                    publish()
                     // Background sessions stay open through silence; manual sessions have a limit.
                     if (!background) main.postDelayed(recognitionTimeout, 30_000L)
                 }
@@ -860,7 +1001,7 @@ class NoxService : Service() {
                     }
                 }
                 override fun onPartial(text: String) {
-                    if (token == speechId && listening) {
+                    if (token == speechId && listening && !stopOnly) {
                         recognizedText = text
                         publish()
                     }
@@ -871,6 +1012,10 @@ class NoxService : Service() {
                     recognitionFailures = 0; retryAt = 0L
                     if (!unlocked()) { publish(); return }
                     if (background && VoiceLoopPolicy.isStopPhrase(text)) { disableBackground(); return }
+                    if (stopOnly) {
+                        if (VoiceLoopPolicy.isCancelTaskPhrase(text)) cancelGeneration() else publish()
+                        return
+                    }
                     ask(text, speak = true)
                 }
                 override fun onError(message: String, permanent: Boolean) {
@@ -886,7 +1031,7 @@ class NoxService : Service() {
         speechId++
         main.removeCallbacks(recognitionTimeout)
         recognizer?.stop()
-        listening = false; voiceLevel = 0f; recognizedText = ""
+        listening = false; stopMicReady = false; voiceLevel = 0f; recognizedText = ""
     }
 
     internal fun benchmark(index: Int, gpu: Boolean, vision: Boolean) {
@@ -942,7 +1087,7 @@ class NoxService : Service() {
         main.removeCallbacks(releaseIdle)
         if (receiverRegistered) { runCatching { unregisterReceiver(screenReceiver) }; receiverRegistered = false }
         stopListening(); recognizer?.close(); recognizer = null
-        stopSpeech(); removeOverlay(); tts?.shutdown()
+        stopSpeech(); removeOverlay(); removeAgentStopControl(); tts?.shutdown()
         listener = null
         worker.execute { runCatching { model.close() } }
         worker.shutdown()
