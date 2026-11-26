@@ -20,6 +20,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
+import android.os.Debug
+import android.os.Trace
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -33,6 +35,8 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicInteger
 
 /** One instance per user task. Screen data and node handles never leave the device. */
 internal class AndroidAgentTools(
@@ -44,6 +48,10 @@ internal class AndroidAgentTools(
 ) {
     private val actionGate = AgentActionGate(cancelled, announce)
     private val main = Handler(Looper.getMainLooper())
+    private val uiTraceIds = AtomicLong()
+    private val runningUi = AtomicInteger()
+    // Accessed only by tasks on the main thread.
+    private var activeUiBudget: UiOperationBudget? = null
     private val apps = mutableMapOf<String, String>()
     private var snapshot: Screen? = null
     private var expectedLaunch: String? = null
@@ -55,7 +63,7 @@ internal class AndroidAgentTools(
 
     private data class Node(val id: String, val path: List<Int>, val label: String, val kind: String,
         val resource: String, val hint: String, val bounds: String, val clickable: Boolean, val editable: Boolean,
-        val scrollable: Boolean, val enabled: Boolean)
+        val scrollable: Boolean, val enabled: Boolean, val identity: NodeIdentity)
     private data class Screen(val pkg: String, val window: Int, val nodes: List<Node>) {
         fun describe(): String = buildString {
             append("Активное приложение: ").append(pkg).append('\n')
@@ -86,11 +94,93 @@ internal class AndroidAgentTools(
             else -> "Не удалось проверить состояние службы управления экраном."
         })
     }
+    private fun checkUiBudget() {
+        if (cancelled()) throw AgentDenied()
+        activeUiBudget?.check()
+    }
     private fun <T> ui(timeoutMillis: Long = 5000, block: () -> T): T {
         checkActive()
-        val task = FutureTask<T> { checkActive(); block() }
-        if (!main.post(task)) throw AgentToolUnavailable("UI-поток недоступен. Задача остановлена.")
-        return awaitAgentUi(task, timeoutMillis)
+        val id = uiTraceIds.incrementAndGet()
+        val budget = UiOperationBudget(timeoutMillis, SystemClock::elapsedRealtime)
+        val inFlight = runningUi.get()
+        val task = FutureTask<T> {
+            budget.start()
+            runningUi.incrementAndGet()
+            activeUiBudget = budget
+            val cpu = Debug.threadCpuTimeNanos()
+            var result = "OK"
+            Trace.beginSection("NoxCapture#$id")
+            try {
+                checkActive()
+                budget.check()
+                block()
+            } catch (e: Exception) {
+                result = if (e is AgentUiTimeout) "DEADLINE" else e.javaClass.simpleName
+                throw e
+            } finally {
+                budget.end()
+                Trace.endSection()
+                activeUiBudget = null
+                runningUi.decrementAndGet()
+                Log.i("NoxCapture", "id=$id result=$result stage=${budget.stage} queueMs=${budget.queueMs()} rootMs=${budget.rootMs} walkMs=${budget.walkMs} runMs=${budget.runMs()} cpuMs=${(Debug.threadCpuTimeNanos() - cpu) / 1000000} nodes=${budget.nodes} getChild=${budget.childCalls} inFlightAtPost=$inFlight")
+            }
+        }
+        if (!main.post(task)) {
+            task.cancel(false)
+            throw AgentToolUnavailable("UI-поток недоступен. Задача остановлена.")
+        }
+        return try {
+            awaitAgentUi(task, budget.remaining())
+        } catch (e: AgentUiTimeout) {
+            budget.cancel()
+            Log.w("NoxCapture", "TIMEOUT id=$id state=${budget.timeoutState()} stage=${budget.stage} queueMs=${budget.queueMs()} runMs=${budget.runMs()} nodes=${budget.nodes} getChild=${budget.childCalls}")
+            throw e
+        } finally {
+            // Also stop an already-running read when awaitAgentUi is interrupted.
+            budget.cancel()
+            main.removeCallbacks(task)
+        }
+    }
+    private fun screenRoot(): AccessibilityNodeInfo? {
+        checkUiBudget()
+        val budget = activeUiBudget
+        budget?.stage = "ROOT"
+        val started = SystemClock.elapsedRealtime()
+        try {
+            return nav().rootInActiveWindow.also { checkUiBudget() }
+        } finally {
+            if (budget != null) budget.rootMs += SystemClock.elapsedRealtime() - started
+        }
+    }
+    private fun screenChild(node: AccessibilityNodeInfo, index: Int): AccessibilityNodeInfo? {
+        checkUiBudget()
+        activeUiBudget?.let { it.childCalls++ }
+        return node.getChild(index).also { checkUiBudget() }
+    }
+    private fun identity(node: AccessibilityNodeInfo): NodeIdentity = NodeIdentity(
+        node.packageName?.toString().orEmpty(), node.viewIdResourceName.orEmpty(),
+        node.className?.toString().orEmpty(), node.text?.toString(), node.contentDescription?.toString(),
+        Rect().also { node.getBoundsInScreen(it) }.toShortString(),
+        node.isEnabled, node.isVisibleToUser, node.isPassword, node.isClickable, node.isEditable, node.isScrollable
+    )
+    private fun resolveNode(before: Screen, target: Node): AccessibilityNodeInfo {
+        activeUiBudget?.stage = "RESOLVE"
+        val root = screenRoot() ?: throw NodeChanged("NO_ROOT")
+        activeUiBudget?.stage = "RESOLVE"
+        if (root.windowId != before.window || root.packageName?.toString() != before.pkg)
+            throw NodeChanged("WINDOW")
+        var node = root
+        if (node.isPassword) throw NodeChanged("PASSWORD")
+        for (index in target.path) {
+            node = screenChild(node, index) ?: throw NodeChanged("MISSING")
+            if (node.isPassword) throw NodeChanged("PASSWORD")
+        }
+        return node
+    }
+    private fun staleNode(e: NodeChanged): ToolOutcome {
+        snapshot = null
+        Log.w("NoxCapture", "NODE_CHANGED:${e.reason}")
+        return ToolOutcome.RejectedBeforeAction("NODE_CHANGED:${e.reason}. Действие не выполнено. Сделай observe и выбери элемент заново.")
     }
     private fun pause(ms: Long) {
         var remaining = ms
@@ -109,34 +199,46 @@ internal class AndroidAgentTools(
             pkg != "com.android.settings" && pkg != "com.google.android.permissioncontroller" &&
             !pkg.contains("permissioncontroller") && !pkg.contains("packageinstaller")
     }
-    private fun readScreen(root: AccessibilityNodeInfo = nav().rootInActiveWindow ?: error("Активный экран недоступен")): Screen {
+    private fun readScreen(root: AccessibilityNodeInfo = screenRoot() ?: error("Активный экран недоступен")): Screen {
+        val budget = activeUiBudget
+        budget?.stage = "WALK"
+        val started = SystemClock.elapsedRealtime()
+        try {
         val pkg = root.packageName?.toString().orEmpty()
         require(permitted(pkg)) { "Этот экран не доступен агенту: " + pkg }
         require(permissions.allowed(pkg)) { "Нет разрешения на управление текущим приложением" }
         val nodes = mutableListOf<Node>()
         var visited = 0
         fun walk(n: AccessibilityNodeInfo, path: List<Int>, sensitive: Boolean) {
-            if (++visited > 450 || nodes.size >= 90 || path.size > 20) return
+            checkUiBudget()
+            if (visited >= 450 || nodes.size >= 90 || path.size > 20) return
+            visited++
+            budget?.let { it.nodes++ }
             val hidden = sensitive || n.isPassword
             if (hidden) return
             if (n.isVisibleToUser && n.packageName?.toString() == pkg) {
                 val label = listOfNotNull(n.text?.toString(), n.contentDescription?.toString())
                     .distinct().joinToString(" / ").replace(Regex("[\\r\\n\\t]+"), " ").take(180)
                 if (label.isNotBlank() || n.isClickable || n.isEditable || n.isScrollable) {
-                    val bounds = Rect().also { n.getBoundsInScreen(it) }.toShortString()
+                    val key = identity(n)
                     nodes.add(Node((nodes.size + 1).toString(), path, label,
-                        n.className?.toString()?.substringAfterLast('.') ?: "View",
-                        n.viewIdResourceName.orEmpty(), n.hintText?.toString()?.take(180).orEmpty(), bounds, n.isClickable, n.isEditable,
-                        n.isScrollable, n.isEnabled))
+                        key.cls.substringAfterLast('.').ifBlank { "View" },
+                        key.resource, n.hintText?.toString()?.take(180).orEmpty(), key.bounds, key.clickable, key.editable,
+                        key.scrollable, key.enabled, key))
                 }
             }
             for (i in 0 until n.childCount.coerceAtMost(100)) {
-                val child = n.getChild(i) ?: continue
+                if (visited >= 450 || nodes.size >= 90 || path.size >= 20) break
+                val child = screenChild(n, i) ?: continue
                 walk(child, path + i, hidden)
             }
         }
         walk(root, emptyList(), false)
+        checkUiBudget()
         return Screen(pkg, root.windowId, nodes)
+        } finally {
+            if (budget != null) budget.walkMs += SystemClock.elapsedRealtime() - started
+        }
     }
 
     private fun goalObservation(screen: Screen) = GoalObservation(goal.sequence(), screen.pkg,
@@ -180,7 +282,7 @@ internal class AndroidAgentTools(
             if (budget == 0L) return null
             return try {
                 ui(timeoutMillis = budget) {
-                    val root = nav().rootInActiveWindow
+                    val root = screenRoot()
                     if (root == null) {
                         reason = "NO_ROOT"
                         return@ui null
@@ -366,26 +468,30 @@ internal class AndroidAgentTools(
             confirmed(appLabel(before.pkg) + " · " + before.pkg + "\n" + actionText)
         pause(250)
         snapshot = null
-        goal.mutation()
-        val accepted = ui {
-            require(permissions.allowed(before.pkg)) { "Разрешение отозвано" }
-            val current = readScreen()
-            require(current == before) { "Экран изменился. Требуется новое наблюдение и подтверждение." }
-            val root = nav().rootInActiveWindow ?: error("Экран исчез")
-            require(root.windowId == before.window && root.packageName?.toString() == before.pkg)
-            var node = root
-            for (index in target.path) node = node.getChild(index) ?: error("Элемент исчез")
-            require(node.isVisibleToUser && node.isEnabled && !node.isPassword)
-            if (action.name == "type") {
-                require(node.isEditable)
-                node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply {
-                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, action.text)
-                })
-            } else {
-                require(node.isClickable)
-                node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        val accepted = try {
+            ui {
+                require(permissions.allowed(before.pkg)) { "Разрешение отозвано" }
+                val current = readScreen()
+                if (current != before) throw NodeChanged("SCREEN")
+                val node = resolveNode(before, target)
+                withVerifiedNode(target.identity, identity(node)) {
+                    checkActive()
+                    require(permissions.allowed(before.pkg)) { "Разрешение отозвано" }
+                    checkUiBudget()
+                    activeUiBudget?.stage = "DISPATCH"
+                    if (action.name == "type") {
+                        if (!node.isEditable) throw NodeChanged("CAPABILITY")
+                        node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply {
+                            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, action.text)
+                        })
+                    } else {
+                        if (!node.isClickable) throw NodeChanged("CAPABILITY")
+                        node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    }
+                }
             }
-        }
+        } catch (e: NodeChanged) { return staleNode(e) }
+        goal.mutation()
         if (!accepted) return ToolOutcome.Unverified("Android не подтвердил действие. Повторять не буду.")
         return describeAfter("Android принял действие: " + actionText + ". Проверяй фактический результат.",
             if (goal.arithmetic) before else null) { after ->
@@ -485,14 +591,21 @@ internal class AndroidAgentTools(
                 val target = before.nodes.firstOrNull { it.scrollable && it.enabled } ?: error("Нет доступной прокрутки")
                 actionGate.before(if (action.arg == "down") "Листаю вниз." else "Листаю вверх.")
                 snapshot = null
+                val ok = try {
+                    ui {
+                        if (readScreen() != before) throw NodeChanged("SCREEN")
+                        val n = resolveNode(before, target)
+                        withVerifiedNode(target.identity, identity(n)) {
+                            checkActive()
+                            require(permissions.allowed(before.pkg)) { "Разрешение отозвано" }
+                            checkUiBudget()
+                            if (!n.isScrollable) throw NodeChanged("CAPABILITY")
+                            activeUiBudget?.stage = "DISPATCH"
+                            n.performAction(if (action.arg == "down") AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+                        }
+                    }
+                } catch (e: NodeChanged) { return staleNode(e) }
                 goal.mutation()
-                val ok = ui {
-                    require(readScreen() == before) { "Экран изменился" }
-                    var n = nav().rootInActiveWindow ?: error("Экран исчез")
-                    for (index in target.path) n = n.getChild(index) ?: error("Элемент исчез")
-                    require(n.isScrollable && n.isVisibleToUser)
-                    n.performAction(if (action.arg == "down") AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
-                }
                 if (ok) describeAfter("Прокрутка принята.")
                 else ToolOutcome.Unverified("Прокрутка не подтверждена Android.")
             }
