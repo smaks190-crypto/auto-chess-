@@ -31,6 +31,11 @@ internal class GoalState(private val request: String) {
         val a = BigInteger(it.groupValues[1]); val b = BigInteger(it.groupValues[3])
         (if (it.groupValues[2] == "+") a + b else a - b).toString()
     }
+    private val openTarget = Regex("^(?:открой|запусти|open|launch)\\s+([\\p{L}0-9 ._-]+)$", RegexOption.IGNORE_CASE)
+        .matchEntire(request.trim())?.groupValues?.get(1)?.trim()
+    val supported: Boolean get() = formula != null || openTarget != null
+    val arithmetic: Boolean get() = formula != null
+    fun allowsLaunch(pkg: String) = !arithmetic || pkg == CALC
     private var verifiedEqualsSeq: Long? = null
     private var lastMutation = -1L
     private var nextSeq = 0L
@@ -75,8 +80,7 @@ internal class GoalState(private val request: String) {
                 return "В калькуляторе подтверждено: " + formula + " = " + expected + "."
             return null
         }
-        val target = Regex("^(?:открой|запусти|open|launch)\\s+([\\p{L}0-9 ._-]+)$", RegexOption.IGNORE_CASE)
-            .matchEntire(request.trim())?.groupValues?.get(1)?.trim() ?: return null
+        val target = openTarget ?: return null
         if (o.pkg == launchPkg && (target.equals(launchName, true) || target.equals(launchPkg, true) || (o.pkg == CALC && target.equals("calculator", true))))
             return "Приложение открыто: " + launchName
         return null
