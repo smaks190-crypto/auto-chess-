@@ -27,10 +27,53 @@ jobs:
           packages: "platform-tools platforms;android-36 build-tools;36.0.0"
       - name: Test, lint, assemble
         run: gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+      # Hosted runners create disposable debug keys: these artifacts are CI-only.
       - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request'
         with:
-          name: nox-debug
+          name: nox-ci-ephemeral-not-an-update
           path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+      - name: Sign and verify an in-place update (original signing key required)
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          NOX_KEYSTORE_B64: ${{ secrets.NOX_KEYSTORE_B64 }}
+          NOX_KEYSTORE_PASSWORD: ${{ secrets.NOX_KEYSTORE_PASSWORD }}
+          NOX_KEY_ALIAS: ${{ secrets.NOX_KEY_ALIAS }}
+          NOX_KEY_PASSWORD: ${{ secrets.NOX_KEY_PASSWORD }}
+          # Public certificate fingerprint from the currently installed dev.nox.local.
+          EXPECTED_SIGNER_SHA256: 81f90f5b72c1dfbe92855b4f99a86aa773441a36fdb7f640da01087189533367
+        run: |
+          set -euo pipefail
+          : "${NOX_KEYSTORE_B64:?Original N.O.X. signing keystore is not configured}"
+          : "${NOX_KEYSTORE_PASSWORD:?Missing keystore password}"
+          : "${NOX_KEY_ALIAS:?Missing key alias}"
+          : "${NOX_KEY_PASSWORD:?Missing key password}"
+          umask 077
+          keystore="$(mktemp "$RUNNER_TEMP/nox-signing.XXXXXX")"
+          trap 'rm -f "$keystore"' EXIT
+          printf '%s' "$NOX_KEYSTORE_B64" | base64 --decode > "$keystore"
+          unset NOX_KEYSTORE_B64
+          signer="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          mkdir -p "$RUNNER_TEMP/nox-update"
+          output="$RUNNER_TEMP/nox-update/nox-update.apk"
+          "$signer" sign --ks "$keystore" --ks-key-alias "$NOX_KEY_ALIAS" --ks-pass env:NOX_KEYSTORE_PASSWORD --key-pass env:NOX_KEY_PASSWORD --out "$output" app/build/outputs/apk/debug/app-debug.apk
+          unset NOX_KEYSTORE_PASSWORD NOX_KEY_PASSWORD
+          verified="$("$signer" verify --verbose --print-certs "$output")"
+          printf '%s\n' "$verified"
+          actual="$(printf '%s\n' "$verified" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
+          count="$(printf '%s\n' "$verified" | grep -c '^Signer #[0-9][0-9]* certificate SHA-256 digest:' || true)"
+          if [[ "$count" != 1 || "$actual" != "$EXPECTED_SIGNER_SHA256" ]]; then
+            echo "::error::Signer differs from installed N.O.X. An update would be rejected by Android."
+            rm -f "$output"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          name: nox-verified-update
+          path: ${{ runner.temp }}/nox-update/nox-update.apk
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
