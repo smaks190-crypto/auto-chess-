@@ -59,9 +59,10 @@ internal class AndroidAgentTools(
             nodes.forEach { n ->
                 append(n.id).append(" | ").append(n.kind).append(" | ").append(n.label)
                 if (n.hint.isNotBlank() && n.hint != n.label) append(" [hint: ").append(n.hint).append("]")
-                if (n.clickable) append(" [click]")
-                if (n.editable) append(" [type]")
-                if (n.scrollable) append(" [scroll]")
+                if (n.resource.isNotBlank()) append(" [resource: ").append(n.resource.substringAfterLast('/')).append("]")
+                if (n.enabled && n.clickable) append(" [click]")
+                if (n.enabled && n.editable) append(" [type]")
+                if (n.enabled && n.scrollable) append(" [scroll]")
                 if (!n.enabled) append(" [disabled]")
                 append('\n')
             }
@@ -76,9 +77,8 @@ internal class AndroidAgentTools(
     private fun <T> ui(block: () -> T): T {
         checkActive()
         val task = FutureTask<T> { checkActive(); block() }
-        main.post(task)
-        try { return task.get(5, TimeUnit.SECONDS) }
-        finally { if (!task.isDone) task.cancel(false) }
+        if (!main.post(task)) throw AgentToolUnavailable("UI-поток недоступен. Задача остановлена.")
+        return awaitAgentUi(task)
     }
     private fun pause(ms: Long) {
         var remaining = ms
@@ -141,7 +141,9 @@ internal class AndroidAgentTools(
     }
     private fun describeAfter(prefix: String): String {
         pause(500)
-        val view = try { observe() } catch (e: AgentDenied) { throw e } catch (e: AgentToolUnavailable) { throw e } catch (e: Exception) { "Экран не подтверждён: " + e.message }
+        val view = try { observe() } catch (e: AgentDenied) { throw e } catch (e: AgentToolUnavailable) { throw e } catch (e: Exception) {
+            return AgentToolStatus.ACTION_UNVERIFIED + "Действие могло быть выполнено, но экран не подтверждён. Не повторяю автоматически. " + (e.message ?: e.javaClass.simpleName)
+        }
         return prefix + "\n" + view
     }
     private fun choose(label: String, options: List<String>): Int {
@@ -291,8 +293,8 @@ internal class AndroidAgentTools(
                 node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             }
         }
-        return describeAfter(if (accepted) "Android принял действие: " + actionText + ". Проверяй фактический результат."
-            else "Android отклонил действие.")
+        if (!accepted) return "ERROR[ACTION_REJECTED] Android отклонил действие. Выполни observe и выбери доступный элемент."
+        return describeAfter("Android принял действие: " + actionText + ". Проверяй фактический результат.")
     }
 
     fun execute(action: AgentDecision.Tool): String {
@@ -387,7 +389,8 @@ internal class AndroidAgentTools(
                     require(n.isScrollable && n.isVisibleToUser)
                     n.performAction(if (action.arg == "down") AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
                 }
-                describeAfter(if (ok) "Прокрутка принята." else "Прокрутка не выполнена.")
+                if (ok) describeAfter("Прокрутка принята.")
+                else "ERROR[ACTION_REJECTED] Прокрутка не выполнена. Обнови экран."
             }
             "volume" -> {
                 confirmed("Изменить громкость устройства")
