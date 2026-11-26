@@ -21,4 +21,10 @@ class VoiceLoopPolicyTest {
         assertNull(VoiceLoopPolicy.retryDelay(12, 1))
         assertNull(VoiceLoopPolicy.retryDelay(13, 1))
     }
+    @Test fun onlyExplicitStopCommandsTurnOffMicrophone() {
+        assertTrue(VoiceLoopPolicy.isStopPhrase("Нокс, перестань слушать!"))
+        assertTrue(VoiceLoopPolicy.isStopPhrase("выключи микрофон"))
+        assertFalse(VoiceLoopPolicy.isStopPhrase("Он попросил выключить микрофон"))
+        assertFalse(VoiceLoopPolicy.isStopPhrase("не выключай микрофон"))
+    }
 }
