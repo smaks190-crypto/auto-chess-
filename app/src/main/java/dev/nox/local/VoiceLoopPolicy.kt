@@ -11,4 +11,10 @@ internal object VoiceLoopPolicy {
         1, 2, 3, 4, 8, 11, 14 -> (1000L shl (failures - 1).coerceIn(0, 3)).coerceAtMost(8000L)
         else -> null
     }
+    fun isStopPhrase(input: String): Boolean {
+        val text = input.trim().lowercase(java.util.Locale.ROOT)
+            .replace(Regex("^нокс[ ,!:.]+"), "")
+            .trim().trimEnd('.', '!', '?', ' ')
+        return text in setOf("перестань слушать", "выключи микрофон", "отключи микрофон", "останови прослушивание")
+    }
 }
