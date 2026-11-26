@@ -36,7 +36,7 @@ class NoxService : Service() {
     private var voiceEpoch = 0
     private var agentRunning = false
     @Volatile private var stopMicReady = false
-    private var narration: CompletableFuture<Boolean>? = null
+    private var agentActionLabel: String? = null
     private var loopBlocked = false
     private var recognitionFailures = 0
     private var retryAt = 0L
@@ -131,6 +131,7 @@ class NoxService : Service() {
     internal fun cancelGeneration() {
         if (!generating) return
         generationCancelled = true
+        agentActionLabel = null
         stopListening()
         stopSpeech()
         status = "Останавливаю задачу…"
@@ -382,8 +383,8 @@ class NoxService : Service() {
     }
 
     internal fun syncOverlay() {
-        if (!background || !Settings.canDrawOverlays(this)) { removeOverlay(); return }
-        if (bubble != null) return
+        if (!AgentCaptionPolicy.overlay(background, agentRunning, unlocked(), Settings.canDrawOverlays(this))) { removeOverlay(); return }
+        if (bubble != null) { syncCaption(); return }
         val wm = requireNotNull(getSystemService(WindowManager::class.java))
         val metrics = wm.currentWindowMetrics
         val bounds = metrics.bounds
@@ -515,7 +516,16 @@ class NoxService : Service() {
 
     private fun syncCaption() {
         val wm = getSystemService(WindowManager::class.java) ?: return
-        if (bubble == null || (!speaking && SystemClock.uptimeMillis() >= captionHoldUntil) || spokenText.isBlank()) {
+        // Never animate an outgoing caption over our own visible chat/settings.
+        if (MainActivity.isOnScreen || !unlocked()) {
+            removeCaption(wm)
+            return
+        }
+        val speech = if (!agentRunning && (speaking || SystemClock.uptimeMillis() < captionHoldUntil))
+            spokenText.take(visibleSpeechEnd).takeLast(240) else ""
+        val selected = AgentCaptionPolicy.select(false,
+            agentActionLabel.takeIf { agentRunning && !generationCancelled }, speech)
+        if (bubble == null || selected == null) {
             val view = caption ?: return
             if (captionClosing) return
             captionClosing = true
@@ -530,10 +540,11 @@ class NoxService : Service() {
                 }.start()
             return
         }
-        val shown = spokenText.take(visibleSpeechEnd).takeLast(240)
-        val text = shown.ifBlank { "…" }
+        val text = selected.text + if (selected.stoppable) "\n■ Остановить" else ""
+        if (caption?.let { it.isClickable != selected.stoppable } == true) removeCaption(wm)
         caption?.let { view ->
             view.showText(text)
+            if (selected.stoppable) view.contentDescription = text
             if (captionClosing) {
                 captionClosing = false
                 view.animate().cancel()
@@ -543,20 +554,26 @@ class NoxService : Service() {
         }
         val view = ConnectedCaption(this, captionNeck).apply {
             showText(text)
+            if (selected.stoppable) {
+                contentDescription = text
+                filterTouchesWhenObscured = true
+                setOnClickListener { if (agentRunning && !generationCancelled) cancelGeneration() }
+            }
             scaleX = 0.08f
             scaleY = 0.04f
         }
         val width = minOf(dp(280f), wm.currentWindowMetrics.bounds.width() - dp(32f)).coerceAtLeast(dp(80f))
         val p = WindowManager.LayoutParams(width, WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                (if (selected.stoppable) 0 else WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
             setFitInsetsTypes(0)
             x = captionX
             y = captionTop
-            alpha = 0.8f
+            alpha = if (selected.stoppable) 1f else 0.8f
         }
         runCatching { wm.addView(view, p) }.onSuccess {
             caption = view
@@ -565,12 +582,19 @@ class NoxService : Service() {
         }
     }
 
+    private fun removeCaption(wm: WindowManager?) {
+        captionClosing = false
+        val view = caption
+        caption = null
+        view?.animate()?.cancel()
+        if (view != null) runCatching { wm?.removeView(view) }
+    }
+
     private fun removeOverlay() {
         val wm = getSystemService(WindowManager::class.java)
-        captionClosing = false
-        caption?.animate()?.cancel()
-        listOfNotNull(bubble, caption).forEach { runCatching { wm?.removeView(it) } }
-        bubble = null; caption = null
+        removeCaption(wm)
+        bubble?.let { runCatching { wm?.removeView(it) } }
+        bubble = null
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -583,11 +607,8 @@ class NoxService : Service() {
         main.post {
             if (activeSpeech == id) {
                 activeSpeech = null; speaking = false
-                val pending = narration
-                narration = null
                 holdCaption(spokenText)
                 publish()
-                pending?.complete(success)
             }
         }
     }
@@ -601,8 +622,6 @@ class NoxService : Service() {
     }
 
     private fun stopSpeech() {
-        narration?.complete(false)
-        narration = null
         main.removeCallbacks(expireCaption)
         captionHoldUntil = 0L
         activeSpeech = null; speaking = false; spokenText = ""; visibleSpeechEnd = 0
@@ -610,82 +629,50 @@ class NoxService : Service() {
         syncCaption()
     }
 
-    /** Worker waits for the real TTS completion, then leaves a veto window before any mutation. */
+    /** Show resolved action before mutation; no TTS or microphone dependency. */
     private fun announceAgent(label: String, cancelled: () -> Boolean) {
-        val done = CompletableFuture<Boolean>()
+        val visible = CompletableFuture<Boolean>()
         main.post {
             if (destroyed || cancelled() || !unlocked() || !agentRunning) {
-                done.complete(false)
+                visible.complete(false)
                 return@post
             }
-            stopListening()
-            stopSpeech()
-            val engine = tts
-            if (!offlineTts) {
-                val voice = runCatching { engine?.voices?.firstOrNull {
-                    it.locale.language == "ru" && !it.isNetworkConnectionRequired
-                } }.getOrNull()
-                if (voice != null) offlineTts = runCatching {
-                    engine?.setVoice(voice) == TextToSpeech.SUCCESS
-                }.getOrDefault(false)
-            }
-            if (!offlineTts || engine == null) {
-                done.complete(false)
-                return@post
-            }
-            val id = "agent-" + (++speechId)
-            narration = done
-            activeSpeech = id
-            spokenText = label
-            visibleSpeechEnd = label.length
+            agentActionLabel = label
             status = label
-            if (engine.speak(label, TextToSpeech.QUEUE_FLUSH, null, id) != TextToSpeech.SUCCESS) {
-                stopSpeech()
-            }
             publish()
+            visible.complete(MainActivity.isOnScreen || caption?.isClickable == true)
         }
-        fun checkStop() {
-            if (cancelled()) throw AgentDenied()
+        val deadline = SystemClock.elapsedRealtime() + 5000L
+        while (true) {
+            if (cancelled() || !unlocked()) throw AgentDenied()
+            if (SystemClock.elapsedRealtime() >= deadline)
+                throw AgentDenied("Не удалось показать действие. Задача остановлена.")
+            try {
+                if (!visible.get(100, TimeUnit.MILLISECONDS))
+                    throw AgentDenied("Для управления вне чата разреши плавающее облачко Нокса. Действие не выполнено.")
+                break
+            } catch (_: TimeoutException) {}
         }
-        try {
-            val deadline = SystemClock.elapsedRealtime() + 30_000L
-            var spoken = false
-            while (SystemClock.elapsedRealtime() < deadline) {
-                checkStop()
-                try {
-                    if (!done.get(100, TimeUnit.MILLISECONDS))
-                        throw AgentDenied("Не удалось озвучить действие. Задача остановлена до выполнения.")
-                    spoken = true
-                    break
-                } catch (_: TimeoutException) {}
-            }
-            if (!spoken) throw AgentDenied("Озвучивание не завершилось. Действие не выполнено.")
-            // Give Vosk time to resume (if the foreground voice mode is enabled).
-            if (background) {
-                val readyDeadline = SystemClock.elapsedRealtime() + 5000L
-                while (!stopMicReady && SystemClock.elapsedRealtime() < readyDeadline) {
-                    checkStop()
-                    Thread.sleep(100L)
-                }
-                if (!stopMicReady) throw AgentDenied("Не удалось возобновить голосовую остановку. Действие не выполнено.")
-            }
-            val vetoDeadline = SystemClock.elapsedRealtime() + 3000L
-            while (SystemClock.elapsedRealtime() < vetoDeadline) {
-                checkStop()
-                Thread.sleep(100L)
-            }
-            checkStop()
-        } finally {
-            if (!done.isDone) main.post {
-                if (narration === done) { stopSpeech(); publish() }
-            }
+        val vetoDeadline = SystemClock.elapsedRealtime() + 3000L
+        while (SystemClock.elapsedRealtime() < vetoDeadline) {
+            if (cancelled() || !unlocked()) throw AgentDenied()
+            Thread.sleep(100L)
         }
+        if (cancelled() || !unlocked()) throw AgentDenied()
+        // The UI can move to the background during the veto window.
+        val stillVisible = CompletableFuture<Boolean>()
+        main.post {
+            stillVisible.complete(!destroyed && !cancelled() && unlocked() &&
+                (MainActivity.isOnScreen || caption?.isClickable == true))
+        }
+        if (!stillVisible.get(5, TimeUnit.SECONDS))
+            throw AgentDenied("Панель остановки недоступна. Действие не выполнено.")
     }
 
     private fun publish() {
         if (destroyed) return
+        syncOverlay()
         bubble?.invalidate()
-        syncCaption()
         syncVoiceLoop()
         syncIdleLifetime()
         listener?.invoke()
@@ -708,6 +695,7 @@ class NoxService : Service() {
                     val wasCancelled = generating && generationCancelled
                     if (agentRunning) {
                         agentRunning = false
+                        agentActionLabel = null
                         stopListening()
                         stopSpeech()
                     }
@@ -846,6 +834,7 @@ class NoxService : Service() {
         generationCancelled = false
         generating = true
         agentRunning = false
+        agentActionLabel = null
         runWork("Думаю…", {
             val start = SystemClock.elapsedRealtime()
             val deadline = SystemClock.elapsedRealtime() + 240_000L
@@ -873,6 +862,7 @@ class NoxService : Service() {
                     cancelled = stop,
                     progress = { step -> main.post {
                         if (!destroyed && generating && !generationCancelled) {
+                            if (step.endsWith(" · анализ")) agentActionLabel = null
                             status = step; publish()
                         }
                     } }
