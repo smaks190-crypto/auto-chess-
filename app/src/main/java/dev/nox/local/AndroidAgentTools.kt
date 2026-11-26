@@ -138,10 +138,10 @@ internal class AndroidAgentTools(
                 addView(LinearLayout(service).apply {
                     orientation = LinearLayout.HORIZONTAL
                     addView(Button(service).apply {
-                        text = "Отмена"; setOnClickListener { decision.complete(false) }
+                        text = "Отмена"; filterTouchesWhenObscured = true; setOnClickListener { decision.complete(false) }
                     }, LinearLayout.LayoutParams(0, -2, 1f))
                     addView(Button(service).apply {
-                        text = "Разрешить"; setOnClickListener { decision.complete(true) }
+                        text = "Разрешить"; filterTouchesWhenObscured = true; setOnClickListener { decision.complete(true) }
                     }, LinearLayout.LayoutParams(0, -2, 1f))
                 })
             }
@@ -225,8 +225,19 @@ internal class AndroidAgentTools(
                     val launch = context.packageManager.getLaunchIntentForPackage(action.arg) ?: error("Нет запускаемого экрана")
                     nav().startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 }
-                pause(900)
-                describeAfter("Android принял запрос запуска " + action.arg + ".")
+                var lastScreen: Screen? = null
+                repeat(6) {
+                    pause(500)
+                    lastScreen = runCatching { ui { readScreen() } }.getOrNull()
+                    val observed = lastScreen
+                    if (observed?.pkg == action.arg) {
+                        snapshot = observed
+                        return "Запуск подтверждён: " + action.arg + "\n" + observed.describe()
+                    }
+                }
+                snapshot = lastScreen
+                "Запуск НЕ подтверждён: " + action.arg + "\n" +
+                    (lastScreen?.describe() ?: "Активный экран недоступен")
             }
             "observe" -> observe()
             "click", "type" -> actOnNode(action)
