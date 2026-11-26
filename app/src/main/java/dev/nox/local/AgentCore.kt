@@ -39,6 +39,39 @@ internal fun <T> awaitAgentUi(task: FutureTask<T>, timeoutMillis: Long = 5000): 
     }
 }
 
+/** Control status is separate from untrusted screen text. */
+internal sealed interface ToolOutcome {
+    val text: String
+    data class Ok(override val text: String, val pkg: String? = null) : ToolOutcome
+    data class RejectedBeforeAction(override val text: String) : ToolOutcome
+    data class Failed(override val text: String) : ToolOutcome
+    data class Unverified(override val text: String) : ToolOutcome
+    data class LaunchRecheck(override val text: String) : ToolOutcome
+    data class NeedsUserTap(override val text: String) : ToolOutcome
+    companion object {
+        // Compatibility for historical simulated executor tests only.
+        fun legacy(s: String): ToolOutcome = when {
+            s.startsWith(AgentToolStatus.GOAL_REJECTED) -> RejectedBeforeAction(s.removePrefix(AgentToolStatus.GOAL_REJECTED).trim())
+            s.startsWith(AgentToolStatus.ACTION_UNVERIFIED) -> Unverified(s.removePrefix(AgentToolStatus.ACTION_UNVERIFIED).trim())
+            s.startsWith(AgentToolStatus.LAUNCH_UNVERIFIED) -> Unverified(s.removePrefix(AgentToolStatus.LAUNCH_UNVERIFIED).trim())
+            s.startsWith(AgentToolStatus.LAUNCH_NEEDS_TAP) -> NeedsUserTap(s.removePrefix(AgentToolStatus.LAUNCH_NEEDS_TAP).trim())
+            s.startsWith(AgentToolStatus.LAUNCH_RECHECK) -> LaunchRecheck(s.removePrefix(AgentToolStatus.LAUNCH_RECHECK).trim())
+            s.startsWith("ERROR[") -> Failed(s)
+            else -> Ok(s,s.lineSequence().firstOrNull { it.startsWith("Активное приложение: ") }?.removePrefix("Активное приложение: "))
+        }
+    }
+}
+
+internal fun <T> settleObservation(attempts: Int, pause: () -> Unit, observe: () -> T?, verified: (T) -> Boolean): T? {
+    require(attempts in 1..5)
+    repeat(attempts) { index ->
+        if (index > 0) pause()
+        val current = observe()
+        if (current != null && verified(current)) return current
+    }
+    return null
+}
+
 internal class AgentCore(
     private val decide: (String) -> AgentDecision,
     private val execute: (AgentDecision.Tool) -> String,
@@ -46,10 +79,13 @@ internal class AgentCore(
     private val maxSteps: Int = 14,
     private val progress: (String) -> Unit = {},
     private val goal: GoalState? = null,
-    private val verifyFinish: () -> String? = { null }
+    private val verifyFinish: () -> String? = { null },
+    private val executeTyped: ((AgentDecision.Tool) -> ToolOutcome)? = null
 ) {
     fun run(request: String, history: String): String {
         val results = mutableListOf<String>()
+        var lastOutcome: ToolOutcome? = null
+        fun invokeTool(a: AgentDecision.Tool) = executeTyped?.invoke(a) ?: ToolOutcome.legacy(execute(a))
         var lastFailure: String? = null
         var consecutiveFailures = 0
         var verifiedLaunch: String? = null
@@ -60,9 +96,9 @@ internal class AgentCore(
         val readOnlyResults = mutableMapOf<Pair<AgentDecision.Tool, String>, Int>()
         fun finish(answer: String): String {
             // Don't let the model turn a tool failure into an unsupported claim about its capabilities.
-            val last = results.lastOrNull()
-            return if (last?.contains("ERROR[") == true)
-                "Действие не выполнено. " + last.substringAfter("ERROR[").take(260)
+            val last = lastOutcome
+            return if (last is ToolOutcome.Failed)
+                "Действие не выполнено. " + last.text.take(260)
             else answer
         }
         repeat(maxSteps) { step ->
@@ -110,7 +146,7 @@ internal class AgentCore(
             when (decision) {
                 is AgentDecision.Finish -> {
                     if (goal == null) return finish(decision.answer) // legacy simulated tool tests
-                    if (results.lastOrNull()?.contains("ERROR[") == true) return finish(decision.answer)
+                    if (lastOutcome is ToolOutcome.Failed) return finish(decision.answer)
                     if (!goal.supported) return "Задача остановлена: независимая проверка этой цели пока не поддерживается. Завершение не подтверждено."
                     val verified = try { verifyFinish() }
                     catch (e: AgentDenied) { return e.message ?: "Задача остановлена." }
@@ -132,40 +168,41 @@ internal class AgentCore(
                     if (repeated) {
                         repeatedLaunches++
                         if (repeatedLaunches >= 3) return "Агент повторяет запуск без прогресса; завершение не подтверждено."
-                        val refreshed = try { execute(AgentDecision.Tool("observe", "")) }
+                        val refreshed = try { invokeTool(AgentDecision.Tool("observe", "")) }
                         catch (e: AgentDenied) { return e.message ?: "Задача остановлена." }
                         catch (e: AgentToolUnavailable) { return e.message ?: "Служба отключена." }
                         catch (e: Exception) { return "Не удалось обновить экран: " + (e.message ?: "ошибка наблюдения") }
-                        if (refreshed.lineSequence().firstOrNull() != "Активное приложение: " + decision.arg)
+                        if (refreshed !is ToolOutcome.Ok || refreshed.pkg != decision.arg)
                             return "Экран изменился; повторный запуск не выполнен. Завершение не подтверждено."
-                        results.add("Приложение уже открыто. Не запускай снова; выбери следующий шаг задачи.\n" + refreshed)
+                        lastOutcome = refreshed
+                        results.add("Приложение уже открыто. Не запускай снова; выбери следующий шаг задачи.\n" + refreshed.text)
                         return@repeat
                     }
                     progress("Шаг " + (step + 1) + " · " + decision.name)
-                    val result = try {
-                        execute(decision)
+                    val outcome = try {
+                        invokeTool(decision)
                     } catch (denied: AgentDenied) {
                         return denied.message ?: "Задача остановлена."
                     } catch (unavailable: AgentToolUnavailable) {
                         return unavailable.message ?: "Служба управления экраном отключена."
                     } catch (e: Exception) {
-                        "ERROR[TOOL_FAILED] " + (e.message ?: e.javaClass.simpleName).take(200)
+                        if (executeTyped != null && decision.name !in setOf("apps", "observe"))
+                            return "Результат действия неизвестен; повторять не буду. " + (e.message ?: e.javaClass.simpleName).take(200)
+                        ToolOutcome.Failed("ERROR[TOOL_FAILED] " + (e.message ?: e.javaClass.simpleName).take(200))
                     }
                     if (cancelled()) return "Задача отменена."
-                    if (result.startsWith(AgentToolStatus.GOAL_REJECTED)) {
+                    lastOutcome = outcome
+                    val result = outcome.text
+                    if (outcome is ToolOutcome.RejectedBeforeAction) {
                         pendingGoalCorrection = true
                         if (++goalRejections >= 3)
-                            return "GOAL_MISMATCH: не удалось скорректировать выбор. " + result.removePrefix(AgentToolStatus.GOAL_REJECTED).lineSequence().first().take(240)
-                        results.add("GOAL_REJECTED: действие НЕ выполнено. Исправь выбор, не завершай задачу.\n" + result.removePrefix(AgentToolStatus.GOAL_REJECTED).trim())
+                            return "GOAL_MISMATCH: не удалось скорректировать выбор. " + result.lineSequence().first().take(240)
+                        results.add("GOAL_REJECTED: действие НЕ выполнено. Исправь выбор, не завершай задачу.\n" + result.trim())
                         return@repeat
                     }
-                    if (result.startsWith(AgentToolStatus.ACTION_UNVERIFIED))
-                        return result.removePrefix(AgentToolStatus.ACTION_UNVERIFIED).trim()
-                    if (result.startsWith(AgentToolStatus.LAUNCH_UNVERIFIED))
-                        return result.removePrefix(AgentToolStatus.LAUNCH_UNVERIFIED).trim()
-                    if (result.startsWith(AgentToolStatus.LAUNCH_NEEDS_TAP))
-                        return result.removePrefix(AgentToolStatus.LAUNCH_NEEDS_TAP).trim()
-                    if (result.startsWith(AgentToolStatus.LAUNCH_RECHECK)) {
+                    if (outcome is ToolOutcome.Unverified || outcome is ToolOutcome.NeedsUserTap)
+                        return result
+                    if (outcome is ToolOutcome.LaunchRecheck) {
                         // A launch is not the end of a multi-step command. Only a verified
                         // Accessibility observation of the requested package allows the agent
                         // to continue. Never guess a target or execute clicks on an old screen.
@@ -183,10 +220,11 @@ internal class AgentCore(
                                 }
                             }
                             try {
-                                val observed = execute(AgentDecision.Tool("observe", ""))
-                                val firstLine = observed.lineSequence().firstOrNull().orEmpty()
-                                if (firstLine == "Активное приложение: " + decision.arg) {
-                                    verifiedScreen = observed
+                                val observed = invokeTool(AgentDecision.Tool("observe", ""))
+                                val firstLine = observed.text.lineSequence().firstOrNull().orEmpty()
+                                if (observed is ToolOutcome.Ok && observed.pkg == decision.arg) {
+                                    lastOutcome = observed
+                                    verifiedScreen = observed.text
                                     break
                                 }
                                 lastObserved = firstLine.take(160)
@@ -211,7 +249,7 @@ internal class AgentCore(
                         results.add(decision.name + ": Запуск подтверждён.\n" + screen.take(7200))
                         return@repeat
                     }
-                    if (result.startsWith("ERROR[")) {
+                    if (outcome is ToolOutcome.Failed) {
                         val fingerprint = decision.name + ":" + decision.arg + ":" + result.take(150)
                         consecutiveFailures = if (fingerprint == lastFailure) consecutiveFailures + 1 else 1
                         lastFailure = fingerprint
@@ -220,8 +258,7 @@ internal class AgentCore(
                     } else {
                         consecutiveFailures = 0
                         lastFailure = null
-                        val activePackage = result.lineSequence().firstOrNull { it.startsWith("Активное приложение: ") }
-                            ?.removePrefix("Активное приложение: ")
+                        val activePackage = (outcome as? ToolOutcome.Ok)?.pkg
                         if (activePackage != null && activePackage != verifiedLaunch) verifiedLaunch = null
                         if (decision.name == "launch" && activePackage == decision.arg) { verifiedLaunch = decision.arg; repeatedLaunches = 0 }
                         if (decision.name in setOf("click", "type", "scroll", "back", "home")) repeatedLaunches = 0
