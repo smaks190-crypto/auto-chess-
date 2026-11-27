@@ -44,8 +44,11 @@ import java.util.UUID
 internal object AssistantHandoff {
     const val EXTRA_TICKET = "dev.nox.local.ASSISTANT_TICKET"
     val gate = AssistantLaunchGate(SystemClock::elapsedRealtime, { UUID.randomUUID().toString() })
-    fun issueDraft(context: Context, text: String): String? {
-        val ticket = gate.issueDraft(active(context), DeviceInteraction.unlocked(context), text) ?: return null
+    fun issueDraft(context: Context, text: String, execute: Boolean = false): String? {
+        val isActive = active(context)
+        val unlocked = DeviceInteraction.unlocked(context)
+        val ticket = (if (execute) gate.issueCommand(isActive, unlocked, text)
+            else gate.issueDraft(isActive, unlocked, text)) ?: return null
         Handler(Looper.getMainLooper()).postDelayed({ gate.expire(ticket) }, 5000L)
         return ticket
     }
@@ -87,6 +90,8 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
     private var service: NoxService? = null
     private var bound = false
     private var shown = false
+    private var autoStartPending = false
+    private var autoExecuteRecording = false
     private var session: Long? = null
     private var draftBefore = ""
     private var lastPartial = ""
@@ -98,10 +103,13 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             if (!shown) return
             service = (binder as? NoxService.LocalBinder)?.service
+            maybeAutoStart()
             refresh()
         }
         override fun onServiceDisconnected(name: ComponentName?) {
             service = null
+            autoStartPending = false
+            autoExecuteRecording = false
             if (session != null) input?.setText(draftBefore)
             session = null
             notice = "Ядро отключено"; refresh()
@@ -181,9 +189,9 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         controls.addView(View(ctx), LinearLayout.LayoutParams(0, 1, 1f))
         talk = control(R.drawable.ic_nox_mic, "Начать диктовку") { toggleRecording() }
             .also { controls.addView(it, LinearLayout.LayoutParams(dp(48), dp(48))) }
-        send = control(R.drawable.ic_nox_send, "Перенести текст в чат") {
+        send = control(R.drawable.ic_nox_send, "Отправить команду") {
             val text = input?.text?.toString()?.trim().orEmpty()
-            if (session == null && text.isNotEmpty()) launch(true, text)
+            if (session == null && text.isNotEmpty()) launch(true, text, execute = true)
         }.also { controls.addView(it, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(5) }) }
         controls.addView(control(R.drawable.ic_nox_close, "Закрыть") { hide() },
             LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(5) })
@@ -225,7 +233,9 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
             setDimAmount(.18f)
             setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
         }
+        val newlyShown = !shown
         shown = true; notice = null
+        if (newlyShown) autoStartPending = allowed()
         if (allowed() && !bound) {
             bound = runCatching { ctx.bindService(Intent(ctx, NoxService::class.java), connection, Context.BIND_AUTO_CREATE) }.getOrDefault(false)
         }
@@ -236,6 +246,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
                 animate().alpha(1f).translationY(0f).setDuration(180L).start()
             }
         }
+        maybeAutoStart()
         refresh()
         main.removeCallbacks(tick); main.post(tick)
     }
@@ -254,6 +265,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
 
     private fun release() {
         main.removeCallbacks(tick)
+        autoStartPending = false
         cancelRecording()
         wave?.setListening(false, 0f, false)
         panel?.animate()?.cancel()
@@ -263,10 +275,21 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         notice = null
     }
 
+    private fun maybeAutoStart() {
+        if (!autoStartPending || service == null) return
+        autoStartPending = false
+        if (allowed() && session == null) toggleRecording()
+    }
+
     private fun toggleRecording() {
+        autoStartPending = false
         if (!allowed()) { refresh(); return }
         val s = service ?: run { notice = "Ядро подключается"; refresh(); return }
-        session?.let { s.stopWebDictation(it); refresh(); return }
+        session?.let {
+            // A manual stop may retain partial text, never run an unfinished command.
+            autoExecuteRecording = false
+            s.stopWebDictation(it); refresh(); return
+        }
         if (ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             notice = "Разреши микрофон в чате Нокс"; refresh(); return
         }
@@ -276,11 +299,14 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         (ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager)
             ?.hideSoftInputFromWindow(input?.windowToken, 0)
         session = s.startWebDictation()
+        autoExecuteRecording = session != null
         if (session == null) notice = if (s.busy) "Нокс занят" else "Микрофон недоступен"
         refresh()
     }
 
     private fun cancelRecording() {
+        autoStartPending = false
+        autoExecuteRecording = false
         val id = session ?: return
         session = null
         service?.cancelWebDictation(id)
@@ -307,10 +333,16 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
                 }
             } else {
                 val final = s.webDictationResult
+                val command = AssistantVoiceCommand.fromResult(autoExecuteRecording, s.webDictationFinal, final)
+                autoExecuteRecording = false
                 input?.setText(joined(final))
                 session = null
                 s.cancelWebDictation(id)
                 notice = if (final.isEmpty()) s.status else null
+                if (command != null && allowed() && !s.busy) {
+                    launch(true, command, execute = true)
+                    return
+                }
             }
         }
         val recording = session != null
@@ -341,7 +373,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
             val enabled = permitted && service != null && (recording || service?.busy == false)
             isEnabled = enabled
             alpha = if (enabled) 1f else .45f
-            val label = if (recording) "Остановить диктовку" else "Начать диктовку"
+            val label = if (recording) "Остановить диктовку" else "Начать голосовую команду"
             if (contentDescription != label) {
                 setImageResource(if (recording) R.drawable.ic_nox_stop else R.drawable.ic_nox_mic)
                 contentDescription = label
@@ -354,10 +386,11 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         }
     }
 
-    private fun launch(submit: Boolean, draft: String = "") {
+    private fun launch(submit: Boolean, draft: String = "", execute: Boolean = false) {
         if (!allowed() || session != null) { refresh(); return }
+        autoStartPending = false
         val text = if (submit) draft.trim() else input?.text?.toString()?.trim().orEmpty()
-        val ticket = if (text.isNotEmpty()) AssistantHandoff.issueDraft(ctx, text) ?: return else null
+        val ticket = if (text.isNotEmpty()) AssistantHandoff.issueDraft(ctx, text, execute) ?: return else null
         if (ticket == null) AssistantHandoff.revoke()
         val intent = Intent(ctx, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)

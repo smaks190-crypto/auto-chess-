@@ -163,7 +163,7 @@
 
 <details class="card settingsGroup"><summary><div class="settingsTitle"><svg><use href="#i-logo"/></svg><div><h3>Системный ассистент</h3><small id="assistantStatus">Проверка роли Android</small></div></div><svg class="foldArrow"><use href="#i-down"/></svg></summary>
  <button class="btn full" id="systemAssistant">Выбрать ассистента Android</button>
- <p class="smallNote">Системный жест открывает компактную панель. Выбор ассистента не включает запись автоматически.</p>
+ <p class="smallNote">Системный жест сразу запускает прослушивание. Завершённая фраза отправляется Ноксу. Сам выбор ассистента не включает микрофон.</p>
 </details>
 
 <details class="card settingsGroup"><summary><div class="settingsTitle"><svg><use href="#i-lock"/></svg><div><h3>Разрешения агента</h3><small>Управление экраном и приложениями</small></div></div><svg class="foldArrow"><use href="#i-down"/></svg></summary>
@@ -499,6 +499,7 @@ function drawVoice(){
  if(!reduced&&!voiceFrame)voiceFrame=requestAnimationFrame(()=>{voiceFrame=0;drawVoice()});
 }
 function receive(st){
+ if(st.type==='assistant_show_chat'){if(voiceOpen)closeVoice(true);tab('chat');return}
  if(st.type==='draft'){
    if(typeof st.text!=='string'||!st.text.trim())return;
    if(voiceOpen)closeVoice(true);

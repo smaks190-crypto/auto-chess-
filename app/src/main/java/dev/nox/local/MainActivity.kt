@@ -109,6 +109,8 @@ class MainActivity : ComponentActivity() {
     private var webVoiceOpen = false
     private var webDictationId: Long? = null
     private var pendingAssistantDraft: String? = null
+    private var pendingAssistantCommand: Pair<String, Long>? = null
+    private var pendingAssistantShowChat = false
     private var webImageKey = ""
     private var webStateKey = ""
     private val voiceRefresh = object : Runnable {
@@ -155,6 +157,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var perceptionButton: Button
     private lateinit var perceptionStatus: TextView
     private val perceptionUi = android.os.Handler(android.os.Looper.getMainLooper())
+    private val assistantCommandExpiry = Runnable { if (isVisible) drainAssistantCommand() }
     private val perceptionRefresh = object : Runnable {
         override fun run() { renderPerception(); if (isVisible && webPage == "vision") renderWeb(); perceptionUi.postDelayed(this, 750) }
     }
@@ -186,7 +189,7 @@ class MainActivity : ComponentActivity() {
             consumeAssistantVoice()
         }
         override fun onServiceDisconnected(name: ComponentName?) {
-            service = null; closeWebDictation(); render()
+            service = null; pendingAssistantCommand = null; closeWebDictation(); render()
         }
     }
 
@@ -335,7 +338,7 @@ class MainActivity : ComponentActivity() {
         systemAssistantButton = addButton(settings, "Выбрать Нокс системным ассистентом", false) {
             chooseSystemAssistant()
         }
-        settings.addView(textLabel("Системный жест или кнопка ассистента открывает панель Нокса. Выбор не включает микрофон автоматически; фоновое ожидание имени настраивается отдельно. Действия на заблокированном телефоне запрещены.", 13f, muted))
+        settings.addView(textLabel("Системный жест или кнопка открывает Нокс и запускает прослушивание. Завершённая фраза становится командой. Сам выбор ассистента не включает микрофон. На заблокированном телефоне команды запрещены.", 13f, muted))
         settings.addView(textLabel("Голос вне приложения", 19f).apply { typeface = Typeface.DEFAULT_BOLD })
         backgroundButton = addButton(settings, "Включить фоновый голос", false) {
             toggleBackgroundVoice()
@@ -549,6 +552,9 @@ class MainActivity : ComponentActivity() {
         if (c.op == "ready") { webStateKey = ""; webImageKey = ""; renderWeb(); syncTelemetry(); return }
         if (!isVisible || advanced || !DeviceInteraction.unlocked(this)) { ack(c.op, false, "Открой и разблокируй Нокс"); return }
         val s = service
+        if (c.op in setOf("send", "clear", "cancel", "choice", "voice_start", "model_select",
+                "model_load", "model_import", "model_catalog", "benchmark") ||
+            (c.op == "page" && c.text != "chat")) pendingAssistantCommand = null
         if (c.op == "page") {
             webPage = c.text
             if (webPage != "chat") closeWebDictation()
@@ -741,6 +747,10 @@ class MainActivity : ComponentActivity() {
             .put("events", org.json.JSONArray(s?.agentJournal.orEmpty()))
         val key = st.toString()
         if (key != webStateKey) { webStateKey = key; obsidian.send(st) }
+        if (isVisible && DeviceInteraction.unlocked(this) && pendingAssistantShowChat) {
+            pendingAssistantShowChat = false
+            obsidian.send(org.json.JSONObject().put("type", "assistant_show_chat"))
+        }
         if (isVisible && DeviceInteraction.unlocked(this)) pendingAssistantDraft?.let { draft ->
             pendingAssistantDraft = null
             obsidian.send(org.json.JSONObject().put("type", "draft").put("text", draft))
@@ -759,6 +769,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun render() {
+        drainAssistantCommand()
         val s = service
         val index = models.selectedItemPosition.coerceIn(catalog.indices)
         val pkg = catalog[index]
@@ -914,15 +925,48 @@ class MainActivity : ComponentActivity() {
                 .onFailure { header.text = "Открой настройки Android → Приложения по умолчанию → Цифровой помощник" }
     }
 
-    /** Only an authenticated in-memory handoff may populate a draft. It never submits a command. */
+    /** Only an authenticated, one-shot system-panel handoff may submit a voice command. */
     private fun consumeAssistantVoice() {
-        if (!isVisible) return
+        if (!isVisible || service == null) return
         val ticket = intent?.getStringExtra(AssistantHandoff.EXTRA_TICKET) ?: return
         intent.removeExtra(AssistantHandoff.EXTRA_TICKET)
-        val draft = AssistantHandoff.gate.consumeDraft(ticket, AssistantHandoff.active(this),
+        val handoff = AssistantHandoff.gate.consumeHandoff(ticket, AssistantHandoff.active(this),
             DeviceInteraction.unlocked(this)) ?: return
-        pendingAssistantDraft = draft.take(2000)
-        if (advanced) closeAdvanced() else renderWeb()
+        pendingAssistantCommand = null
+        if (handoff.execute) {
+            pendingAssistantShowChat = true
+            closeWebDictation()
+            pendingAssistantCommand = handoff.text to (android.os.SystemClock.elapsedRealtime() + 120_000L)
+            if (service?.busy == true && service?.loaded == null)
+                Toast.makeText(this, "Команда принята · жду загрузку модели", Toast.LENGTH_SHORT).show()
+            perceptionUi.removeCallbacks(assistantCommandExpiry)
+            perceptionUi.postDelayed(assistantCommandExpiry, 120_000L)
+        } else {
+            pendingAssistantDraft = handoff.text
+        }
+        if (advanced) closeAdvanced()
+        render()
+    }
+
+    private fun drainAssistantCommand() {
+        val (command, deadline) = pendingAssistantCommand ?: return
+        if (!isVisible || !isOnScreen || !DeviceInteraction.unlocked(this) || !AssistantHandoff.active(this)) {
+            pendingAssistantCommand = null
+            return
+        }
+        val s = service ?: return
+        if (android.os.SystemClock.elapsedRealtime() >= deadline || (s.busy && s.loaded != null)) {
+            pendingAssistantCommand = null
+            pendingAssistantDraft = command
+            Toast.makeText(this, "Команда сохранена в поле ввода · Нокс не готов", Toast.LENGTH_SHORT).show()
+            renderWeb()
+            return
+        }
+        if (s.busy) return
+        // Clear before ask(), which can synchronously publish another render.
+        perceptionUi.removeCallbacks(assistantCommandExpiry)
+        pendingAssistantCommand = null
+        s.ask(command, speak = true, thinkingBudget = effort.budget(command, false))
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -1033,6 +1077,9 @@ class MainActivity : ComponentActivity() {
         stopTelemetry()
         closeWebDictation()
         pendingAssistantDraft = null
+        pendingAssistantCommand = null
+        pendingAssistantShowChat = false
+        perceptionUi.removeCallbacks(assistantCommandExpiry)
         // A delayed handoff must not activate the microphone on a later unrelated visit.
         intent?.removeExtra(AssistantHandoff.EXTRA_TICKET)
         service?.listener = null
@@ -1043,6 +1090,9 @@ class MainActivity : ComponentActivity() {
         telemetryWorker.shutdownNow()
         closeWebDictation()
         pendingAssistantDraft = null
+        pendingAssistantCommand = null
+        pendingAssistantShowChat = false
+        perceptionUi.removeCallbacks(assistantCommandExpiry)
         if (::obsidian.isInitialized) obsidian.destroy()
         service?.listener = null
         if (bound) unbindService(connection)

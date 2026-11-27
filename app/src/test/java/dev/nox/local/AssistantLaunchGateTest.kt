@@ -85,4 +85,33 @@ class AssistantLaunchGateTest {
         val t = g.issueDraft(true, true, "x".repeat(3000))
         assertEquals(2000, g.consumeDraft(t, true, true)?.length)
     }
+    @Test fun automaticCommandUsesAuthenticatedSingleUseHandoff() {
+        val g = Fixture().gate
+        val t = g.issueCommand(true, true, "открой калькулятор")
+        assertNotNull(t)
+        assertNull(g.consumeHandoff("forged", true, true))
+        assertEquals(AssistantLaunchGate.Handoff("открой калькулятор", true), g.consumeHandoff(t, true, true))
+        assertNull(g.consumeHandoff(t, true, true))
+    }
+
+    @Test fun commandRequiresRoleUnlockAndValidLength() {
+        val f = Fixture()
+        val g = f.gate
+        assertNull(g.issueCommand(false, true, "привет"))
+        assertNull(g.issueCommand(true, false, "привет"))
+        assertNull(g.issueCommand(true, true, " "))
+        assertNull(g.issueCommand(true, true, "x".repeat(2001)))
+        val ticket = g.issueCommand(true, true, "привет")
+        f.now = 5000L
+        assertNull(g.consumeHandoff(ticket, true, true))
+        val second = g.issueCommand(true, true, "привет")
+        assertNull(g.consumeHandoff(second, true, false))
+        assertNull(g.consumeHandoff(second, true, true))
+    }
+
+    @Test fun draftCannotBecomeAutomaticCommand() {
+        val g = Fixture().gate
+        val t = g.issueDraft(true, true, "черновик")
+        assertEquals(AssistantLaunchGate.Handoff("черновик", false), g.consumeHandoff(t, true, true))
+    }
 }

@@ -8,7 +8,8 @@ internal class AssistantLaunchGate(
     private val ttlMs: Long = 5000L
 ) {
     private var pending: String? = null
-    private var pendingDraft: String? = null
+    internal data class Handoff(val text: String, val execute: Boolean)
+    private var pendingDraft: Handoff? = null
     private var deadline = 0L
     init { require(ttlMs > 0) }
 
@@ -31,14 +32,24 @@ internal class AssistantLaunchGate(
     @Synchronized fun issueDraft(activeAssistant: Boolean, unlocked: Boolean, text: String): String? {
         if (text.isBlank()) { revoke(); return null }
         val token = issue(activeAssistant, unlocked) ?: return null
-        pendingDraft = text.take(2000)
+        pendingDraft = Handoff(text.take(2000), false)
         return token
     }
 
-    @Synchronized fun consumeDraft(token: String?, activeAssistant: Boolean, unlocked: Boolean): String? {
+    @Synchronized fun issueCommand(activeAssistant: Boolean, unlocked: Boolean, text: String): String? {
+        if (text.isBlank() || text.length > 2000) { revoke(); return null }
+        val token = issue(activeAssistant, unlocked) ?: return null
+        pendingDraft = Handoff(text, true)
+        return token
+    }
+
+    @Synchronized fun consumeHandoff(token: String?, activeAssistant: Boolean, unlocked: Boolean): Handoff? {
         val value = pendingDraft
         return if (consume(token, activeAssistant, unlocked)) value else null
     }
+
+    @Synchronized fun consumeDraft(token: String?, activeAssistant: Boolean, unlocked: Boolean): String? =
+        consumeHandoff(token, activeAssistant, unlocked)?.takeUnless { it.execute }?.text
 
     @Synchronized fun expire(token: String) {
         if (pending == token) revoke()

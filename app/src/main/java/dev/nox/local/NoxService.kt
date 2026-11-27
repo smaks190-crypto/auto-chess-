@@ -174,6 +174,7 @@ class NoxService : Service() {
                 if (generating) generationCancelled = true
                 voiceEpoch++
                 webDictationResult = ""
+                webDictationFinal = false
                 webDictationSession++
                 if (listeningMode != VoiceInputMode.LOCKED_WAKE) stopListening()
                 stopSpeech()
@@ -1213,6 +1214,8 @@ class NoxService : Service() {
         private set
     internal var webDictationResult = ""
         private set
+    internal var webDictationFinal = false
+        private set
 
     internal fun cancelManualVoice() {
         if (listeningMode == VoiceInputMode.MANUAL) {
@@ -1231,6 +1234,7 @@ class NoxService : Service() {
             (listening && !waitingForName)) return null
         webDictationSession++
         webDictationResult = ""
+        webDictationFinal = false
         wakeDetected = false
         if (waitingForName) stopListening()
         startVoice(VoiceInputMode.MANUAL, dictation = true)
@@ -1240,6 +1244,7 @@ class NoxService : Service() {
 
     internal fun stopWebDictation(session: Long) {
         if (session != webDictationSession || !webDictationActive) return
+        webDictationFinal = false
         webDictationResult = if (unlocked()) recognizedText.trim().take(2000) else ""
         stopListening()
         status = if (webDictationResult.isEmpty()) "Речь не распознана" else "Диктовка готова"
@@ -1251,6 +1256,7 @@ class NoxService : Service() {
         val wasActive = webDictationActive
         webDictationSession++
         webDictationResult = ""
+        webDictationFinal = false
         if (wasActive) {
             stopListening()
             status = "Микрофон выключен"
@@ -1329,6 +1335,7 @@ class NoxService : Service() {
                     if (dictation) {
                         webDictationResult = if (webDictationActive && unlocked() && activeSpeech == null && !speaking)
                             text.trim().take(2000) else ""
+                        webDictationFinal = webDictationResult.isNotBlank() && text.trim().length <= 2000
                         stopListening()
                         recognitionFailures = 0; retryAt = 0L
                         status = if (webDictationResult.isEmpty()) "Диктовка завершена" else "Диктовка готова"
