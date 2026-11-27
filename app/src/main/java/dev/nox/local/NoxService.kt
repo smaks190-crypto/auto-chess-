@@ -304,6 +304,7 @@ class NoxService : Service() {
     private var visibleSpeechEnd = 0
     private var speaking = false
     private var voiceLevel = 0f
+    internal val manualVoiceLevel: Float get() = if (listening && !waitingForName) voiceLevel else 0f
     internal var recognizedText = ""
         private set
     private var lastNotificationStatus: String? = null
@@ -1053,7 +1054,7 @@ class NoxService : Service() {
         if (!busy) { attachedImage?.delete(); attachedImage = null; publish() }
     }
 
-    internal fun ask(command: String, image: File? = null, speak: Boolean = false, deep: Boolean = false, thinkingBudget: Int = if (deep) 1024 else 0) {
+    internal fun ask(command: String, image: File? = null, speak: Boolean = false, deep: Boolean = false, thinkingBudget: Int = if (deep) 1024 else 0, forceAgent: Boolean = false) {
         val text = command.trim()
         if (text.isEmpty() || busy || destroyed) return
         if (listening) stopListening()
@@ -1086,7 +1087,7 @@ class NoxService : Service() {
             val start = SystemClock.elapsedRealtime()
             val deadline = SystemClock.elapsedRealtime() + 240_000L
             val stop = { destroyed || generationCancelled || SystemClock.elapsedRealtime() >= deadline }
-            val mode = RequestRouter.route(text, image != null) { classificationPrompt ->
+            val mode = if (forceAgent && image == null) RequestMode.AGENT else RequestRouter.route(text, image != null) { classificationPrompt ->
                 model.classifyRequest(classificationPrompt, stop)
             }
             val response = if (stop()) "Задача отменена." else if (mode == RequestMode.AGENT) {
@@ -1194,6 +1195,14 @@ class NoxService : Service() {
     }
 
     internal fun clearChat() { if (!busy) { history.clear(); persistHistory(); partial = ""; publish() } }
+
+    internal fun cancelManualVoice() {
+        if (listeningMode == VoiceInputMode.MANUAL) {
+            stopListening()
+            status = "Микрофон выключен"
+            publish()
+        }
+    }
 
     internal fun listen() {
         // Explicit UI / notification action remains push-to-talk, including in standby.

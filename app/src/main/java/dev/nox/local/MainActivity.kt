@@ -65,17 +65,41 @@ class MainActivity : ComponentActivity() {
     private lateinit var effortSetting: Button
     private lateinit var matrix: ObsidianMatrix
     private val navButtons = mutableListOf<Button>()
+    private lateinit var obsidian: ObsidianHost
+    private lateinit var legacyRoot: LinearLayout
+    private var advanced = false
+    private var webPage = "chat"
+    private var webVoiceOpen = false
+    private var webImageKey = ""
+    private var webStateKey = ""
+    private val voiceRefresh = object : Runnable {
+        override fun run() {
+            if (!isVisible || !webVoiceOpen || advanced) return
+            if (::obsidian.isInitialized) obsidian.send(org.json.JSONObject().put("type", "level").put("value", (service?.manualVoiceLevel ?: 0f).toDouble()))
+            perceptionUi.postDelayed(this, 100)
+        }
+    }
     private var activePage = 0
     private var matrixVisible = false
     private val backCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
-            if (::matrix.isInitialized && matrix.dismiss()) return
-            if (activePage != 0) showPage(0)
+            if (advanced) {
+                if (::matrix.isInitialized && matrix.dismiss()) return
+                closeAdvanced()
+                return
+            }
+            if (::obsidian.isInitialized) obsidian.back { handled ->
+                if (!handled && !isFinishing) {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                    isEnabled = true
+                }
+            }
         }
     }
 
     private fun updateBackCallback() {
-        backCallback.isEnabled = activePage != 0 || matrixVisible
+        backCallback.isEnabled = true
     }
     private var effort = ChatEffort.AUTO
     private val workControls = mutableListOf<View>()
@@ -90,7 +114,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var perceptionStatus: TextView
     private val perceptionUi = android.os.Handler(android.os.Looper.getMainLooper())
     private val perceptionRefresh = object : Runnable {
-        override fun run() { renderPerception(); perceptionUi.postDelayed(this, 750) }
+        override fun run() { renderPerception(); if (isVisible && webPage == "vision") renderWeb(); perceptionUi.postDelayed(this, 750) }
     }
     private val bg = 0xFF111113.toInt()
     private val surface = 0xFF19191C.toInt()
@@ -156,6 +180,8 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(16), dp(12), dp(16), dp(10))
         }
         val frame = FrameLayout(this).apply { setBackgroundColor(bg) }
+        legacyRoot = root
+        root.visibility = View.GONE
         frame.addView(root, FrameLayout.LayoutParams(-1, -1))
         setContentView(frame)
         frame.setOnApplyWindowInsetsListener { view, insets ->
@@ -362,6 +388,10 @@ class MainActivity : ComponentActivity() {
             updateBackCallback()
         }
         onBackPressedDispatcher.addCallback(this, backCallback)
+        obsidian = ObsidianHost(this, ::handleWebCommand)
+        frame.addView(obsidian.view, FrameLayout.LayoutParams(-1, -1))
+        obsidian.start()
+        updateBackCallback()
         matrix.bind(effortChip)
         matrix.bind(effortSetting)
         updateNavigation()
@@ -474,6 +504,145 @@ class MainActivity : ComponentActivity() {
         render()
     }
 
+    private fun openAdvanced() {
+        if (!::obsidian.isInitialized) return
+        advanced = true
+        webVoiceOpen = false
+        perceptionUi.removeCallbacks(voiceRefresh)
+        obsidian.view.visibility = View.GONE
+        legacyRoot.visibility = View.VISIBLE
+        showPage(3)
+    }
+
+    private fun closeAdvanced() {
+        advanced = false
+        legacyRoot.visibility = View.GONE
+        obsidian.view.visibility = View.VISIBLE
+        webStateKey = ""
+        render()
+    }
+
+    private fun ack(op: String, ok: Boolean, message: String = "") {
+        obsidian.send(org.json.JSONObject().put("type", "ack").put("op", op).put("ok", ok).put("message", message))
+    }
+
+    private fun handleWebCommand(raw: String) {
+        val c = ObsidianCommand.parse(raw) ?: return
+        if (!::obsidian.isInitialized || isFinishing || isDestroyed) return
+        if (c.op == "ready") { webStateKey = ""; webImageKey = ""; renderWeb(); return }
+        if (!isVisible || advanced || !DeviceInteraction.unlocked(this)) { ack(c.op, false, "Открой и разблокируй Нокс"); return }
+        val s = service
+        if (c.op == "page") { webPage = c.text; renderWeb(); return }
+        if (c.op == "voice_open") {
+            webVoiceOpen = true
+            perceptionUi.removeCallbacks(voiceRefresh)
+            perceptionUi.post(voiceRefresh)
+            renderWeb()
+            return
+        }
+        if (c.op == "voice_close" || c.op == "voice_stop") {
+            s?.cancelManualVoice()
+            if (c.op == "voice_close") { webVoiceOpen = false; perceptionUi.removeCallbacks(voiceRefresh) }
+            renderWeb()
+            return
+        }
+        if (c.op == "copy") {
+            getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("N.O.X", c.text))
+            ack(c.op, true, "Скопировано"); return
+        }
+        if (c.op == "settings") { openAdvanced(); return }
+        if (c.op == "grants") { showAgentGrants(); return }
+        if (s == null) { ack(c.op, false, "Ядро подключается"); return }
+        if (c.op == "cancel") { s.cancelGeneration(); return }
+        if (s.busy && c.op !in setOf("perception", "background")) { ack(c.op, false, "Нокс занят"); return }
+        when (c.op) {
+            "send" -> {
+                if (c.agent && s.attachedImage != null) { ack(c.op, false, "Убери изображение для управления телефоном"); return }
+                s.ask(c.text, s.attachedImage, tts.isChecked, thinkingBudget = effort.budget(c.text, s.attachedImage != null), forceAgent = c.agent)
+                ack(c.op, true)
+            }
+            "choice" -> {
+                if (c.model !in catalog.indices || c.effort !in ChatEffort.entries.indices) { ack(c.op, false); return }
+                applyMatrix(MatrixChoice(c.model, ChatEffort.entries[c.effort]))
+                ack(c.op, true)
+                webStateKey = ""
+            }
+            "clear" -> AlertDialog.Builder(this).setTitle("Новый чат")
+                .setMessage("Очистить историю текущего диалога?")
+                .setNegativeButton("Отмена", null)
+                .setPositiveButton("Очистить") { _, _ -> s.clearChat() }.show()
+            "toggle_vision" -> {
+                val loaded = s.loaded ?: return
+                if (!catalog[loaded.index].vision) { ack(c.op, false, "Модель не поддерживает изображения"); return }
+                models.setSelection(loaded.index); gpu.isChecked = loaded.gpu; vision.isChecked = !loaded.vision
+                selectModel()
+            }
+            "background" -> toggleBackgroundVoice()
+            "tts" -> tts.isChecked = !tts.isChecked
+            "bluetooth" -> s.toggleBluetoothInput()
+            "pick_image" -> pick(11, "image/*")
+            "remove_image" -> s.removeImage()
+            "perception" -> {
+                if (LivePerception.active) stopService(Intent(this, PerceptionService::class.java))
+                else if (!s.busy) choosePerceptionApp()
+            }
+            "analyze" -> {
+                val image = s.attachedImage ?: return
+                if (s.loaded?.vision != true) { ack(c.op, false, "Модель не поддерживает изображения"); return }
+                val q = "Опиши, что видно на изображении."
+                s.ask(q, image, tts.isChecked, thinkingBudget = effort.budget(q, true))
+            }
+            "review" -> s.reviewPerception()
+            "voice_start" -> voice(false)
+        }
+        render()
+    }
+
+    private fun renderWeb() {
+        if (!::obsidian.isInitialized || !obsidian.ready || advanced) return
+        val s = service
+        val loaded = s?.loaded
+        val image = s?.attachedImage
+        val attachedKey = image?.let { it.name + ":" + it.lastModified() + ":" + it.length() }.orEmpty()
+        val st = org.json.JSONObject()
+            .put("type", "state")
+            .put("connected", s != null)
+            .put("status", if (s == null) "Подключение…" else s.status)
+            .put("busy", s == null || s.busy)
+            .put("generating", s?.generating == true)
+            .put("modelIndex", loaded?.index ?: models.selectedItemPosition.coerceIn(catalog.indices))
+            .put("modelName", loaded?.let { catalog[it.index].name } ?: "Модель не загружена")
+            .put("modelDetails", details.text.toString())
+            .put("loaded", loaded != null)
+            .put("effort", effort.ordinal)
+            .put("vision", loaded?.vision == true)
+            .put("attached", image != null)
+            .put("imageKey", attachedKey)
+            .put("perception", LivePerception.active)
+            .put("perceptionText", if (webPage == "vision" && ::perceptionStatus.isInitialized) perceptionStatus.text.toString() else "")
+            .put("background", s?.background == true)
+            .put("tts", tts.isChecked)
+            .put("bluetooth", s?.preferBluetooth == true)
+            .put("micRoute", s?.microphoneRoute.orEmpty())
+            .put("manualListening", s?.listening == true && !s.waitingForName)
+            .put("recognized", s?.recognizedText.orEmpty())
+            .put("elapsedMs", s?.elapsedMs ?: org.json.JSONObject.NULL)
+            .put("partial", s?.partial.orEmpty())
+            .put("turns", org.json.JSONArray(s?.turns.orEmpty().map { org.json.JSONObject().put("user", it.user).put("text", it.text) }))
+            .put("events", org.json.JSONArray(s?.agentJournal.orEmpty()))
+        val key = st.toString()
+        if (key != webStateKey) { webStateKey = key; obsidian.send(st) }
+        if (webImageKey != attachedKey) {
+            webImageKey = attachedKey
+            if (image != null && image.isFile && image.length() in 1..2_000_000L) {
+                runCatching {
+                    val data = android.util.Base64.encodeToString(image.readBytes(), android.util.Base64.NO_WRAP)
+                    obsidian.send(org.json.JSONObject().put("type", "image").put("key", attachedKey).put("data", data))
+                }
+            }
+        }
+    }
+
     private fun render() {
         val s = service
         val index = models.selectedItemPosition.coerceIn(catalog.indices)
@@ -514,6 +683,8 @@ class MainActivity : ComponentActivity() {
         effortChip.text = effort.label
         effortChip.contentDescription = "Мышление " + effort.label + ". Модель " + (s?.loaded?.let { catalog[it.index].name } ?: "не загружена") + ". Удерживай для выбора"
         effortSetting.text = "Мышление · " + effort.label
+        renderWeb()
+        if (!advanced) return
         val turns = s?.turns.orEmpty()
         val partial = s?.partial.orEmpty()
         val signature = turns.toString() + partial
@@ -699,6 +870,7 @@ class MainActivity : ComponentActivity() {
     }
     override fun onPause() {
         if (::matrix.isInitialized) matrix.dismiss()
+        perceptionUi.removeCallbacks(voiceRefresh)
         isVisible = false
         // A delayed handoff must not activate the microphone on a later unrelated visit.
         intent?.removeExtra(AssistantHandoff.EXTRA_TICKET)
@@ -706,6 +878,8 @@ class MainActivity : ComponentActivity() {
         super.onPause()
     }
     override fun onDestroy() {
+        perceptionUi.removeCallbacks(voiceRefresh)
+        if (::obsidian.isInitialized) obsidian.destroy()
         service?.listener = null
         if (bound) unbindService(connection)
         service = null
