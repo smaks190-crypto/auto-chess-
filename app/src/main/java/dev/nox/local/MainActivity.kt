@@ -194,7 +194,7 @@ class MainActivity : ComponentActivity() {
         val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         val brand = textLabel("N.O.X.", 24f).apply { typeface = Typeface.DEFAULT_BOLD }
         top.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
-        top.addView(textLabel("ЛОКАЛЬНО", 11f, muted))
+        top.addView(button("← Obsidian") { closeAdvanced() }, LinearLayout.LayoutParams(-2, -2))
         effort = runCatching { ChatEffort.valueOf(prefs.getString("chat_effort", "AUTO") ?: "AUTO") }.getOrDefault(ChatEffort.AUTO)
         root.addView(top)
         header = textLabel("Локальный ассистент", 13f, accent)
@@ -380,6 +380,7 @@ class MainActivity : ComponentActivity() {
             navButtons.add(item)
             nav.addView(item, LinearLayout.LayoutParams(0,dp(52),1f).apply { marginEnd = if (index == 3) 0 else dp(4) })
         }
+        nav.visibility = View.GONE
         root.addView(nav, LinearLayout.LayoutParams(-1,-2))
         matrix = ObsidianMatrix(frame, catalog.map { it.name }, {
             MatrixChoice(service?.loaded?.index ?: models.selectedItemPosition.coerceIn(catalog.indices), effort)
@@ -603,7 +604,10 @@ class MainActivity : ComponentActivity() {
         val s = service
         val loaded = s?.loaded
         val image = s?.attachedImage
-        val attachedKey = image?.let { it.name + ":" + it.lastModified() + ":" + it.length() }.orEmpty()
+        val frame = if (image == null && isVisible && webPage == "vision" && LivePerception.active)
+            LivePerception.buffer.snapshot(android.os.SystemClock.elapsedRealtime()).frame else null
+        val attachedKey = image?.let { it.name + ":" + it.lastModified() + ":" + it.length() }
+            ?: frame?.let { "screen:" + LivePerception.epoch + ":" + it.contentHashCode() }.orEmpty()
         val st = org.json.JSONObject()
             .put("type", "state")
             .put("connected", s != null)
@@ -634,9 +638,11 @@ class MainActivity : ComponentActivity() {
         if (key != webStateKey) { webStateKey = key; obsidian.send(st) }
         if (webImageKey != attachedKey) {
             webImageKey = attachedKey
-            if (image != null && image.isFile && image.length() in 1..2_000_000L) {
-                runCatching {
-                    val data = android.util.Base64.encodeToString(image.readBytes(), android.util.Base64.NO_WRAP)
+            runCatching {
+                val bytes = if (image != null && image.isFile && image.length() in 1..2_000_000L) image.readBytes()
+                    else frame?.takeIf { it.size in 1..2_000_000 }
+                if (bytes != null) {
+                    val data = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
                     obsidian.send(org.json.JSONObject().put("type", "image").put("key", attachedKey).put("data", data))
                 }
             }
@@ -863,6 +869,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         isVisible = true
+        if (webVoiceOpen && !advanced) { perceptionUi.removeCallbacks(voiceRefresh); perceptionUi.post(voiceRefresh) }
         service?.listener = { render() }
         service?.syncOverlay()
         render()
