@@ -16,13 +16,14 @@ internal class ObsidianHost(
     private val dispatch: (String) -> Unit
 ) {
     companion object {
-        private const val ORIGIN = "https://nox.local"
-        private const val URL = "$ORIGIN/index.html"
+        private const val ORIGIN = ObsidianResources.ORIGIN
+        private const val URL = ObsidianResources.URL
     }
     val view = WebView(activity)
     private var port: WebMessagePort? = null
     private var closed = false
     private var documentLoaded = false
+    private var mainDocumentFailed = false
     var ready = false
         private set
 
@@ -33,7 +34,8 @@ internal class ObsidianHost(
             javaScriptEnabled = true
             allowFileAccess = false
             allowContentAccess = false
-            blockNetworkLoads = true
+            // Every HTTP(S) resource is resolved locally or rejected by the interceptor.
+            blockNetworkLoads = false
             javaScriptCanOpenWindowsAutomatically = false
             setSupportMultipleWindows(false)
             domStorageEnabled = false
@@ -46,11 +48,27 @@ internal class ObsidianHost(
         }
         view.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = true
-            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse =
-                WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", emptyMap(), ByteArrayInputStream(ByteArray(0)))
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
+                when (ObsidianResources.route(request.url.toString(), request.method, request.isForMainFrame)) {
+                    ObsidianResources.Kind.DOCUMENT -> WebResourceResponse(
+                        "text/html", "UTF-8", 200, "OK",
+                        mapOf("Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff"),
+                        activity.assets.open("obsidian/index.html"))
+                    ObsidianResources.Kind.INLINE_IMAGE -> null // data URL only; never a network request
+                    ObsidianResources.Kind.REJECT -> WebResourceResponse("text/plain", "UTF-8", 403,
+                        "Forbidden", emptyMap(), ByteArrayInputStream(ByteArray(0)))
+                }
+
+            override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                if (request.isForMainFrame) mainDocumentFailed = true
+            }
+
+            override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
+                if (request.isForMainFrame) mainDocumentFailed = true
+            }
 
             override fun onPageFinished(view: WebView, url: String) {
-                if (closed || documentLoaded || url != URL) return
+                if (closed || documentLoaded || mainDocumentFailed || url != URL) return
                 documentLoaded = true
                 val channels = view.createWebMessageChannel()
                 port = channels[0]
@@ -69,8 +87,7 @@ internal class ObsidianHost(
                 view.postWebMessage(WebMessage("nox-init", arrayOf(channels[1])), Uri.parse(ORIGIN))
             }
         }
-        val html = activity.assets.open("obsidian/index.html").bufferedReader().use { it.readText() }
-        view.loadDataWithBaseURL(URL, html, "text/html", "UTF-8", null)
+        view.loadUrl(URL)
     }
 
     fun send(value: JSONObject) {
