@@ -40,16 +40,18 @@ internal class SilentRecognizer(private val context: Context) : AutoCloseable {
         main.post { if (current(token)) callback() }
     }
 
-    fun start(listener: Listener) {
+    fun start(listener: Listener, acceptFinal: (String) -> Boolean = { true },
+              emitLive: Boolean = true) {
         check(!closed.get())
         val token = epoch.incrementAndGet()
-        worker.execute { if (current(token)) capture(token, listener) }
+        worker.execute { if (current(token)) capture(token, listener, acceptFinal, emitLive) }
     }
 
     fun stop() { epoch.incrementAndGet() }
 
     @SuppressLint("MissingPermission")
-    private fun capture(token: Long, listener: Listener) {
+    private fun capture(token: Long, listener: Listener, acceptFinal: (String) -> Boolean,
+                        emitLive: Boolean) {
         var audio: AudioRecord? = null
         var opened = false
         try {
@@ -84,16 +86,20 @@ internal class SilentRecognizer(private val context: Context) : AutoCloseable {
                         continue
                     }
                     lastAudio = android.os.SystemClock.elapsedRealtime()
-                    var energy = 0.0
-                    for (i in 0 until count) {
-                        val sample = buffer[i].toDouble() / 32768.0
-                        energy += sample * sample
+                    if (emitLive) {
+                        var energy = 0.0
+                        for (i in 0 until count) {
+                            val sample = buffer[i].toDouble() / 32768.0
+                            energy += sample * sample
+                        }
+                        val level = (sqrt(energy / count) * 6).toFloat().coerceIn(0f, 1f)
+                        post(token) { listener.onLevel(level) }
                     }
-                    val level = (sqrt(energy / count) * 6).toFloat().coerceIn(0f, 1f)
-                    post(token) { listener.onLevel(level) }
                     if (recognizer.acceptWaveForm(buffer, count)) {
                         val result = JSONObject(recognizer.result).optString("text").trim()
-                        if (result.isNotEmpty()) {
+                        // Standby rejects unrelated speech on the capture worker.
+                        // Never send rejected utterances or live partials to the service.
+                        if (result.isNotEmpty() && acceptFinal(result)) {
                             // Release the microphone before sending the result to the service.
                             recorder.stop()
                             recorder.release()
@@ -105,7 +111,7 @@ internal class SilentRecognizer(private val context: Context) : AutoCloseable {
                             lastPartial = ""
                             post(token) { listener.onPartial("") }
                         }
-                    } else {
+                    } else if (emitLive) {
                         val partial = JSONObject(recognizer.partialResult).optString("partial").trim()
                         if (partial != lastPartial) {
                             lastPartial = partial

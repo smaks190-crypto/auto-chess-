@@ -109,12 +109,24 @@ class NoxService : Service() {
     private var retryAt = 0L
     private var clientBound = false
     private var receiverRegistered = false
-    private val restartVoice = Runnable { if (canAutoListen()) listen() }
+    private var listeningMode: VoiceInputMode? = null
+    internal val waitingForName: Boolean get() = listening && listeningMode == VoiceInputMode.WAKE
+    private val restartVoice = Runnable {
+        if (canAutoListen()) startVoice(if (agentRunning && busy && !generationCancelled)
+            VoiceInputMode.STOP_ONLY else VoiceInputMode.WAKE)
+    }
     private val releaseIdle = Runnable {
         if (!clientBound && !background && !busy && !listening && activeSpeech == null && !LivePerception.active) stopSelf()
     }
     private val recognitionTimeout = Runnable {
         if (listening) recognitionFailed("Истекло время запуска микрофона", false)
+    }
+    private val commandTimeout = Runnable {
+        if (listening && (listeningMode == VoiceInputMode.COMMAND || listeningMode == VoiceInputMode.MANUAL)) {
+            stopListening()
+            status = if (background) "Жду имя «Нокс»" else "Голосовая команда не получена"
+            publish()
+        }
     }
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -383,12 +395,13 @@ class NoxService : Service() {
         try {
             startForeground(ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
             background = true
+            if (listening) stopListening()
             loopBlocked = false
             recognitionFailures = 0
             retryAt = 0L
             lastNotificationStatus = null
             syncOverlay()
-            status = "Фоновый голос включён · слушаю автоматически"
+            status = "Фоновый голос включён · жду имя «Нокс»"
         } catch (e: Exception) {
             background = false
             removeOverlay()
@@ -422,9 +435,9 @@ class NoxService : Service() {
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             val t = SystemClock.uptimeMillis() / 1000.0
-            val active = listening || busy || speaking
+            val active = (listening && !waitingForName) || busy || speaking
             val pulse = when {
-                listening -> 0.3f + 0.7f * voiceLevel
+                listening && !waitingForName -> 0.3f + 0.7f * voiceLevel
                 speaking -> (0.6 + 0.4 * kotlin.math.sin(t * 9)).toFloat()
                 else -> 0f
             }
@@ -1003,10 +1016,18 @@ class NoxService : Service() {
     internal fun clearChat() { if (!busy) { history.clear(); persistHistory(); partial = ""; publish() } }
 
     internal fun listen() {
+        // Explicit UI / notification action remains push-to-talk, including in standby.
+        if (waitingForName) stopListening()
+        startVoice(VoiceInputMode.MANUAL)
+    }
+
+    private fun startVoice(requestedMode: VoiceInputMode) {
         if (destroyed || listening || activeSpeech != null || speaking) return
         val stopOnly = agentRunning && busy && !generationCancelled
         if (busy && !stopOnly) { status = "Подожди, Нокс занят…"; publish(); return }
         if (stopOnly && !background) return
+        val mode = if (stopOnly) VoiceInputMode.STOP_ONLY else requestedMode
+        if (mode != VoiceInputMode.MANUAL && !background) return
         main.removeCallbacks(restartVoice)
         if (!unlocked()) { status = "Разблокируй телефон для голосовой команды"; publish(); return }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -1018,28 +1039,35 @@ class NoxService : Service() {
         val token = ++speechId
         try {
             val engine = recognizer ?: SilentRecognizer(applicationContext).also { recognizer = it }
+            listeningMode = mode
             listening = true
-            if (!stopOnly) status = "Запускаю локальное распознавание…"
+            if (!stopOnly) status = if (mode == VoiceInputMode.COMMAND) "Имя распознано · говори"
+                else "Запускаю локальное распознавание…"
             publish()
             main.postDelayed(recognitionTimeout, 60_000L)
+            val live = mode == VoiceInputMode.MANUAL || mode == VoiceInputMode.COMMAND
             engine.start(object : SilentRecognizer.Listener {
                 override fun onReady() {
                     if (token != speechId || !listening) return
                     main.removeCallbacks(recognitionTimeout)
-                    if (!unlocked()) { stopListening(); publish(); return }
-                    if (!stopOnly) status = "Слушаю…"
+                    if (!unlocked() || activeSpeech != null || speaking) { stopListening(); publish(); return }
+                    if (!stopOnly) status = when (mode) {
+                        VoiceInputMode.WAKE -> "Жду имя «Нокс»"
+                        VoiceInputMode.COMMAND -> "Имя распознано · говори"
+                        else -> "Слушаю…"
+                    }
                     publish()
-                    // Background sessions stay open through silence; manual sessions have a limit.
-                    if (!background) main.postDelayed(recognitionTimeout, 30_000L)
+                    if (mode == VoiceInputMode.COMMAND) main.postDelayed(commandTimeout, 10_000L)
+                    else if (mode == VoiceInputMode.MANUAL) main.postDelayed(commandTimeout, 30_000L)
                 }
                 override fun onLevel(level: Float) {
-                    if (token == speechId && listening) {
+                    if (token == speechId && listening && live) {
                         voiceLevel = voiceLevel * 0.65f + level * 0.35f
                         bubble?.invalidate()
                     }
                 }
                 override fun onPartial(text: String) {
-                    if (token == speechId && listening && !stopOnly) {
+                    if (token == speechId && listening && live && unlocked()) {
                         recognizedText = text
                         publish()
                     }
@@ -1048,18 +1076,20 @@ class NoxService : Service() {
                     if (token != speechId || !listening) return
                     stopListening()
                     recognitionFailures = 0; retryAt = 0L
-                    if (!unlocked()) { publish(); return }
-                    if (background && VoiceLoopPolicy.isStopPhrase(text)) { disableBackground(); return }
-                    if (stopOnly) {
-                        if (VoiceLoopPolicy.isCancelTaskPhrase(text)) cancelGeneration() else publish()
-                        return
+                    if (!unlocked() || activeSpeech != null || speaking ||
+                        (mode != VoiceInputMode.MANUAL && !background)) { publish(); return }
+                    when (val action = WakeWordPolicy.route(mode, text)) {
+                        WakeInput.Ignore -> publish()
+                        WakeInput.Arm -> if (!busy && background) startVoice(VoiceInputMode.COMMAND) else publish()
+                        WakeInput.Disable -> if (background) disableBackground() else publish()
+                        WakeInput.CancelTask -> if (agentRunning && busy && !generationCancelled) cancelGeneration() else publish()
+                        is WakeInput.Command -> if (!busy) ask(action.text, speak = true) else publish()
                     }
-                    ask(text, speak = true)
                 }
                 override fun onError(message: String, permanent: Boolean) {
                     if (token == speechId && listening) recognitionFailed(message, permanent)
                 }
-            })
+            }, acceptFinal = { WakeWordPolicy.route(mode, it) != WakeInput.Ignore }, emitLive = live)
         } catch (e: Exception) {
             recognitionFailed("Ошибка микрофона: " + e.message, true)
         }
@@ -1068,7 +1098,9 @@ class NoxService : Service() {
     private fun stopListening() {
         speechId++
         main.removeCallbacks(recognitionTimeout)
+        main.removeCallbacks(commandTimeout)
         recognizer?.stop()
+        listeningMode = null
         listening = false; voiceLevel = 0f; recognizedText = ""
     }
 

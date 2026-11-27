@@ -206,7 +206,7 @@ class MainActivity : Activity() {
             else startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + packageName)))
             render()
         }
-        settings.addView(textLabel("После включения Нокс автоматически слушает и возобновляет прослушивание после ответа. Микрофон отключается на время ответа и при блокировке экрана. Удерживай стрелку отправки в чате, чтобы включить или выключить фоновый голос. Также выключить можно здесь, в уведомлении или фразой «Нокс, перестань слушать».", 13f, muted))
+        settings.addView(textLabel("После включения скажи «Нокс, открой Telegram» или отдельно «Нокс» и затем команду в течение 10 секунд. Обычная речь не запускает ассистента и не сохраняется в чате. Распознавание локальное; микрофон отключается на время озвучивания и при блокировке экрана. Удерживай стрелку отправки для переключения фонового голоса. Выключить можно здесь, в уведомлении или фразой «Нокс, перестань слушать».", 13f, muted))
         settings.addView(textLabel("Облачко действий видно только вне Нокса. Нажми «Остановить», чтобы отменить текущую задачу. Для действий нужен доступ к плавающему облачку; голосовые ответы на сообщения настраиваются отдельно.", 13f, muted))
         addButton(settings, "Разрешить агенту управление экраном", false) {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -366,7 +366,7 @@ class MainActivity : Activity() {
         gpu.isEnabled = !busy && !pkg.cpuOnly
         vision.isEnabled = !busy && pkg.vision
         send.isEnabled = !busy
-        mic.isEnabled = !busy && s?.listening != true
+        mic.isEnabled = !busy && (s?.listening != true || s?.waitingForName == true)
         send.visibility = if (s?.generating == true) View.GONE else View.VISIBLE
         stopGeneration.visibility = if (s?.generating == true) View.VISIBLE else View.GONE
         progress.visibility = if (s?.progress != null) View.VISIBLE else View.GONE
