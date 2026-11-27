@@ -16,4 +16,19 @@ class ObsidianCommandTest {
     @Test fun rejectsCoercionAndOutOfBounds() {
         for (raw in listOf("""{"op":"choice","model":"1","effort":0}""", """{"op":"choice","model":3,"effort":0}""", """{"op":"choice","model":0,"effort":4}""", """{"op":"send","text":"hi","agent":"true"}""", """{"op":"send","text":" ","agent":false}""", """{"op":"page","page":"outside"}""", "{")) assertNull(raw, ObsidianCommand.parse(raw))
     }
+    @Test fun settingsOperationsAreTypedAndBounded() {
+        assertEquals(ObsidianCommand("model_select", model=2), ObsidianCommand.parse("""{"op":"model_select","model":2}"""))
+        assertEquals(ObsidianCommand("model_gpu", enabled=true), ObsidianCommand.parse("""{"op":"model_gpu","enabled":true}"""))
+        assertEquals(ObsidianCommand("reduce_motion", enabled=false), ObsidianCommand.parse("""{"op":"reduce_motion","enabled":false}"""))
+        for (op in listOf("system_assistant","overlay_permission","accessibility_permission","model_load","model_import","model_catalog","model_cancel","benchmark","benchmark_log","benchmark_share")) {
+            assertEquals(op, ObsidianCommand.parse("""{"op":"$op"}""")?.op)
+            assertNull(ObsidianCommand.parse("""{"op":"$op","package":"com.example"}"""))
+        }
+        assertNull(ObsidianCommand.parse("""{"op":"settings"}"""))
+        assertNull(ObsidianCommand.parse("""{"op":"model_gpu","enabled":"true"}"""))
+        assertNull(ObsidianCommand.parse("""{"op":"model_vision","enabled":1}"""))
+        assertNull(ObsidianCommand.parse("""{"op":"model_select","model":3}"""))
+        assertNull(ObsidianCommand.parse("""{"op":"model_select","model":-1}"""))
+        assertNull(ObsidianCommand.parse("""{"op":"model_import","uri":"file:///sdcard/test"}"""))
+    }
 }

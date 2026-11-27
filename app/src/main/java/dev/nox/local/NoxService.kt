@@ -352,6 +352,8 @@ class NoxService : Service() {
         private set
     internal var elapsedMs: Long? = null
         private set
+    internal var decodeStats: LocalModel.DecodeStats? = null
+        private set
     private val history = mutableListOf<Turn>()
     private val sessionPrefs by lazy { getSharedPreferences("nox_session", MODE_PRIVATE) }
     private fun persistHistory() {
@@ -967,7 +969,7 @@ class NoxService : Service() {
             original.name.startsWith(pkg.key + ".imported."))
         if (loaded == config && uri == null && !forceCatalog) { status = pkg.name + " уже готова"; publish(); return }
         val download = uri == null && (forceCatalog || !original.isFile)
-        loaded = null; cancelled = false; progress = if (download) 0 else null
+        loaded = null; decodeStats = null; elapsedMs = null; cancelled = false; progress = if (download) 0 else null
         var selectedConfig = config
         runWork(if (uri != null) "Импорт модели…" else if (download) "Подготовка загрузки…" else "Проверка модели…", {
             model.close()
@@ -1067,7 +1069,7 @@ class NoxService : Service() {
         if (text.length > 2000) { status = "Команда слишком длинная"; publish(); return }
         val previous = history.takeLast(4).joinToString("\n") { (if (it.user) "Пользователь: " else "Нокс: ") + it.text.take(350) }
         val voiceToken = voiceEpoch
-        history.add(Turn(true, text)); partial = ""; elapsedMs = null
+        history.add(Turn(true, text)); partial = ""; elapsedMs = null; decodeStats = null
         if (history.size > 60) history.subList(0, history.size - 60).clear()
         persistHistory()
         val config = loaded
@@ -1152,7 +1154,10 @@ class NoxService : Service() {
             }
             val elapsed = SystemClock.elapsedRealtime() - start
             traceMemory("request_end")
-            main.post { elapsedMs = elapsed }
+            val stats = if (mode == RequestMode.CHAT && !stop()) model.chatStats() else null
+            main.post {
+                if (!destroyed && !generationCancelled) { elapsedMs = elapsed; decodeStats = stats }
+            }
             response
         }, {
             complete(it.ifBlank { "Модель не вернула текст." }, speak && voiceToken == voiceEpoch)
@@ -1380,7 +1385,7 @@ class NoxService : Service() {
         val useGpu = gpu && !pkg.cpuOnly
         val useVision = vision && pkg.vision
         val report = reportFile
-        loaded = null
+        loaded = null; decodeStats = null; elapsedMs = null
         val prompts = listOf(
             "RU-01" to "Перефразируй одним предложением: встречу перенесли с пятницы на понедельник, время прежнее.",
             "LOG-01" to "У тебя 18 золотых. Купи двух героев по 3 и оставь 10 в резерве. Можно ли после этого обновить магазин за 2? Объясни.",

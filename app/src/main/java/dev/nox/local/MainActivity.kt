@@ -31,6 +31,43 @@ class MainActivity : ComponentActivity() {
     private var service: NoxService? = null
     private var bound = false
     private val catalog = ModelDownload.catalog
+    private val telemetryWorker = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private var telemetry: DeviceTelemetry? = null
+    private var telemetryEpoch = 0L
+    private var telemetryPending = false
+    private val telemetryTick = object : Runnable {
+        override fun run() {
+            if (!isVisible || advanced || webPage != "settings" || !::obsidian.isInitialized ||
+                !obsidian.ready || !DeviceInteraction.unlocked(this@MainActivity)) return
+            val sampler = telemetry ?: DeviceTelemetry(this@MainActivity).also { telemetry = it }
+            if (!telemetryPending) {
+                telemetryPending = true
+                val epoch = telemetryEpoch
+                telemetryWorker.execute {
+                    val result = runCatching { sampler.sample() }.getOrNull()
+                    perceptionUi.post {
+                        telemetryPending = false
+                        if (epoch == telemetryEpoch && isVisible && !advanced && webPage == "settings" &&
+                            !isDestroyed && DeviceInteraction.unlocked(this@MainActivity) && result != null) {
+                            obsidian.send(result)
+                        }
+                    }
+                }
+            }
+            perceptionUi.postDelayed(this, 2000L)
+        }
+    }
+
+    private fun stopTelemetry() {
+        perceptionUi.removeCallbacks(telemetryTick)
+        telemetryEpoch++
+        telemetry = null
+    }
+
+    private fun syncTelemetry() {
+        stopTelemetry()
+        if (isVisible && !advanced && webPage == "settings") perceptionUi.post(telemetryTick)
+    }
     private lateinit var header: TextView
     private lateinit var chatPage: LinearLayout
     private lateinit var settingsPage: ScrollView
@@ -308,16 +345,10 @@ class MainActivity : ComponentActivity() {
         }
         microphoneRouteLabel = textLabel("Источник микрофона пока не определён", 13f, muted)
         settings.addView(microphoneRouteLabel)
-        overlayButton = addButton(settings, "Разрешить плавающую кнопку", false) {
-            if (Settings.canDrawOverlays(this)) service?.syncOverlay()
-            else startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + packageName)))
-            render()
-        }
+        overlayButton = addButton(settings, "Разрешить плавающую кнопку", false) { openOverlayPermission() }
         settings.addView(textLabel("После включения Нокс локально распознаёт имя «Нокс». Чтобы дать команду, разблокируй телефон, нажми микрофон и произнеси запрос. Фоновая фраза не сохраняется и не выполняется. Пока Нокс выполняет задачу или говорит, фоновое прослушивание приостановлено. Bluetooth — предпочтительный вход, фактический источник выбирает Android. Переключай фоновый голос здесь или удержанием стрелки отправки. Выключить его можно также в уведомлении.", 13f, muted))
         settings.addView(textLabel("Облачко действий видно только вне Нокса. Нажми «Остановить», чтобы отменить текущую задачу. Для действий нужен доступ к плавающему облачку; голосовые ответы на сообщения настраиваются отдельно.", 13f, muted))
-        addButton(settings, "Разрешить агенту управление экраном", false) {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        }
+        addButton(settings, "Разрешить агенту управление экраном", false) { openAccessibilityPermission() }
         settings.addView(textLabel("Агент запрашивает доступ к каждому приложению. Проверенные безопасные действия выполняются самостоятельно; неизвестные и критические требуют отдельного подтверждения.", 13f, muted))
         addButton(settings, "Разрешения агента") { showAgentGrants() }
 
@@ -352,29 +383,11 @@ class MainActivity : ComponentActivity() {
         settings.addView(progress)
         cancel = addButton(settings, "Отменить скачивание", false) { service?.cancelDownload() }.apply { visibility = View.GONE }
         addButton(settings, "Импортировать файл вручную") { importIndex = models.selectedItemPosition; pick(10, "*/*") }
-        addButton(settings, "Выбрать проверенную каталожную модель") {
-            val index = models.selectedItemPosition
-            val pkg = catalog[index]
-            AlertDialog.Builder(this).setTitle("Проверенная копия " + pkg.name)
-                .setMessage("Импортированные и прежние файлы останутся на устройстве. Если проверенной копии нет, потребуется скачать " + String.format(Locale.US, "%.2f", pkg.size / 1e9) + " ГБ.")
-                .setNegativeButton("Отмена", null)
-                .setPositiveButton("Продолжить") { _, _ ->
-                    saveSelection(index)
-                    service?.selectModel(index, gpu.isChecked, vision.isChecked, forceCatalog = true)
-                }.show()
-        }
+        addButton(settings, "Выбрать проверенную каталожную модель") { chooseCatalogModel() }
         settings.addView(textLabel("Диагностика", 19f).apply { typeface = Typeface.DEFAULT_BOLD })
         addButton(settings, "Сравнительный тест") { service?.benchmark(models.selectedItemPosition, gpu.isChecked, vision.isChecked) }
-        addButton(settings, "Журнал тестов") {
-            val file = service?.reportFile
-            AlertDialog.Builder(this).setTitle("Журнал").setMessage(if (file?.isFile == true) file.readText().takeLast(30000) else "Тесты ещё не запускались").setPositiveButton("Закрыть", null).show()
-        }
-        addButton(settings, "Поделиться журналом") {
-            val file = service?.reportFile
-            if (file?.isFile == true) startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"; putExtra(Intent.EXTRA_TEXT, file.readText().takeLast(100000))
-            }, "Поделиться результатами"))
-        }
+        addButton(settings, "Журнал тестов") { showBenchmarkLog() }
+        addButton(settings, "Поделиться журналом") { shareBenchmarkLog() }
         addButton(settings, "Очистить чат") { service?.clearChat() }
         details = textLabel("", 13f, muted); settings.addView(details)
         val nav = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,dp(8),0,0) }
@@ -510,15 +523,6 @@ class MainActivity : ComponentActivity() {
         render()
     }
 
-    private fun openAdvanced() {
-        if (!::obsidian.isInitialized) return
-        advanced = true
-        closeWebDictation()
-        obsidian.view.visibility = View.GONE
-        legacyRoot.visibility = View.VISIBLE
-        showPage(3)
-    }
-
     private fun closeAdvanced() {
         advanced = false
         legacyRoot.visibility = View.GONE
@@ -542,13 +546,13 @@ class MainActivity : ComponentActivity() {
     private fun handleWebCommand(raw: String) {
         val c = ObsidianCommand.parse(raw) ?: return
         if (!::obsidian.isInitialized || isFinishing || isDestroyed) return
-        if (c.op == "ready") { webStateKey = ""; webImageKey = ""; renderWeb(); return }
+        if (c.op == "ready") { webStateKey = ""; webImageKey = ""; renderWeb(); syncTelemetry(); return }
         if (!isVisible || advanced || !DeviceInteraction.unlocked(this)) { ack(c.op, false, "Открой и разблокируй Нокс"); return }
         val s = service
         if (c.op == "page") {
             webPage = c.text
             if (webPage != "chat") closeWebDictation()
-            renderWeb(); return
+            renderWeb(); syncTelemetry(); return
         }
         if (c.op == "voice_open") {
             if (webPage != "chat") { ack(c.op, false); return }
@@ -585,12 +589,53 @@ class MainActivity : ComponentActivity() {
             getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("N.O.X", c.text))
             ack(c.op, true, "Скопировано"); return
         }
-        if (c.op == "settings") { openAdvanced(); return }
+        val settingsOps = setOf("system_assistant", "overlay_permission", "accessibility_permission",
+            "model_select", "model_gpu", "model_vision", "model_load", "model_import", "model_catalog",
+            "model_cancel", "benchmark", "benchmark_log", "benchmark_share", "reduce_motion", "float_button")
+        if (c.op in settingsOps && webPage != "settings") { ack(c.op, false, "Открой настройки"); return }
+        when (c.op) {
+            "system_assistant" -> { chooseSystemAssistant(); return }
+            "overlay_permission" -> { openOverlayPermission(); return }
+            "accessibility_permission" -> { openAccessibilityPermission(); return }
+            "benchmark_log" -> { showBenchmarkLog(); return }
+            "benchmark_share" -> { shareBenchmarkLog(); return }
+            "reduce_motion", "float_button" -> {
+                prefs.edit().putBoolean(c.op, c.enabled).apply()
+                renderWeb(); return
+            }
+        }
         if (c.op == "grants") { showAgentGrants(); return }
         if (s == null) { ack(c.op, false, "Ядро подключается"); return }
         if (c.op == "cancel") { s.cancelGeneration(); return }
+        if (c.op == "model_cancel") {
+            if (s.progress != null) s.cancelDownload()
+            return
+        }
         if (s.busy && c.op !in setOf("perception", "background")) { ack(c.op, false, "Нокс занят"); return }
         when (c.op) {
+            "model_select" -> {
+                if (c.model !in catalog.indices) { ack(c.op, false); return }
+                models.setSelection(c.model)
+                if (catalog[c.model].cpuOnly) gpu.isChecked = false
+                if (!catalog[c.model].vision) vision.isChecked = false
+            }
+            "model_gpu" -> {
+                if (catalog[models.selectedItemPosition.coerceIn(catalog.indices)].cpuOnly && c.enabled) { ack(c.op, false, "Модель поддерживает только CPU"); return }
+                gpu.isChecked = c.enabled
+            }
+            "model_vision" -> {
+                if (!catalog[models.selectedItemPosition.coerceIn(catalog.indices)].vision && c.enabled) { ack(c.op, false, "Модель не поддерживает изображения"); return }
+                vision.isChecked = c.enabled
+            }
+            "model_load" -> selectModel()
+            "model_import" -> { importIndex = models.selectedItemPosition; pick(10, "*/*") }
+            "model_catalog" -> chooseCatalogModel()
+            "benchmark" -> AlertDialog.Builder(this).setTitle("Сравнительный тест")
+                .setMessage("Тест загрузит выбранную модель, выполнит 8 запросов и выгрузит модель. Это может занять несколько минут.")
+                .setNegativeButton("Отмена", null)
+                .setPositiveButton("Запустить") { _, _ ->
+                    s.benchmark(models.selectedItemPosition, gpu.isChecked, vision.isChecked)
+                }.show()
             "send" -> {
                 if (c.agent && s.attachedImage != null) { ack(c.op, false, "Убери изображение для управления телефоном"); return }
                 s.ask(c.text, s.attachedImage, tts.isChecked, thinkingBudget = effort.budget(c.text, s.attachedImage != null), forceAgent = c.agent)
@@ -636,6 +681,8 @@ class MainActivity : ComponentActivity() {
         if (!::obsidian.isInitialized || !obsidian.ready || advanced) return
         val s = service
         val loaded = s?.loaded
+        val selected = models.selectedItemPosition.coerceIn(catalog.indices)
+        val pkg = catalog[selected]
         val dictationId = webDictationId?.takeIf { s != null && s.webDictationSession == it }
         val dictationActive = dictationId != null && s?.webDictationActive == true
         val image = s?.attachedImage
@@ -652,6 +699,26 @@ class MainActivity : ComponentActivity() {
             .put("modelIndex", loaded?.index ?: models.selectedItemPosition.coerceIn(catalog.indices))
             .put("modelName", loaded?.let { catalog[it.index].name } ?: "Модель не загружена")
             .put("modelDetails", details.text.toString())
+            .put("selectedModel", selected)
+            .put("selectedGpu", gpu.isChecked && !pkg.cpuOnly)
+            .put("selectedVision", vision.isChecked && pkg.vision)
+            .put("gpuSupported", !pkg.cpuOnly)
+            .put("visionSupported", pkg.vision)
+            .put("loadedGpu", loaded?.gpu ?: org.json.JSONObject.NULL)
+            .put("modelAvailable", s?.modelFile(selected)?.isFile == true)
+            .put("modelSizeBytes", pkg.size)
+            .put("downloadProgress", s?.progress ?: org.json.JSONObject.NULL)
+            .put("assistantActive", AssistantHandoff.active(this))
+            .put("overlayAllowed", Settings.canDrawOverlays(this))
+            .put("accessibilityAllowed", android.provider.Settings.Secure.getString(contentResolver,
+                android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES).orEmpty().split(':').any {
+                    ComponentName.unflattenFromString(it) == ComponentName(this, NoxNavigationService::class.java)
+                })
+            .put("reduceMotion", prefs.getBoolean("reduce_motion", false))
+            .put("floatButton", prefs.getBoolean("float_button", false))
+            .put("decodeTokens", s?.decodeStats?.tokens ?: org.json.JSONObject.NULL)
+            .put("decodeRate", s?.decodeStats?.tokensPerSecond ?: org.json.JSONObject.NULL)
+            .put("firstTokenMs", s?.decodeStats?.firstTokenMs ?: org.json.JSONObject.NULL)
             .put("loaded", loaded != null)
             .put("effort", effort.ordinal)
             .put("vision", loaded?.vision == true)
@@ -773,6 +840,50 @@ class MainActivity : ComponentActivity() {
             if (user) leftMargin = dp(30) else rightMargin = dp(12)
         })
         return row
+    }
+
+    private fun openOverlayPermission() {
+        if (Settings.canDrawOverlays(this)) service?.syncOverlay()
+        else runCatching { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + packageName))) }
+            .onFailure { ack("overlay_permission", false, "Android не открыл настройки разрешения") }
+        render()
+    }
+
+    private fun openAccessibilityPermission() {
+        runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+            .onFailure { ack("accessibility_permission", false, "Android не открыл настройки специальных возможностей") }
+    }
+
+    private fun chooseCatalogModel() {
+        if (service?.busy != false) return
+        val index = models.selectedItemPosition.coerceIn(catalog.indices)
+        val pkg = catalog[index]
+        val useGpu = gpu.isChecked && !pkg.cpuOnly
+        val useVision = vision.isChecked && pkg.vision
+        AlertDialog.Builder(this).setTitle("Проверенная копия " + pkg.name)
+            .setMessage("Импортированные и прежние файлы останутся на устройстве. Если проверенной копии нет, потребуется скачать " + String.format(Locale.US, "%.2f", pkg.size / 1e9) + " ГБ.")
+            .setNegativeButton("Отмена", null)
+            .setPositiveButton("Продолжить") { _, _ ->
+                if (service?.busy == false) {
+                    saveSelection(index)
+                    service?.selectModel(index, useGpu, useVision, forceCatalog = true)
+                }
+            }.show()
+    }
+
+    private fun showBenchmarkLog() {
+        val file = service?.reportFile
+        AlertDialog.Builder(this).setTitle("Журнал")
+            .setMessage(if (file?.isFile == true) file.readText().takeLast(30000) else "Тесты ещё не запускались")
+            .setPositiveButton("Закрыть", null).show()
+    }
+
+    private fun shareBenchmarkLog() {
+        val file = service?.reportFile
+        if (file?.isFile == true) startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"; putExtra(Intent.EXTRA_TEXT, file.readText().takeLast(100000))
+        }, "Поделиться результатами"))
+        else ack("benchmark_share", false, "Журнал пока пуст")
     }
 
     private fun selectModel() {
@@ -909,6 +1020,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         isVisible = true
+        syncTelemetry()
         if (webVoiceOpen && !advanced) { perceptionUi.removeCallbacks(voiceRefresh); perceptionUi.post(voiceRefresh) }
         service?.listener = { render() }
         service?.syncOverlay()
@@ -918,6 +1030,7 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         if (::matrix.isInitialized) matrix.dismiss()
         isVisible = false
+        stopTelemetry()
         closeWebDictation()
         pendingAssistantDraft = null
         // A delayed handoff must not activate the microphone on a later unrelated visit.
@@ -926,6 +1039,8 @@ class MainActivity : ComponentActivity() {
         super.onPause()
     }
     override fun onDestroy() {
+        stopTelemetry()
+        telemetryWorker.shutdownNow()
         closeWebDictation()
         pendingAssistantDraft = null
         if (::obsidian.isInitialized) obsidian.destroy()

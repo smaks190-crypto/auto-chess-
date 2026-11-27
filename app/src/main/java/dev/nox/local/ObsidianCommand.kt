@@ -3,9 +3,9 @@ package dev.nox.local
 import org.json.JSONObject
 
 /** Validate the complete message, not coercing JSON types. */
-internal data class ObsidianCommand(val op: String, val text: String = "", val model: Int = -1, val effort: Int = -1, val agent: Boolean = false) {
+internal data class ObsidianCommand(val op: String, val text: String = "", val model: Int = -1, val effort: Int = -1, val agent: Boolean = false, val enabled: Boolean = false) {
     companion object {
-        private val plain = setOf("ready", "cancel", "clear", "toggle_vision", "background", "tts", "bluetooth", "settings", "grants", "pick_image", "perception", "analyze", "remove_image", "review", "voice_open", "voice_close", "voice_start", "voice_stop")
+        private val plain = setOf("ready", "cancel", "clear", "toggle_vision", "background", "tts", "bluetooth", "grants", "system_assistant", "overlay_permission", "accessibility_permission", "model_load", "model_import", "model_catalog", "model_cancel", "benchmark", "benchmark_log", "benchmark_share", "pick_image", "perception", "analyze", "remove_image", "review", "voice_open", "voice_close", "voice_start", "voice_stop")
         private val pages = setOf("chat", "vision", "actions", "settings")
         fun parse(raw: String): ObsidianCommand? {
             if (raw.length > 20000) return null
@@ -24,6 +24,15 @@ internal data class ObsidianCommand(val op: String, val text: String = "", val m
                         val m = obj.opt("model") as? Int ?: return null
                         val e = obj.opt("effort") as? Int ?: return null
                         if (m !in 0..2 || e !in 0..3) null else ObsidianCommand(op, model = m, effort = e)
+                    }
+                    op == "model_select" && keys == setOf("op", "model") -> {
+                        val model = obj.opt("model") as? Int ?: return null
+                        if (model !in 0..2) null else ObsidianCommand(op, model = model)
+                    }
+                    op in setOf("model_gpu", "model_vision", "reduce_motion", "float_button") &&
+                        keys == setOf("op", "enabled") -> {
+                        val enabled = obj.opt("enabled") as? Boolean ?: return null
+                        ObsidianCommand(op, enabled = enabled)
                     }
                     op == "copy" && keys == setOf("op", "text") -> {
                         val t = obj.opt("text") as? String ?: return null

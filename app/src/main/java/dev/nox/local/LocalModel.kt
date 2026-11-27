@@ -6,6 +6,8 @@ import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
+import com.google.ai.edge.litertlm.ExperimentalFlags
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.MessageCallback
 import com.google.ai.edge.litertlm.ThinkingConfig
@@ -20,12 +22,17 @@ import android.os.SystemClock
 import android.util.Log
 
 /** All calls are owned by a single worker thread. No network client. */
+@OptIn(ExperimentalApi::class)
 internal class LocalModel : AutoCloseable {
+    internal data class DecodeStats(val tokens: Int, val tokensPerSecond: Double, val firstTokenMs: Long?)
+    private var lastChatStats: DecodeStats? = null
+    fun chatStats(): DecodeStats? = lastChatStats
     private data class Recipe(val file: File, val gpu: Boolean, val vision: Boolean)
     private val resident = ResidentModel<Recipe, Engine>(
         create = { config ->
             require(config.file.isFile && config.file.length() > 0) { "Файл модели отсутствует" }
             val started = SystemClock.elapsedRealtime()
+            ExperimentalFlags.enableBenchmark = true
             val candidate = Engine(EngineConfig(
                 modelPath = config.file.absolutePath,
                 backend = if (config.gpu) Backend.GPU() else Backend.CPU(),
@@ -62,7 +69,8 @@ internal class LocalModel : AutoCloseable {
 
     fun chat(command: String, image: File?, deep: Boolean, cancelled: () -> Boolean, thinkingBudget: Int = if (deep) 1024 else 0, update: (String) -> Unit): String {
         val prompt = PromptPolicy.build(command) + "\nОтвечай естественно, кратко и по существу. Не перечисляй свои возможности без запроса."
-        return generate(prompt, image, deep, cancelled, update, thinkingBudget = thinkingBudget)
+        lastChatStats = null
+        return generate(prompt, image, deep, cancelled, update, thinkingBudget = thinkingBudget, measureChat = true)
     }
 
     fun classifyRequest(prompt: String, cancelled: () -> Boolean): String =
@@ -102,10 +110,19 @@ internal class LocalModel : AutoCloseable {
     }
 
     private fun generate(prompt: String, image: File?, deep: Boolean, cancelled: () -> Boolean,
-        update: (String) -> Unit, maxOutputTokens: Int = if (deep) 2048 else 512, thinkingBudget: Int = if (deep) 1024 else 0): String {
+        update: (String) -> Unit, maxOutputTokens: Int = if (deep) 2048 else 512, thinkingBudget: Int = if (deep) 1024 else 0, measureChat: Boolean = false): String {
         val active = engine()
         return active.createConversation().use { conversation ->
-            generateInConversation(conversation, prompt, image, deep, cancelled, update, maxOutputTokens, thinkingBudget = thinkingBudget)
+            val result = generateInConversation(conversation, prompt, image, deep, cancelled, update, maxOutputTokens, thinkingBudget = thinkingBudget)
+            if (measureChat && !cancelled()) lastChatStats = runCatching {
+                val stats = conversation.getBenchmarkInfo()
+                if (stats.lastDecodeTokenCount > 0 && stats.lastDecodeTokensPerSecond.isFinite() &&
+                    stats.lastDecodeTokensPerSecond > 0.0) DecodeStats(
+                    stats.lastDecodeTokenCount, stats.lastDecodeTokensPerSecond,
+                    stats.timeToFirstTokenInSecond.takeIf { it.isFinite() && it >= 0 }?.let { (it * 1000).toLong() }
+                ) else null
+            }.getOrNull()
+            result
         }
     }
 

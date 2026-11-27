@@ -69,6 +69,48 @@
 .reduced #dictationWave{filter:none}
 @media(prefers-reduced-motion:reduce){#dictationWave{filter:none}}
 
+
+.settingsScreen .card{margin-bottom:12px}
+.settingsScreen .modelrow{align-items:center}
+.settingsScreen .modelrow>div:nth-child(2){min-width:0;flex:1}
+.settingsScreen .modelrow p{white-space:pre-line;overflow-wrap:anywhere;font-size:12px;line-height:1.45}
+.settingsScreen .modelrow h3{font-size:15px}
+.settingsFold{border-top:1px solid var(--edge);margin-top:4px;padding-top:2px}
+.settingsFold summary,.settingsGroup summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;min-height:48px}
+.settingsFold summary::-webkit-details-marker,.settingsGroup summary::-webkit-details-marker{display:none}
+.settingsFold summary{font-size:13px;font-weight:650;color:var(--text)}
+.settingsFold summary>svg,.foldArrow{width:18px;height:18px;color:var(--muted);flex:none;transition:transform .18s}
+.settingsFold[open]>summary>svg,.settingsGroup[open]>summary>.foldArrow{transform:rotate(180deg)}
+.settingsTitle{display:flex;gap:12px;align-items:center;min-width:0}
+.settingsTitle>svg{width:24px;height:24px;color:var(--accent);flex:none}
+.settingsTitle>div{min-width:0}
+.settingsTitle h3{margin:0;font-size:15px}
+.settingsTitle small{font-size:11px;color:var(--muted);display:block;line-height:1.45;margin-top:3px}
+.settingsGroup[open]>summary{margin-bottom:10px}
+.fieldLabel{display:block;font-size:11px;color:var(--muted);margin:7px 0}
+.modelSelect{display:block;width:100%;min-height:46px;color:var(--text);background:var(--raised);border:1px solid var(--edge);border-radius:12px;padding:8px 12px;font:inherit;font-size:14px}
+.settingsScreen .rowline{gap:10px}
+.settingsScreen .rowline>div{min-width:0;flex:1}
+.settingsScreen .rowline small{line-height:1.4}
+.settingsScreen .rowline .btn{font-size:12px;min-height:44px;padding:8px 12px}
+.settingsScreen .btn.full{min-height:46px;margin-top:8px}
+.settingsPair{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.settingsPair .btn{font-size:12px;min-height:44px;line-height:1.25;padding:8px 6px;white-space:normal}
+.smallNote{font-size:11px;color:var(--muted);line-height:1.5;margin:10px 0 0}
+#modelProgress{width:100%;height:6px;accent-color:var(--accent)}
+#modelProgressRow{margin-top:12px}
+.monitorCard .metrics{gap:8px}
+.monitorCard .metric{padding:12px 10px;min-width:0;min-height:88px;justify-content:flex-start;gap:5px}
+.monitorCard .metric b{font-size:19px;letter-spacing:-.6px;font-variant-numeric:tabular-nums;line-height:1.2}
+.monitorCard .metric small{font-size:10px;line-height:1.35}
+.monitorCard .metric .metricHint{color:var(--muted);text-transform:none;letter-spacing:0;white-space:normal;overflow-wrap:anywhere;font-family:var(--sans)}
+.monitorCard .line{height:4px;border-radius:6px;overflow:hidden;margin:2px 0 0;background:var(--edge)}
+.monitorCard .line i{display:block;width:0;height:100%;background:var(--accent);border-radius:6px;transition:width .3s ease}
+.monitorCard .compactLine{margin-top:10px;padding-bottom:0;font-size:12px}
+.monitorCard .compactLine span{color:var(--muted)}
+@media(prefers-reduced-motion:reduce){.monitorCard .line i,.foldArrow,.settingsFold summary>svg{transition:none}}
+.reduced .monitorCard .line i,.reduced .foldArrow,.reduced .settingsFold summary>svg{transition:none}
+
 </style></head>
 <body>
 <svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
@@ -80,11 +122,70 @@
 <div class="composerArea"><button class="tiny" id="attachmentChip" hidden style="margin:0 0 6px 3px">Изображение прикреплено · убрать</button><div class="composer" id="composer"><div id="dictationStatus" class="dictationStatus" role="status" hidden>Слушаю…</div><textarea id="prompt" rows="1" placeholder="Поручи что-нибудь N.O.X…" aria-label="Сообщение"></textarea><div class="controls"><button class="round" id="attach" aria-label="Добавить изображение"><svg><use href="#i-plus"/></svg></button><button class="chip" id="mode" aria-pressed="false" aria-label="Автоматический выбор маршрута"><svg><use href="#i-act"/></svg><span>Чат</span></button><button class="chip active" id="effortBtn"><svg><use href="#i-bolt"/></svg><span id="effortLabel">Авто</span><svg><use href="#i-down"/></svg></button><button class="round" id="dictationMic" data-voice aria-label="Голос"><svg><use href="#i-mic"/></svg></button><button class="round" id="dictationStop" aria-label="Остановить диктовку" hidden><svg><use href="#i-stop"/></svg></button><button class="round" id="dictationCancel" aria-label="Отменить диктовку" hidden><svg><use href="#i-close"/></svg></button><button class="round send" id="send" aria-label="Отправить" disabled><svg><use href="#i-send"/></svg></button></div><canvas id="dictationWave" aria-hidden="true" hidden></canvas></div></div></section>
 <section id="screen-vision" class="screen" aria-label="Vision" hidden><div class="sectionhead"><div><h1>Vision</h1><p>Контекст, который видит ассистент</p></div><span class="tag" id="visionTag">LOCAL</span></div><div class="viewfinder" id="viewfinder"><div class="placeholder" id="visionEmpty"><svg><use href="#i-eye"/></svg><p>Источник не выбран.<br>Добавь изображение для предпросмотра.</p></div><img id="preview" alt="Выбранное изображение" hidden><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i></div><div class="sourceRow"><button class="btn primary" id="chooseImage"><svg><use href="#i-image"/></svg>Изображение</button><button class="btn" id="screenCapture"><svg><use href="#i-screen"/></svg>Экран</button></div><div class="card"><div class="cardhead"><h3>Состояние источника</h3><span class="tag" id="visionState">НЕТ ДАННЫХ</span></div><div class="rowline"><strong>Размер изображения</strong><span id="imageDims">—</span></div><div class="rowline"><strong>Модель анализа</strong><span id="visionModel">—</span></div><div class="rowline"><strong>Захват экрана Android</strong><span id="captureState">Выключен</span></div><button class="btn full" id="analyze" disabled style="margin-top:13px"><svg><use href="#i-eye"/></svg>Анализировать</button><button class="btn full" id="removeImage" hidden style="margin-top:8px">Убрать изображение</button><div id="perceptionText" class="evidence" hidden></div><button class="btn full" id="reviewScreen" hidden style="margin-top:8px">Обсудить увиденное и услышанное</button></div><div class="note">Изображения и захват обрабатываются локально. Android запрашивает разрешение на захват экрана.</div></section>
 <section id="screen-actions" class="screen" aria-label="Действия" hidden><div class="sectionhead"><div><h1>Действия</h1><p>Подтверждение и доказательства</p></div><span class="tag" id="actionCount">0 В ОЧЕРЕДИ</span></div><div class="filter" id="filters"><button data-filter="all" class="active">Все</button><button data-filter="running">Выполняется</button><button data-filter="verified">Проверено</button><button data-filter="failed">Ошибки</button></div><div id="actionList" tabindex="-1"></div><button id="stopTask" class="btn full" style="margin-top:14px" disabled><svg><use href="#i-stop"/></svg>Остановить задачу</button><button id="grants" class="btn full" style="margin-top:8px"><svg><use href="#i-lock"/></svg>Разрешения агента</button></section>
-<section id="screen-settings" class="screen" aria-label="Настройки" hidden><div class="sectionhead"><div><h1>Настройки</h1><p>Управление ядром и интерфейсом</p></div><span class="tag">LOCAL</span></div><div class="card"><div class="modelrow"><div class="mark"><svg><use href="#i-chip"/></svg></div><div><h3 id="loadedModel">Модель не подключена</h3><p id="modelDetails">Подключение к ядру</p></div><span class="dot"></span></div><button id="modelInfo" class="btn full">Состояние модели <svg><use href="#i-down"/></svg></button><div class="rowline"><div><strong>Режим мышления</strong><small>Бюджет токенов для чата</small></div><button class="chip active" id="effortSettings"><span id="effortSettingLabel">Авто</span><svg><use href="#i-down"/></svg></button></div></div><div class="card"><div class="cardhead"><h3>Ресурсы устройства</h3><span class="tag">НЕТ ДАННЫХ</span></div><div class="metrics"><div class="metric"><small>GPU</small><b>—</b><div class="line"></div></div><div class="metric"><small>RAM</small><b>—</b><div class="line"></div></div><div class="metric"><small>CPU</small><b>—</b><div class="line"></div></div><div class="metric"><small>ТОК/С</small><b>—</b><div class="line"></div></div></div><p id="metricsNote">Показатели GPU, CPU, RAM и токенов/с пока недоступны.</p></div><div class="card"><h3>Ассистент</h3><div class="rowline"><div><strong>Vision</strong><small>Поддержка изображений выбранной моделью</small></div><button class="switch" role="switch" aria-label="Vision" id="visionToggle" aria-checked="false"></button></div><div class="rowline"><div><strong>Плавающий ассистент</strong><small>Кнопка внутри приложения; можно перемещать</small></div><button class="switch" role="switch" aria-label="Плавающий ассистент" id="floatToggle" aria-checked="false"></button></div><div class="rowline"><div><strong>Уменьшить движение</strong><small>Остановить декоративную анимацию</small></div><button class="switch" role="switch" aria-label="Уменьшить движение" id="reduceToggle" aria-checked="false"></button></div><div class="rowline"><div><strong>Диктовка в поле ввода</strong><small>Микрофон включается по запросу</small></div><button class="btn" data-voice>Открыть</button></div></div><div class="card"><h3>Система и модель</h3>
-<div class="rowline"><div><strong>Фоновый голос</strong><small>Системное разрешение и ожидание имени</small></div><button class="switch" role="switch" id="bgToggle" aria-label="Фоновый голос" aria-checked="false"></button></div>
-<div class="rowline"><div><strong>Озвучивать ответы</strong><small>Локальный синтез речи</small></div><button class="switch" role="switch" id="ttsToggle" aria-label="Озвучивать ответы" aria-checked="false"></button></div>
-<div class="rowline"><div><strong>Bluetooth-микрофон</strong><small id="micRoute">Вход выбирает Android</small></div><button class="switch" role="switch" id="btToggle" aria-label="Bluetooth-микрофон" aria-checked="false"></button></div>
-<button class="btn full" id="advancedSettings">Расширенные настройки Android</button></div><div class="note">Obsidian · локальный ассистент</div></section>
+<section id="screen-settings" class="screen settingsScreen" aria-label="Настройки" hidden>
+<div class="sectionhead"><div><h1>Настройки</h1><p>Ядро, устройство и разрешения</p></div><span class="tag">LOCAL</span></div>
+
+<div class="card modelCard">
+ <div class="modelrow"><div class="mark"><svg><use href="#i-chip"/></svg></div><div><h3 id="loadedModel">Модель не подключена</h3><p id="modelDetails">Подключение к ядру</p></div><span class="dot" id="modelReadyDot"></span></div>
+ <div class="rowline"><div><strong>Мышление</strong><small>Бюджет токенов для чата</small></div><button class="chip active" id="effortSettings"><span id="effortSettingLabel">Авто</span><svg><use href="#i-down"/></svg></button></div>
+ <details class="settingsFold"><summary>Модель и производительность <svg><use href="#i-down"/></svg></summary>
+  <label class="fieldLabel" for="selectedModel">Модель для запуска</label>
+  <select class="modelSelect" id="selectedModel"><option value="0">Gemma 4 E2B</option><option value="1">Qwen 3.5 2B</option><option value="2">Qwen 3.5 4B</option></select>
+  <div class="rowline"><div><strong>GPU-ускорение</strong><small id="gpuHint">Для следующего запуска модели</small></div><button class="switch" role="switch" id="gpuToggle" aria-label="GPU-ускорение" aria-checked="false"></button></div>
+  <div class="rowline"><div><strong>Vision</strong><small id="visionHint">Анализ изображений при запуске</small></div><button class="switch" role="switch" id="visionToggle" aria-label="Vision" aria-checked="false"></button></div>
+  <button class="btn primary full" id="modelLoad">Запустить модель</button>
+  <div id="modelProgressRow" hidden><progress id="modelProgress" max="100" value="0"></progress><p class="smallNote" id="modelProgressText">Загрузка</p><button class="btn full" id="modelCancel">Отменить загрузку</button></div>
+  <div class="settingsPair"><button class="btn" id="modelImport">Импорт файла</button><button class="btn" id="modelCatalog">Каталожная копия</button></div>
+  <p class="smallNote">Настройки ускорения применяются при запуске. Файлы ранее импортированных моделей сохраняются.</p>
+ </details>
+</div>
+
+<div class="card monitorCard">
+ <div class="cardhead"><h3>Ресурсы устройства</h3><span class="tag" id="metricsStatus">ОЖИДАНИЕ</span></div>
+ <div class="metrics">
+  <div class="metric"><small>RAM телефона</small><b id="ramMetric">—</b><div class="line" role="presentation"><i id="ramBar"></i></div><small class="metricHint" id="ramHint">Доступная память Android</small></div>
+  <div class="metric"><small>CPU · N.O.X</small><b id="cpuMetric">—</b><div class="line"><i id="cpuBar"></i></div><small class="metricHint" id="cpuHint">Процесс, не весь телефон</small></div>
+  <div class="metric"><small>Память · N.O.X</small><b id="pssMetric">—</b><small class="metricHint">PSS процесса</small></div>
+  <div class="metric"><small>ТОК/С · чат</small><b id="decodeMetric">—</b><small class="metricHint" id="decodeHint">После ответа модели</small></div>
+  <div class="metric"><small>GPU / CPU</small><b id="backendMetric">—</b><small class="metricHint">Backend модели, не нагрузка</small></div>
+  <div class="metric"><small>Аккумулятор</small><b id="batteryMetric">—</b><div class="line"><i id="batteryBar"></i></div><small class="metricHint" id="batteryHint">Температура батареи</small></div>
+ </div>
+ <div class="rowline compactLine"><strong>Тепловое состояние</strong><span id="thermalMetric">—</span></div>
+ <p id="metricsNote" class="smallNote">Данные обновляются каждые 2 секунды на этом экране. Скорость — по завершённому ответу чата.</p>
+</div>
+
+<details class="card settingsGroup"><summary><div class="settingsTitle"><svg><use href="#i-mic"/></svg><div><h3>Голос и звук</h3><small>Диктовка, фоновый голос и Bluetooth</small></div></div><svg class="foldArrow"><use href="#i-down"/></svg></summary>
+ <div class="rowline"><div><strong>Фоновый голос</strong><small>Локальное ожидание имени «Нокс»</small></div><button class="switch" role="switch" id="bgToggle" aria-label="Фоновый голос" aria-checked="false"></button></div>
+ <div class="rowline"><div><strong>Озвучивать ответы</strong><small>Локальный синтез речи</small></div><button class="switch" role="switch" id="ttsToggle" aria-label="Озвучивать ответы" aria-checked="false"></button></div>
+ <div class="rowline"><div><strong>Bluetooth-микрофон</strong><small id="micRoute">Вход выбирает Android</small></div><button class="switch" role="switch" id="btToggle" aria-label="Bluetooth-микрофон" aria-checked="false"></button></div>
+ <p class="smallNote">В режиме ожидания слышимое имя не выполняет команду. Для команды разблокируй телефон и нажми микрофон. Фоновое прослушивание приостанавливается во время работы Нокса.</p>
+</details>
+
+<details class="card settingsGroup"><summary><div class="settingsTitle"><svg><use href="#i-logo"/></svg><div><h3>Системный ассистент</h3><small id="assistantStatus">Проверка роли Android</small></div></div><svg class="foldArrow"><use href="#i-down"/></svg></summary>
+ <button class="btn full" id="systemAssistant">Выбрать ассистента Android</button>
+ <p class="smallNote">Системный жест открывает компактную панель. Выбор ассистента не включает запись автоматически.</p>
+</details>
+
+<details class="card settingsGroup"><summary><div class="settingsTitle"><svg><use href="#i-lock"/></svg><div><h3>Разрешения агента</h3><small>Управление экраном и приложениями</small></div></div><svg class="foldArrow"><use href="#i-down"/></svg></summary>
+ <div class="rowline"><div><strong>Управление экраном</strong><small id="accessibilityStatus">Проверка разрешения</small></div><button class="btn" id="accessibilityPermission">Android</button></div>
+ <div class="rowline"><div><strong>Плавающее окно действий</strong><small id="overlayStatus">Проверка разрешения</small></div><button class="btn" id="overlayPermission">Android</button></div>
+ <button class="btn full" id="settingsGrants">Разрешения по приложениям</button>
+ <p class="smallNote">Неизвестные и критические действия требуют подтверждения. Разрешения выдаются в Android и не включаются автоматически.</p>
+</details>
+
+<details class="card settingsGroup"><summary><div class="settingsTitle"><svg><use href="#i-settings"/></svg><div><h3>Внешний вид</h3><small>Движение и плавающая кнопка</small></div></div><svg class="foldArrow"><use href="#i-down"/></svg></summary>
+ <div class="rowline"><div><strong>Плавающий ассистент</strong><small>Кнопка внутри приложения</small></div><button class="switch" role="switch" aria-label="Плавающий ассистент" id="floatToggle" aria-checked="false"></button></div>
+ <div class="rowline"><div><strong>Уменьшить движение</strong><small>Отключить декоративную анимацию</small></div><button class="switch" role="switch" aria-label="Уменьшить движение" id="reduceToggle" aria-checked="false"></button></div>
+</details>
+
+<details class="card settingsGroup"><summary><div class="settingsTitle"><svg><use href="#i-act"/></svg><div><h3>Диагностика</h3><small>Сравнительный тест и журнал</small></div></div><svg class="foldArrow"><use href="#i-down"/></svg></summary>
+ <button class="btn full" id="benchmarkStart">Сравнительный тест модели</button>
+ <div class="settingsPair"><button class="btn" id="benchmarkLog">Журнал тестов</button><button class="btn" id="benchmarkShare">Поделиться</button></div>
+ <button class="btn full" id="settingsClear">Очистить чат</button>
+ <p class="smallNote">Тест запускается после подтверждения. Журнал остаётся локальным, пока ты сам не выберешь способ отправки.</p>
+</details>
+<div class="note">N.O.X · локальный ассистент</div>
+</section>
 </main>
 <nav class="nav" aria-label="Навигация"><button data-tab="chat" class="active" aria-current="page"><svg><use href="#i-chat"/></svg>Чат</button><button data-tab="vision"><svg><use href="#i-eye"/></svg>Vision</button><button data-tab="actions"><svg><use href="#i-act"/></svg>Действия<span id="navCount" class="count" hidden></span></button><button data-tab="settings"><svg><use href="#i-settings"/></svg>Настройки</button></nav>
 <button class="floating" id="floating" aria-label="Открыть голосовой режим" hidden><svg><use href="#i-logo"/></svg></button>
@@ -216,13 +317,86 @@ function renderActions(){
 }
 qa('[data-filter]').forEach(b=>b.onclick=()=>{S.filter=b.dataset.filter;qa('[data-filter]').forEach(e=>{e.classList.toggle('active',e===b);e.setAttribute('aria-pressed',String(e===b))});renderActions()});
 function sw(id,v){$(id).setAttribute('aria-checked',String(!!v))}
-$('visionToggle').onclick=()=>request('toggle_vision');
+function toggleSetting(id,op){$(id).onclick=()=>request(op,{enabled:$(id).getAttribute('aria-checked')!=='true'})}
+toggleSetting('visionToggle','model_vision');toggleSetting('gpuToggle','model_gpu');
+$('selectedModel').onchange=()=>request('model_select',{model:Number($('selectedModel').value)});
+for(const [id,op] of Object.entries({modelLoad:'model_load',modelImport:'model_import',modelCatalog:'model_catalog',
+ modelCancel:'model_cancel',systemAssistant:'system_assistant',overlayPermission:'overlay_permission',
+ accessibilityPermission:'accessibility_permission',settingsGrants:'grants',benchmarkStart:'benchmark',
+ benchmarkLog:'benchmark_log',benchmarkShare:'benchmark_share',settingsClear:'clear'}))$(id).onclick=()=>request(op);
 $('bgToggle').onclick=()=>request('background');
 $('ttsToggle').onclick=()=>request('tts');
 $('btToggle').onclick=()=>request('bluetooth');
-$('floatToggle').onclick=()=>{const v=$('floatToggle').getAttribute('aria-checked')!=='true';sw('floatToggle',v);$('floating').hidden=!v;positionFloat()};
-$('reduceToggle').onclick=()=>{const v=$('reduceToggle').getAttribute('aria-checked')!=='true';sw('reduceToggle',v);$('app').classList.toggle('reduced',v);drawVoice(false)};
-$('modelInfo').onclick=$('advancedSettings').onclick=()=>request('settings');
+toggleSetting('floatToggle','float_button');
+toggleSetting('reduceToggle','reduce_motion');
+let metricExpiry=0;
+const validMetric=n=>typeof n==='number'&&Number.isFinite(n);
+const gib=n=>validMetric(n)?(n/1073741824).toFixed(1)+' ГиБ':'—';
+const mib=n=>validMetric(n)?Math.round(n/1048576)+' МиБ':'—';
+function bar(id,v){$(id).style.width=validMetric(v)?Math.max(0,Math.min(100,v))+'%':'0%'}
+function resetDeviceMetrics(){
+ clearTimeout(metricExpiry);metricExpiry=0;
+ text($('metricsStatus'),'ОЖИДАНИЕ');
+ for(const id of ['ramMetric','cpuMetric','pssMetric','batteryMetric','thermalMetric'])text($(id),'—');
+ text($('ramHint'),'Доступная память Android');text($('cpuHint'),'Процесс, не весь телефон');
+ text($('batteryHint'),'Температура батареи');
+ for(const id of ['ramBar','cpuBar','batteryBar'])bar(id,null);
+}
+function renderMetrics(st){
+ if(S.tab!=='settings'||document.hidden)return;
+ clearTimeout(metricExpiry);
+ const total=st.ramTotal,available=st.ramAvailable;
+ const ramOK=validMetric(total)&&total>0&&validMetric(available)&&available>=0&&available<=total;
+ const used=ramOK?total-available:null;
+ text($('ramMetric'),ramOK?gib(used):'—');
+ text($('ramHint'),ramOK?'из '+gib(total)+' · доступно '+gib(available):'Память недоступна');
+ bar('ramBar',ramOK?used/total*100:null);
+ const cpu=validMetric(st.cpuPercent)&&st.cpuPercent>=0&&st.cpuPercent<=100?st.cpuPercent:null;
+ text($('cpuMetric'),cpu===null?'—':cpu.toFixed(1)+'%');
+ text($('cpuHint'),validMetric(st.cpuCores)?'Доля мощности '+st.cpuCores+' ядер':'Процесс N.O.X');
+ bar('cpuBar',cpu);
+ text($('pssMetric'),mib(st.processPss));
+ const battery=validMetric(st.batteryPercent)?st.batteryPercent:null;
+ text($('batteryMetric'),battery===null?'—':Math.round(battery)+'%');
+ bar('batteryBar',battery);
+ text($('batteryHint'),validMetric(st.batteryTemperature)?st.batteryTemperature.toFixed(1)+' °C · батарея':'Температура недоступна');
+ const thermal=['Норма','Слабый','Умеренный','Сильный','Критический','Аварийный','Отключение'];
+ text($('thermalMetric'),thermal[st.thermalStatus]||'Недоступно');
+ text($('metricsStatus'),ramOK||cpu!==null||validMetric(st.processPss)||battery!==null?'ОБНОВЛЕНО':'НЕТ ДАННЫХ');
+ metricExpiry=setTimeout(()=>{if(S.tab==='settings')resetDeviceMetrics()},6500);
+}
+function renderSettings(st){
+ const busy=!!st.busy;
+ const selected=Number.isInteger(st.selectedModel)?st.selectedModel:st.modelIndex;
+ if(Number.isInteger(selected))$('selectedModel').value=String(selected);
+ $('selectedModel').disabled=busy;
+ sw('gpuToggle',st.selectedGpu);sw('visionToggle',st.selectedVision);
+ $('gpuToggle').disabled=busy||!st.gpuSupported;$('visionToggle').disabled=busy||!st.visionSupported;
+ text($('gpuHint'),st.gpuSupported?'Для следующего запуска модели':'Эта модель работает только на CPU');
+ text($('visionHint'),st.visionSupported?'Анализ изображений при запуске':'Эта модель не поддерживает изображения');
+ const name=MODELS[selected]||'модель';
+ const size=validMetric(st.modelSizeBytes)?' · '+(st.modelSizeBytes/1e9).toFixed(2)+' ГБ':'';
+ text($('modelLoad'),st.modelAvailable?'Запустить '+name:'Скачать и запустить'+size);
+ for(const id of ['modelLoad','modelImport','modelCatalog','benchmarkStart'])$(id).disabled=busy;
+ const dl=validMetric(st.downloadProgress);
+ $('modelProgressRow').hidden=!dl;
+ if(dl){$('modelProgress').value=Math.min(100,Math.max(0,st.downloadProgress));text($('modelProgressText'),'Загрузка '+Math.round(st.downloadProgress)+'%')}
+ $('modelReadyDot').classList.toggle('green',!!st.loaded&&!busy);
+ text($('assistantStatus'),st.assistantActive?'Нокс выбран в Android':'Не выбран в Android');
+ text($('systemAssistant'),st.assistantActive?'Настройки ассистента Android':'Выбрать Нокс в Android');
+ text($('overlayStatus'),st.overlayAllowed?'Разрешено':'Не разрешено');
+ text($('accessibilityStatus'),st.accessibilityAllowed?'Разрешено':'Не разрешено');
+ sw('reduceToggle',st.reduceMotion);$('app').classList.toggle('reduced',!!st.reduceMotion);
+ sw('floatToggle',st.floatButton);$('floating').hidden=!st.floatButton;positionFloat();
+ text($('backendMetric'),st.loaded&&typeof st.loadedGpu==='boolean'?(st.loadedGpu?'GPU':'CPU'):'—');
+ const rate=validMetric(st.decodeRate)&&st.decodeRate>0?st.decodeRate:null;
+ text($('decodeMetric'),rate===null?'—':rate.toFixed(1));
+ text($('decodeHint'),rate===null?'После ответа чата':(validMetric(st.decodeTokens)?st.decodeTokens+' токенов · ':'')+'последний ответ');
+ let notes=['RAM и CPU обновляются каждые 2 секунды; загрузка GPU недоступна через стандартный Android API.'];
+ if(validMetric(st.elapsedMs))notes.push('Последний запрос: '+(st.elapsedMs/1000).toFixed(1)+' с.');
+ if(validMetric(st.firstTokenMs))notes.push('Первый токен: '+(st.firstTokenMs/1000).toFixed(2)+' с.');
+ text($('metricsNote'),notes.join(' '));
+}
 $('grants').onclick=()=>request('grants');$('stopTask').onclick=()=>request('cancel');
 $('chooseImage').onclick=()=>request('pick_image');$('attach').onclick=()=>{tab('vision');request('pick_image')};
 $('screenCapture').onclick=()=>request('perception');$('analyze').onclick=()=>{if(request('analyze'))tab('chat')};
@@ -343,18 +517,19 @@ function receive(st){
    p.onerror=()=>{p.hidden=true;$('visionEmpty').hidden=false};p.src='data:image/jpeg;base64,'+st.data;return
  }
  if(st.type==='level'){lastVoiceLevel=st.value||0;if(voiceOpen)drawVoice(false);return}
+ if(st.type==='metrics'){renderMetrics(st);return}
  if(st.type!=='state')return;
  nativeState=st;S.busy=!!st.busy;S.vision=!!st.vision;committed={model:st.modelIndex,effort:st.effort};
  if(!hold&&$('effortSheet').hidden&&!choicePending)restoreChoice();
  text($('kernelStatus'),st.status||'Локальное ядро');$('kernelDot').classList.toggle('green',!!st.connected&&!st.busy);text($('connectionTag'),st.connected?'LOCAL':'OFFLINE');
  text($('loadedModel'),st.modelName);text($('modelDetails'),st.modelDetails);
- text($('metricsNote'),st.elapsedMs!=null?'Последний ответ: '+st.elapsedMs+' мс. Другие метрики не измеряются.':'Метрики пока не измеряются.');
- sw('visionToggle',st.vision);sw('bgToggle',st.background);sw('ttsToggle',st.tts);sw('btToggle',st.bluetooth);text($('micRoute'),st.micRoute||'Вход выбирает Android');
+ renderSettings(st);
+ sw('bgToggle',st.background);sw('ttsToggle',st.tts);sw('btToggle',st.bluetooth);text($('micRoute'),st.micRoute||'Вход выбирает Android');
  receiveVoice(st);
  $('dictationMic').disabled=S.busy||!!pendingSend||choicePending;
  $('stopTask').disabled=!st.generating;
  $('effortBtn').disabled=S.busy||choicePending;$('effortSettings').disabled=S.busy||choicePending;
- $('visionToggle').disabled=S.busy||!st.loaded;$('btToggle').disabled=S.busy;
+ $('btToggle').disabled=S.busy;
  renderChat(st);renderImage(st);
  const actionsKey=JSON.stringify(st.events||[]);if(actionsKey!==S.eventsKey||S.oldGenerating!==st.generating){
    S.eventsKey=actionsKey;S.oldGenerating=st.generating;S.actions=(st.events||[]).map(e=>{
@@ -366,7 +541,7 @@ function receive(st){
 window.addEventListener('message',e=>{if(nativePort||e.data!=='nox-init'||e.ports.length!==1)return;nativePort=e.ports[0];nativePort.onmessage=m=>{try{receive(JSON.parse(m.data))}catch{toast('Ошибка данных ядра')}};nativePort.start?.();request('ready')});
 window.noxBack=()=>{if(hold){cancelHold(false);return true}if(voiceOpen){closeVoice(true);return true}if(!$('effortSheet').hidden){restoreChoice();close('effortSheet');return true}if(S.tab!=='chat'){tab('chat');return true}return false};
 document.querySelector('.matrixDone').onclick=()=>{close('effortSheet');commitChoice()};
-const originalTab=tab;tab=function(t){if(t!=='chat'&&voiceOpen)closeVoice(true);originalTab(t);request('page',{page:t})};
+const originalTab=tab;tab=function(t){if(t!=='chat'&&voiceOpen)closeVoice(true);if(t!==S.tab&&(t==='settings'||S.tab==='settings'))resetDeviceMetrics();originalTab(t);request('page',{page:t})};
 let drag=null;const floating=$('floating');floating.addEventListener('pointerdown',e=>{const r=floating.getBoundingClientRect();drag={x:e.clientX,y:e.clientY,left:r.left,top:r.top,moved:false};floating.setPointerCapture(e.pointerId)});floating.addEventListener('pointermove',e=>{if(!drag)return;let dx=e.clientX-drag.x,dy=e.clientY-drag.y;if(Math.hypot(dx,dy)>5)drag.moved=true;if(drag.moved){const r=$('app').getBoundingClientRect();floating.style.left=Math.max(6,Math.min(r.width-54,drag.left-r.left+dx))+'px';floating.style.top=Math.max(65,Math.min(r.height-145,drag.top-r.top+dy))+'px';floating.style.right='auto';floating.style.bottom='auto'}});let wasDrag=false;floating.addEventListener('pointerup',()=>{wasDrag=!!(drag&&drag.moved);drag=null});floating.addEventListener('click',()=>{if(wasDrag){wasDrag=false;return}openVoice()});floating.addEventListener('pointercancel',()=>drag=null);
-document.addEventListener('keydown',e=>{if(e.key==='Escape')window.noxBack()});document.addEventListener('visibilitychange',()=>{if(document.hidden&&voiceOpen)closeVoice(true)});$('effortBtn').setAttribute('aria-haspopup','dialog');updateInput();originalTab('chat');
+document.addEventListener('keydown',e=>{if(e.key==='Escape')window.noxBack()});document.addEventListener('visibilitychange',()=>{if(document.hidden){if(voiceOpen)closeVoice(true);if(S.tab==='settings')resetDeviceMetrics()}});$('effortBtn').setAttribute('aria-haspopup','dialog');updateInput();originalTab('chat');
 </script></body></html>
