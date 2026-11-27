@@ -83,8 +83,7 @@ internal class AndroidAgentTools(
     }
 
     private fun checkActive() {
-        if (cancelled() || context.getSystemService(KeyguardManager::class.java)?.isDeviceLocked == true ||
-            context.getSystemService(PowerManager::class.java)?.isInteractive != true) throw AgentDenied()
+        if (cancelled() || !DeviceInteraction.unlocked(context)) throw AgentDenied()
     }
     private fun nav(): NoxNavigationService {
         NoxNavigationService.current?.let { return it }

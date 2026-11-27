@@ -67,7 +67,7 @@ class NoxNavigationService : AccessibilityService() {
 internal object PhoneActions {
     fun execute(context: Context, command: PhoneCommand): String {
         if (command == PhoneCommand.Greeting) return "Привет! Я на связи."
-        if (context.getSystemService(KeyguardManager::class.java)?.isDeviceLocked == true)
+        if (!DeviceInteraction.unlocked(context))
             return "Сначала разблокируй телефон."
         return when (command) {
             is PhoneCommand.Open -> open(context, command.app)

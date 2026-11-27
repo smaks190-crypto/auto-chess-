@@ -13,6 +13,9 @@ internal object BackgroundVoicePolicy {
         if (mode == VoiceInputMode.LOCKED_WAKE) enabled && !unlocked
         else unlocked && (enabled || mode == VoiceInputMode.MANUAL)
 
+    fun screenAllowsCommands(interactive: Boolean?, keyguardShowing: Boolean?, deviceLocked: Boolean?): Boolean =
+        interactive == true && keyguardShowing == false && deviceLocked == false
+
     fun restoreAfterSystemRestart(nullIntent: Boolean, enabledBefore: Boolean, permission: Boolean): Boolean =
         nullIntent && enabledBefore && permission
 }

@@ -40,6 +40,13 @@ class BackgroundVoicePolicyTest {
         assertEquals(WakeInput.Ignore, WakeWordPolicy.route(VoiceInputMode.LOCKED_WAKE, "Ноксик"))
         assertEquals(WakeInput.Disable, WakeWordPolicy.route(VoiceInputMode.LOCKED_WAKE, "Нокс, выключи микрофон"))
     }
+    @Test fun swipeKeyguardAndUnknownStateAlsoDenyCommands() {
+        assertTrue(BackgroundVoicePolicy.screenAllowsCommands(true, false, false))
+        assertFalse(BackgroundVoicePolicy.screenAllowsCommands(true, true, false))
+        assertFalse(BackgroundVoicePolicy.screenAllowsCommands(true, false, true))
+        assertFalse(BackgroundVoicePolicy.screenAllowsCommands(false, false, false))
+        assertFalse(BackgroundVoicePolicy.screenAllowsCommands(true, null, false))
+    }
     @Test fun onlySystemRecreationOfOptedInSessionMayRestore() {
         assertTrue(BackgroundVoicePolicy.restoreAfterSystemRestart(true, true, true))
         assertFalse(BackgroundVoicePolicy.restoreAfterSystemRestart(false, true, true))

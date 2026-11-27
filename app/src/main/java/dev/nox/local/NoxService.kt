@@ -159,9 +159,7 @@ class NoxService : Service() {
             publish()
         }
     }
-    private fun unlocked(): Boolean =
-        getSystemService(KeyguardManager::class.java)?.isDeviceLocked != true &&
-            getSystemService(PowerManager::class.java)?.isInteractive == true
+    private fun unlocked(): Boolean = DeviceInteraction.unlocked(this)
 
     private fun autoVoiceMode(): VoiceInputMode? = if (destroyed) null else BackgroundVoicePolicy.autoMode(
         background, busy, agentRunning && !generationCancelled, listening,
