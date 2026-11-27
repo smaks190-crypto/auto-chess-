@@ -48,6 +48,8 @@ class MainActivity : Activity() {
     private lateinit var stopGeneration: Button
     private lateinit var progress: ProgressBar
     private lateinit var backgroundButton: Button
+    private lateinit var bluetoothInputButton: Button
+    private lateinit var microphoneRouteLabel: TextView
     private lateinit var overlayButton: Button
     private lateinit var details: TextView
     private lateinit var openSettings: Button
@@ -201,12 +203,17 @@ class MainActivity : Activity() {
         backgroundButton = addButton(settings, "Включить фоновый голос", false) {
             toggleBackgroundVoice()
         }
+        bluetoothInputButton = addButton(settings, "Предпочитать Bluetooth-микрофон", false) {
+            service?.toggleBluetoothInput()
+        }
+        microphoneRouteLabel = textLabel("Источник микрофона пока не определён", 13f, muted)
+        settings.addView(microphoneRouteLabel)
         overlayButton = addButton(settings, "Разрешить плавающую кнопку", false) {
             if (Settings.canDrawOverlays(this)) service?.syncOverlay()
             else startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + packageName)))
             render()
         }
-        settings.addView(textLabel("После включения скажи «Нокс, открой Telegram» или отдельно «Нокс» и затем команду в течение 10 секунд. Обычная речь не запускает ассистента и не сохраняется в чате. Распознавание локальное; микрофон отключается на время озвучивания и при блокировке экрана. Удерживай стрелку отправки для переключения фонового голоса. Выключить можно здесь, в уведомлении или фразой «Нокс, перестань слушать».", 13f, muted))
+        settings.addView(textLabel("После включения скажи «Нокс, открой Telegram» или отдельно «Нокс» и затем команду в течение 10 секунд. Обычная речь не запускает ассистента и не сохраняется в чате. Распознавание локальное; при блокировке Нокс слышит имя, но не выполняет и не запоминает команды. После разблокировки повтори запрос. Микрофон приостанавливается на время озвучивания. Bluetooth — предпочтительный вход, фактический источник выбирает Android. Удерживай стрелку отправки для переключения фонового голоса. Выключить можно здесь, в уведомлении или фразой «Нокс, перестань слушать».", 13f, muted))
         settings.addView(textLabel("Облачко действий видно только вне Нокса. Нажми «Остановить», чтобы отменить текущую задачу. Для действий нужен доступ к плавающему облачку; голосовые ответы на сообщения настраиваются отдельно.", 13f, muted))
         addButton(settings, "Разрешить агенту управление экраном", false) {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -360,6 +367,9 @@ class MainActivity : Activity() {
         modelButton.text = if (exists) "Запустить " + pkg.name else "Скачать и запустить · " +
             String.format(Locale.US, "%.2f", pkg.size / 1e9) + " ГБ"
         backgroundButton.text = if (s?.background == true) "Выключить фоновый голос" else "Включить фоновый голос"
+        bluetoothInputButton.text = if (s?.preferBluetooth == true) "Bluetooth предпочтителен · отключить" else "Предпочитать Bluetooth-микрофон"
+        bluetoothInputButton.isEnabled = s != null && !busy
+        microphoneRouteLabel.text = s?.microphoneRoute?.takeIf { it.isNotBlank() } ?: "Источник микрофона пока не определён"
         send.contentDescription = "Отправить. Удерживай, чтобы " + if (s?.background == true) "выключить фоновый голос" else "включить фоновый голос"
         overlayButton.text = if (Settings.canDrawOverlays(this)) "Плавающая кнопка разрешена" else "Разрешить плавающую кнопку"
         workControls.forEach { it.isEnabled = !busy }

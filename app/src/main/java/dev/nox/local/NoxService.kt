@@ -110,10 +110,21 @@ class NoxService : Service() {
     private var clientBound = false
     private var receiverRegistered = false
     private var listeningMode: VoiceInputMode? = null
-    internal val waitingForName: Boolean get() = listening && listeningMode == VoiceInputMode.WAKE
-    private val restartVoice = Runnable {
-        if (canAutoListen()) startVoice(if (agentRunning && busy && !generationCancelled)
-            VoiceInputMode.STOP_ONLY else VoiceInputMode.WAKE)
+    private var lockedWakeDetected = false
+    private var standbyWakeLock: PowerManager.WakeLock? = null
+    internal val preferBluetooth: Boolean get() = sessionPrefs.getBoolean("prefer_bluetooth_mic", false)
+    internal var microphoneRoute = ""
+        private set
+    internal val waitingForName: Boolean get() = listening &&
+        (listeningMode == VoiceInputMode.WAKE || listeningMode == VoiceInputMode.LOCKED_WAKE)
+    private val restartVoice = Runnable { autoVoiceMode()?.let { startVoice(it) } }
+    internal fun toggleBluetoothInput() {
+        if (busy || destroyed) return
+        sessionPrefs.edit().putBoolean("prefer_bluetooth_mic", !preferBluetooth).apply()
+        if (listening) stopListening()
+        loopBlocked = false; recognitionFailures = 0; retryAt = 0L
+        status = if (preferBluetooth) "Предпочтительный вход: Bluetooth" else "Вход выбирает Android"
+        publish()
     }
     private val releaseIdle = Runnable {
         if (!clientBound && !background && !busy && !listening && activeSpeech == null && !LivePerception.active) stopSelf()
@@ -133,9 +144,17 @@ class NoxService : Service() {
             if (intent.action == Intent.ACTION_SCREEN_OFF) {
                 if (generating) generationCancelled = true
                 voiceEpoch++
-                stopListening()
+                if (listeningMode != VoiceInputMode.LOCKED_WAKE) stopListening()
                 stopSpeech()
-                status = if (background) "Голос приостановлен до разблокировки" else status
+                if (background) status = lockedStatus()
+            } else {
+                if (listeningMode != null &&
+                    !BackgroundVoicePolicy.canCapture(checkNotNull(listeningMode), background, unlocked()))
+                    stopListening()
+                if (unlocked()) {
+                    lockedWakeDetected = false
+                    if (background && !busy && !listening && !loopBlocked) status = "Жду имя «Нокс»"
+                }
             }
             publish()
         }
@@ -144,9 +163,38 @@ class NoxService : Service() {
         getSystemService(KeyguardManager::class.java)?.isDeviceLocked != true &&
             getSystemService(PowerManager::class.java)?.isInteractive == true
 
-    private fun canAutoListen(): Boolean = !destroyed && VoiceLoopPolicy.canListen(
-        background, busy && !(agentRunning && !generationCancelled), listening,
+    private fun autoVoiceMode(): VoiceInputMode? = if (destroyed) null else BackgroundVoicePolicy.autoMode(
+        background, busy, agentRunning && !generationCancelled, listening,
         activeSpeech != null || speaking, unlocked(), loopBlocked)
+    private fun canAutoListen(): Boolean = autoVoiceMode() != null
+
+    private fun lockedStatus(): String = if (lockedWakeDetected)
+        "Нокс услышал имя · разблокируй телефон и повтори" else "Жду имя «Нокс» · экран заблокирован"
+
+    /** Continuous, user-enabled capture needs the CPU while the screen is off.
+     * Hold only during locked standby (including bounded retry delays); release on
+     * opt-out, unlock, blocked microphone, work, or service destruction. */
+    @android.annotation.SuppressLint("WakelockTimeout")
+    private fun syncStandbyPower() {
+        val hold = !destroyed && background && !unlocked() && !busy && !loopBlocked &&
+            (listeningMode == VoiceInputMode.LOCKED_WAKE || autoVoiceMode() == VoiceInputMode.LOCKED_WAKE) &&
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (!hold) { releaseStandbyPower(); return }
+        if (standbyWakeLock?.isHeld == true) return
+        try {
+            val pm = getSystemService(PowerManager::class.java) ?: return
+            standbyWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:voiceStandby").apply {
+                setReferenceCounted(false); acquire()
+            }
+        } catch (e: RuntimeException) {
+            android.util.Log.w("NoxVoice", "standby_wakelock_unavailable")
+        }
+    }
+
+    private fun releaseStandbyPower() {
+        standbyWakeLock?.let { if (it.isHeld) runCatching { it.release() } }
+        standbyWakeLock = null
+    }
 
     private fun syncVoiceLoop() {
         if (!canAutoListen()) {
@@ -167,7 +215,7 @@ class NoxService : Service() {
     private fun recognitionFailed(message: String, permanent: Boolean) {
         stopListening()
         recognitionFailures = (recognitionFailures + 1).coerceAtMost(100)
-        val delay = if (permanent) null else VoiceLoopPolicy.retryDelay(3, recognitionFailures)
+        val delay = if (permanent || recognitionFailures >= 6) null else VoiceLoopPolicy.retryDelay(3, recognitionFailures)
         loopBlocked = delay == null
         retryAt = SystemClock.uptimeMillis() + (delay ?: 0L)
         status = message + if (delay != null && background) " · повторю" else ""
@@ -366,9 +414,17 @@ class NoxService : Service() {
             CANCEL_TASK -> cancelGeneration()
             STOP -> disableBackground()
             KEEP_ALIVE -> syncIdleLifetime()
-            else -> syncIdleLifetime()
+            else -> {
+                // Only a system recreation of a previously enabled foreground session,
+                // not an arbitrary start, boot broadcast or Activity binding, may restore it.
+                if (!background && BackgroundVoicePolicy.restoreAfterSystemRestart(
+                        intent == null, sessionPrefs.getBoolean("background_voice_active", false),
+                        checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED))
+                    enableBackground()
+                else syncIdleLifetime()
+            }
         }
-        return START_NOT_STICKY
+        return if (background) START_STICKY else START_NOT_STICKY
     }
 
     private fun notification(): Notification {
@@ -389,21 +445,26 @@ class NoxService : Service() {
 
     private fun enableBackground() {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            sessionPrefs.edit().putBoolean("background_voice_active", false).apply()
             status = "Разреши доступ к микрофону"
             stopSelf(); publish(); return
         }
         try {
             startForeground(ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
             background = true
+            sessionPrefs.edit().putBoolean("background_voice_active", true).apply()
+            lockedWakeDetected = false
             if (listening) stopListening()
             loopBlocked = false
             recognitionFailures = 0
             retryAt = 0L
             lastNotificationStatus = null
             syncOverlay()
-            status = "Фоновый голос включён · жду имя «Нокс»"
+            status = if (unlocked()) "Фоновый голос включён · жду имя «Нокс»" else lockedStatus()
         } catch (e: Exception) {
+            sessionPrefs.edit().putBoolean("background_voice_active", false).apply()
             background = false
+            releaseStandbyPower()
             removeOverlay()
             status = "Не удалось включить фоновый голос: " + (e.message ?: e.javaClass.simpleName)
             stopSelf()
@@ -417,9 +478,13 @@ class NoxService : Service() {
         stopListening()
         stopSpeech()
         background = false
+        sessionPrefs.edit().putBoolean("background_voice_active", false).commit()
+        lockedWakeDetected = false
+        releaseStandbyPower()
         removeOverlay()
         main.removeCallbacks(restartVoice)
         stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf() // no sticky restart after explicit stop; an existing bound Activity may remain
         syncIdleLifetime()
         status = "Фоновый голос выключен"
         publish()
@@ -755,6 +820,7 @@ class NoxService : Service() {
         syncOverlay()
         bubble?.invalidate()
         syncVoiceLoop()
+        syncStandbyPower()
         syncIdleLifetime()
         listener?.invoke()
         if (background && lastNotificationStatus != status &&
@@ -1029,7 +1095,9 @@ class NoxService : Service() {
         val mode = if (stopOnly) VoiceInputMode.STOP_ONLY else requestedMode
         if (mode != VoiceInputMode.MANUAL && !background) return
         main.removeCallbacks(restartVoice)
-        if (!unlocked()) { status = "Разблокируй телефон для голосовой команды"; publish(); return }
+        if (!BackgroundVoicePolicy.canCapture(mode, background, unlocked())) {
+            status = "Разблокируй телефон для голосовой команды"; publish(); return
+        }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             loopBlocked = true
             status = "Разреши доступ к микрофону"; publish(); return
@@ -1041,8 +1109,11 @@ class NoxService : Service() {
             val engine = recognizer ?: SilentRecognizer(applicationContext).also { recognizer = it }
             listeningMode = mode
             listening = true
-            if (!stopOnly) status = if (mode == VoiceInputMode.COMMAND) "Имя распознано · говори"
-                else "Запускаю локальное распознавание…"
+            if (!stopOnly) status = when (mode) {
+                VoiceInputMode.COMMAND -> "Имя распознано · говори"
+                VoiceInputMode.LOCKED_WAKE -> lockedStatus()
+                else -> "Запускаю локальное распознавание…"
+            }
             publish()
             main.postDelayed(recognitionTimeout, 60_000L)
             val live = mode == VoiceInputMode.MANUAL || mode == VoiceInputMode.COMMAND
@@ -1050,15 +1121,23 @@ class NoxService : Service() {
                 override fun onReady() {
                     if (token != speechId || !listening) return
                     main.removeCallbacks(recognitionTimeout)
-                    if (!unlocked() || activeSpeech != null || speaking) { stopListening(); publish(); return }
+                    if (!BackgroundVoicePolicy.canCapture(mode, background, unlocked()) ||
+                        activeSpeech != null || speaking) { stopListening(); publish(); return }
                     if (!stopOnly) status = when (mode) {
                         VoiceInputMode.WAKE -> "Жду имя «Нокс»"
+                        VoiceInputMode.LOCKED_WAKE -> lockedStatus()
                         VoiceInputMode.COMMAND -> "Имя распознано · говори"
                         else -> "Слушаю…"
                     }
                     publish()
                     if (mode == VoiceInputMode.COMMAND) main.postDelayed(commandTimeout, 10_000L)
                     else if (mode == VoiceInputMode.MANUAL) main.postDelayed(commandTimeout, 30_000L)
+                }
+                override fun onRouteChanged(route: String) {
+                    if (token == speechId && listening && microphoneRoute != route) {
+                        microphoneRoute = route
+                        publish()
+                    }
                 }
                 override fun onLevel(level: Float) {
                     if (token == speechId && listening && live) {
@@ -1076,10 +1155,16 @@ class NoxService : Service() {
                     if (token != speechId || !listening) return
                     stopListening()
                     recognitionFailures = 0; retryAt = 0L
-                    if (!unlocked() || activeSpeech != null || speaking ||
-                        (mode != VoiceInputMode.MANUAL && !background)) { publish(); return }
+                    if (!BackgroundVoicePolicy.canCapture(mode, background, unlocked()) ||
+                        activeSpeech != null || speaking) { publish(); return }
                     when (val action = WakeWordPolicy.route(mode, text)) {
                         WakeInput.Ignore -> publish()
+                        WakeInput.UnlockRequired -> {
+                            // No command is persisted, replayed or executed on the keyguard.
+                            lockedWakeDetected = true
+                            status = lockedStatus()
+                            publish()
+                        }
                         WakeInput.Arm -> if (!busy && background) startVoice(VoiceInputMode.COMMAND) else publish()
                         WakeInput.Disable -> if (background) disableBackground() else publish()
                         WakeInput.CancelTask -> if (agentRunning && busy && !generationCancelled) cancelGeneration() else publish()
@@ -1089,7 +1174,8 @@ class NoxService : Service() {
                 override fun onError(message: String, permanent: Boolean) {
                     if (token == speechId && listening) recognitionFailed(message, permanent)
                 }
-            }, acceptFinal = { WakeWordPolicy.route(mode, it) != WakeInput.Ignore }, emitLive = live)
+            }, acceptFinal = { WakeWordPolicy.route(mode, it) != WakeInput.Ignore }, emitLive = live,
+                preferBluetooth = preferBluetooth)
         } catch (e: Exception) {
             recognitionFailed("Ошибка микрофона: " + e.message, true)
         }
@@ -1101,6 +1187,7 @@ class NoxService : Service() {
         main.removeCallbacks(commandTimeout)
         recognizer?.stop()
         listeningMode = null
+        microphoneRoute = ""
         listening = false; voiceLevel = 0f; recognizedText = ""
     }
 
@@ -1153,6 +1240,7 @@ class NoxService : Service() {
     override fun onDestroy() {
         runCatching { WallpaperManager.getInstance(this).removeOnColorsChangedListener(wallpaperColorsListener) }
         destroyed = true; cancelled = true
+        releaseStandbyPower()
         main.removeCallbacks(restartVoice)
         main.removeCallbacks(releaseIdle)
         main.removeCallbacks(perceptionTick)

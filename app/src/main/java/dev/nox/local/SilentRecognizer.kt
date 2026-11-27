@@ -3,6 +3,8 @@ package dev.nox.local
 import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioFormat
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Handler
@@ -22,6 +24,7 @@ import kotlin.math.sqrt
 internal class SilentRecognizer(private val context: Context) : AutoCloseable {
     interface Listener {
         fun onReady()
+        fun onRouteChanged(route: String) {}
         fun onLevel(level: Float)
         fun onPartial(text: String)
         fun onResult(text: String)
@@ -41,17 +44,17 @@ internal class SilentRecognizer(private val context: Context) : AutoCloseable {
     }
 
     fun start(listener: Listener, acceptFinal: (String) -> Boolean = { true },
-              emitLive: Boolean = true) {
+              emitLive: Boolean = true, preferBluetooth: Boolean = false) {
         check(!closed.get())
         val token = epoch.incrementAndGet()
-        worker.execute { if (current(token)) capture(token, listener, acceptFinal, emitLive) }
+        worker.execute { if (current(token)) capture(token, listener, acceptFinal, emitLive, preferBluetooth) }
     }
 
     fun stop() { epoch.incrementAndGet() }
 
     @SuppressLint("MissingPermission")
     private fun capture(token: Long, listener: Listener, acceptFinal: (String) -> Boolean,
-                        emitLive: Boolean) {
+                        emitLive: Boolean, preferBluetooth: Boolean) {
         var audio: AudioRecord? = null
         var opened = false
         try {
@@ -68,6 +71,14 @@ internal class SilentRecognizer(private val context: Context) : AutoCloseable {
                 .build()
             audio = recorder
             check(recorder.state == AudioRecord.STATE_INITIALIZED) { "Микрофон недоступен" }
+            // Request an available input only. Never change the system's communication mode
+            // or steal an active call route. The actual routedDevice is reported below.
+            if (preferBluetooth) runCatching {
+                context.getSystemService(AudioManager::class.java)
+                    ?.getDevices(AudioManager.GET_DEVICES_INPUTS)
+                    ?.firstOrNull { it.isSource && isBluetoothInput(it.type) }
+                    ?.let { recorder.setPreferredDevice(it) }
+            }
             Recognizer(active, RATE.toFloat()).use { recognizer ->
                 if (!current(token)) return
                 recorder.startRecording()
@@ -76,6 +87,8 @@ internal class SilentRecognizer(private val context: Context) : AutoCloseable {
                 post(token) { listener.onReady() }
                 val buffer = ShortArray(1600)
                 var lastPartial = ""
+                var lastRoute: String? = null
+                var nextRouteCheck = 0L
                 var lastAudio = android.os.SystemClock.elapsedRealtime()
                 while (current(token)) {
                     val count = recorder.read(buffer, 0, buffer.size, AudioRecord.READ_NON_BLOCKING)
@@ -86,6 +99,22 @@ internal class SilentRecognizer(private val context: Context) : AutoCloseable {
                         continue
                     }
                     lastAudio = android.os.SystemClock.elapsedRealtime()
+                    if (lastAudio >= nextRouteCheck) {
+                        nextRouteCheck = lastAudio + 1000L
+                        val type = runCatching { recorder.routedDevice?.type }.getOrNull()
+                        val route = when {
+                            type == null -> "Источник не определён"
+                            isBluetoothInput(type) -> "Bluetooth-микрофон"
+                            type == AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Микрофон телефона"
+                            else -> "Внешний микрофон"
+                        }
+                        val label = if (preferBluetooth && type != null && !isBluetoothInput(type))
+                            "$route · Bluetooth не выбран Android" else route
+                        if (label != lastRoute) {
+                            lastRoute = label
+                            post(token) { listener.onRouteChanged(label) }
+                        }
+                    }
                     if (emitLive) {
                         var energy = 0.0
                         for (i in 0 until count) {
@@ -138,6 +167,8 @@ internal class SilentRecognizer(private val context: Context) : AutoCloseable {
 
     companion object {
         private const val RATE = 16000
+        private fun isBluetoothInput(type: Int): Boolean =
+            type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO || type == AudioDeviceInfo.TYPE_BLE_HEADSET
         @Synchronized internal fun prepareSharedModel(context: Context): File {
         val root = File(context.filesDir, "asr-ru-0.22")
         val ready = File(root, ".ready")
