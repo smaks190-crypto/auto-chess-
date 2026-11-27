@@ -40,6 +40,21 @@ class AgentProtocolTest {
         }
         assertTrue(e.message.orEmpty().contains("ID"))
     }
+    @Test fun clickWithStructuredExpectation() {
+        assertEquals(AgentDecision.Tool("click", "2", expect = ExpectedNode("hint", "Search chats")),
+            AgentProtocol.parse("""{"tool":"click","arg":"2","expect":{"field":"hint","value":"Search chats"}}"""))
+    }
+    @Test fun malformedAndExtraExpectationFieldsAreRejected() {
+        assertThrows(IllegalArgumentException::class.java) {
+            AgentProtocol.parse("""{"tool":"click","arg":"2","expect":{"field":"anything","value":"x"}}""")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            AgentProtocol.parse("""{"tool":"click","arg":"2","expect":{"field":"hint","value":"x","approved":true}}""")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            AgentProtocol.parse("""{"tool":"launch","arg":"com.example","expect":{"field":"hint","value":"x"}}""")
+        }
+    }
     @Test fun trailingTextRejected() {
         assertThrows(IllegalArgumentException::class.java) {
             AgentProtocol.parse("""{"tool":"home","arg":""} extra""")

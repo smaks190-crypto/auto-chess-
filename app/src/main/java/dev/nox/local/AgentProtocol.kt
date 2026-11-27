@@ -22,7 +22,8 @@ internal object AgentProtocol {
         val name = string("tool")
         val noArg = name in setOf("observe", "home", "back")
         val expected = if (name == "type") setOf("tool", "arg", "text") else setOf("tool", "arg")
-        require(keys == expected || (noArg && keys == setOf("tool"))) {
+        val hasExpect = name == "click" && keys == expected + "expect"
+        require(keys == expected || hasExpect || (noArg && keys == setOf("tool"))) {
             "Некорректный набор полей: ожидаются " + expected.joinToString(", ")
         }
         val arg = when {
@@ -40,6 +41,12 @@ internal object AgentProtocol {
             else -> error("Неизвестный инструмент: " + name)
         }
         require(text.length <= 1000) { "text: больше 1000 символов" }
-        return AgentDecision.Tool(name, arg, text)
+        val expectation = if (hasExpect) {
+            val e = obj.opt("expect") as? JSONObject ?: error("expect должен быть объектом")
+            require(e.keys().asSequence().toSet() == setOf("field", "value")) { "expect: нужны только field и value" }
+            ExpectedNode(e.opt("field") as? String ?: error("expect.field должен быть строкой"),
+                e.opt("value") as? String ?: error("expect.value должен быть строкой"))
+        } else null
+        return AgentDecision.Tool(name, arg, text, expectation)
     }
 }

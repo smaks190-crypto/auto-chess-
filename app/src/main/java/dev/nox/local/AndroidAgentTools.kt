@@ -242,6 +242,10 @@ internal class AndroidAgentTools(
         }
     }
 
+    private fun Node.effectNode() = EffectNode(path, resource, kind, identity.text, hint,
+        identity.description, editable, enabled)
+    private fun Screen.effectFrame(seq: Long) = EffectFrame(seq, pkg, window, nodes.map { it.effectNode() })
+
     private fun goalObservation(screen: Screen) = GoalObservation(goal.sequence(), screen.pkg,
         screen.nodes.map { GoalNode(it.resource, it.label, it.id, it.hint,
             it.identity.description.orEmpty(), it.kind, it.enabled, it.clickable, it.editable) })
@@ -526,6 +530,15 @@ internal class AndroidAgentTools(
             if (calcPlan != null) { calcPlan?.revoke(); throw AgentDenied("План изменился. Задача остановлена.") }
             return ToolOutcome.RejectedBeforeAction(it + "\n" + describeGoal(before))
         }
+        val generic = !goal.arithmetic && !goal.searchNavigation
+        val beforeEffect = before.effectFrame(beforeGoal.seq)
+        val targetEffect = target.effectNode()
+        if (generic) {
+            val rejection = if (action.name == "click") EffectCheck.clickRejection(beforeEffect, action.expect)
+                else EffectCheck.typeRejection(targetEffect, action.text)
+            if (rejection != null)
+                return ToolOutcome.RejectedBeforeAction(rejection + "\n" + describeGoal(before))
+        }
         authorize(before.pkg)
         val actionText = if (action.name == "type") "Ввести «" + action.text.take(1000) + "»"
             else "Нажать «" + target.label.ifBlank { target.kind + " " + target.resource } + "»"
@@ -604,7 +617,7 @@ internal class AndroidAgentTools(
             plan?.revoke()
             throw e
         }
-        goal.mutation()
+        val mutation = goal.mutation()
         if (!accepted) {
             plan?.revoke()
             return ToolOutcome.Unverified("Android не подтвердил действие. Повторять не буду.")
@@ -616,7 +629,8 @@ internal class AndroidAgentTools(
                 when {
                     goal.arithmetic -> goal.afterClick(beforeGoal, target.resource, goalObservation(after))
                     goal.searchNavigation -> goal.searchAfter(beforeGoal, goalObservation(after))
-                    else -> true
+                    action.name == "click" -> EffectCheck.clicked(beforeEffect, mutation, after.effectFrame(goal.sequence()), action.expect)
+                    else -> EffectCheck.typed(beforeEffect, mutation, after.effectFrame(goal.sequence()), targetEffect, action.text)
                 }
             }
         } catch (e: Exception) { plan?.revoke(); throw e }

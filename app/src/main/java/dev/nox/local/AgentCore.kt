@@ -6,7 +6,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
 internal sealed interface AgentDecision {
-    data class Tool(val name: String, val arg: String, val text: String = "") : AgentDecision
+    data class Tool(val name: String, val arg: String, val text: String = "",
+        val expect: ExpectedNode? = null) : AgentDecision
     data class Finish(val answer: String) : AgentDecision
 }
 internal open class AgentDenied(message: String = "Действие отменено пользователем. Задача остановлена.") : RuntimeException(message)
@@ -120,7 +121,13 @@ internal class AgentCore(
                 appendLine("""{"tool":"apps","arg":"часть имени или пусто"} — найти реальные имена и пакеты приложений.""")
                 appendLine("""{"tool":"launch","arg":"точный пакет из apps"} — запустить приложение.""")
                 appendLine("""{"tool":"observe","arg":""} — прочитать активный экран; IDs действительны только до следующего наблюдения/действия.""")
-                appendLine("""{"tool":"click","arg":"ID"} — нажать видимый узел; {"tool":"type","arg":"ID","text":"текст"} — заменить текст в редактируемом поле.""")
+                if (goal?.arithmetic == true || goal?.searchNavigation == true || goal == null) {
+                    appendLine("""{"tool":"click","arg":"ID"} — нажать видимый узел; {"tool":"type","arg":"ID","text":"текст"} — заменить текст в редактируемом поле.""")
+                } else {
+                    appendLine("""{"tool":"click","arg":"ID","expect":{"field":"hint","value":"точная ожидаемая подсказка"}} — предскажи новый уникальный элемент после нажатия. field: text, hint или description. Не выбирай элемент, который уже существует. Не подменяй цель произвольным изменением экрана.""")
+                    appendLine("""{"tool":"type","arg":"ID","text":"текст"} — заменить текст выбранного поля, ядро проверит точное содержимое этого поля.""")
+                    appendLine("Если открыт не тот экран, сначала определи его назначение и нужный переход. Не используй ввод сообщения для поиска контакта. Наблюдение после шага не означает выполнение всей задачи.")
+                }
                 appendLine("""{"tool":"scroll","arg":"down"} или up; {"tool":"back","arg":""}; {"tool":"home","arg":""}; {"tool":"volume","arg":"up"} или down.""")
                 appendLine("""{"finish":"ответ пользователю"} — обычный разговор, уточнение или завершение. Не заявляй об успехе без наблюдения. При отказе не повторяй действие.""")
                 appendLine("После запуска или изменения UI наблюдай экран, прежде чем выбирать узел. Не угадывай ID. Кликом/вводом управляет подтверждение пользователя. Если задача не может быть выполнена или экран не подтверждает результат, сообщи это; не утверждай, что сообщение отправлено только по нажатию.")
