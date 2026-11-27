@@ -179,6 +179,19 @@ class GoalStateTest {
         dottedPackage.launched("com.example.app", "Different label")
         assertNotNull(dottedPackage.finish(screen(dottedPackage,"0", "com.example.app")))
     }
+    @Test fun openTelegramAliasesRequireMatchingActualApp() {
+        val telegram = "org.telegram.messenger"
+        for (request in listOf("Открой тг", "Открой телеграм", "Открой Telegram")) {
+            val goal = GoalState(request)
+            goal.launched(telegram, "Telegram")
+            assertNotNull(goal.finish(screen(goal, "", telegram)))
+            assertNull(goal.finish(screen(goal, "", pkg)))
+
+            val wrong = GoalState(request)
+            wrong.launched(pkg, "Калькулятор")
+            assertNull(wrong.finish(screen(wrong, "", pkg)))
+        }
+    }
     @Test fun finishGateIgnoresModelClaimsAndStopsAfterTwoRejections() {
         var attempts = 0
         val core = AgentCore(decide = { AgentDecision.Finish("Готово, ответ 4") },

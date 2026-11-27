@@ -152,7 +152,7 @@ internal class GoalState(private val request: String) {
             else null
         }
         val target = openTarget ?: return null
-        if (o.pkg == launchPkg && (target.equals(launchName, true) || target.equals(launchPkg, true) || (o.pkg == CALC && target.equals("calculator", true))))
+        if (o.pkg == launchPkg && (SearchNavigation.matchesApp(target, launchName.orEmpty(), launchPkg.orEmpty()) || (o.pkg == CALC && target.equals("calculator", true))))
             return "Приложение открыто: " + launchName
         return null
     }
