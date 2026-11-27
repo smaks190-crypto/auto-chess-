@@ -45,8 +45,8 @@ android {
         applicationId = "dev.nox.local"
         minSdk = 31
         targetSdk = 36
-        versionCode = 27
-        versionName = "0.4.22-obsidian-preview-dev"
+        versionCode = 28
+        versionName = "0.4.23-obsidian-hold-dev"
         manifestPlaceholders["noxAppLabel"] = "N.O.X."
         manifestPlaceholders["noxNavigationLabel"] = "Нокс — навигация"
         ndk { abiFilters += "arm64-v8a" }
