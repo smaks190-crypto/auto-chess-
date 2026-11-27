@@ -144,6 +144,7 @@ class MainActivity : Activity() {
         val brand = textLabel("N.O.X.", 24f).apply { typeface = Typeface.DEFAULT_BOLD }
         top.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
         openSettings = button("Настройки") { toggleSettings() }
+        top.addView(button("Obsidian") { startActivity(Intent(this, ObsidianPreviewActivity::class.java)) }.also { workControls.add(it) }, LinearLayout.LayoutParams(-2, dp(48)).apply { marginEnd = dp(6) })
         top.addView(openSettings, LinearLayout.LayoutParams(-2, dp(48)))
         root.addView(top)
         header = textLabel("Локальный ассистент", 13f, accent)
