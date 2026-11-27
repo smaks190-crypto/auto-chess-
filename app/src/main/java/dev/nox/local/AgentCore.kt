@@ -109,7 +109,7 @@ internal class AgentCore(
             if (cancelled()) return "Задача отменена."
             // Only a typed, successful screen outcome can authorize a deterministic next decision.
             // Unknown outcomes stop below, and pre-action rejection requires fresh observation.
-            var action: AgentDecision? = if (goal?.arithmetic == true &&
+            var action: AgentDecision? = if ((goal?.arithmetic == true || goal?.searchNavigation == true) &&
                 executeTyped != null && (lastOutcome as? ToolOutcome.Ok)?.pkg != null) fastDecision() else null
             var formatError = ""
             if (action == null) {

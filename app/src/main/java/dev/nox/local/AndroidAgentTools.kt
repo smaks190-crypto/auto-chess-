@@ -243,7 +243,8 @@ internal class AndroidAgentTools(
     }
 
     private fun goalObservation(screen: Screen) = GoalObservation(goal.sequence(), screen.pkg,
-        screen.nodes.map { GoalNode(it.resource, it.label) })
+        screen.nodes.map { GoalNode(it.resource, it.label, it.id, it.hint,
+            it.identity.description.orEmpty(), it.kind, it.enabled, it.clickable, it.editable) })
     private fun describeGoal(screen: Screen): String = screen.describe() +
         (goal.hint(goalObservation(screen))?.let { "\n" + it } ?: "")
 
@@ -252,8 +253,12 @@ internal class AndroidAgentTools(
      */
     fun fastDecision(): AgentDecision? {
         val current = snapshot ?: return null
-        if (!goal.arithmetic || !goal.allowsLaunch(current.pkg)) return null
         val observed = goalObservation(current)
+        if (goal.searchNavigation) {
+            if (goal.finish(observed) != null) return AgentDecision.Finish("")
+            return goal.searchNext(observed)?.let { AgentDecision.Tool("click", it) }
+        }
+        if (!goal.arithmetic || !goal.allowsLaunch(current.pkg)) return null
         if (goal.fastFinish(observed)) {
             Log.i("NoxPlan", "source=VERIFIED_GOAL action=finish")
             return AgentDecision.Finish("") // AgentCore requires another fresh finish verification.
@@ -515,6 +520,8 @@ internal class AndroidAgentTools(
             return ToolOutcome.RejectedBeforeAction("UNSUPPORTED_NODE: узел не поддерживает это действие. Выбери другой доступный узел после observe.")
         }
         val beforeGoal = goalObservation(before)
+        if (goal.searchNavigation && (action.name != "click" || goal.searchNext(beforeGoal) != target.id))
+            return ToolOutcome.RejectedBeforeAction("Поиск: разрешён только однозначно распознанный следующий элемент навигации. Не вводи сообщения и не меняй настройки.\n" + describeGoal(before))
         goal.reject(beforeGoal, action.name, target.resource)?.let {
             if (calcPlan != null) { calcPlan?.revoke(); throw AgentDenied("План изменился. Задача остановлена.") }
             return ToolOutcome.RejectedBeforeAction(it + "\n" + describeGoal(before))
@@ -606,7 +613,11 @@ internal class AndroidAgentTools(
             describeAfter("Android принял действие: " + actionText + ". Проверяй фактический результат.",
                 if (goal.arithmetic) before else null, fastRead = plan != null,
                 changeSignal = changeSignal, changeMarker = changeMarker) { after ->
-                !goal.arithmetic || goal.afterClick(beforeGoal, target.resource, goalObservation(after))
+                when {
+                    goal.arithmetic -> goal.afterClick(beforeGoal, target.resource, goalObservation(after))
+                    goal.searchNavigation -> goal.searchAfter(beforeGoal, goalObservation(after))
+                    else -> true
+                }
             }
         } catch (e: Exception) { plan?.revoke(); throw e }
         if (plan != null) {
@@ -626,6 +637,8 @@ internal class AndroidAgentTools(
             calcPlan?.revoke()
             throw AgentDenied("Для разрешённого плана допустимы только подтверждённые клавиши. Задача остановлена.")
         }
+        if (goal.searchNavigation && action.name !in setOf("apps", "launch", "observe", "click"))
+            return ToolOutcome.RejectedBeforeAction("Для открытия поиска допустимы только поиск приложения, наблюдение и проверенная навигация.")
         if (goal.arithmetic && action.name !in setOf("apps", "launch", "observe", "click"))
             return ToolOutcome.RejectedBeforeAction("Для этой задачи нужны только кнопки калькулятора.")
         if (action.name == "launch" && !goal.allowsLaunch(action.arg))
@@ -643,8 +656,12 @@ internal class AndroidAgentTools(
                 ToolOutcome.Ok(list.joinToString("\n") { it.first + " = " + it.second }.ifBlank { "Не найдено. Попробуй другое написание или пустой поиск." })
             }
             "launch" -> {
-                require(action.arg in apps && permitted(action.arg)) { "Сначала получи точный пакет через apps" }
-                val label = apps.getValue(action.arg)
+                if (!permitted(action.arg))
+                    return ToolOutcome.RejectedBeforeAction("Пакет запрещён политикой управления.")
+                val label = apps[action.arg] ?: return ToolOutcome.RejectedBeforeAction(
+                    "Сначала вызови apps по имени приложения из запроса. Запуск не выполнялся. Не угадывай пакет.")
+                if (!goal.matchesSearchApp(action.arg, label))
+                    return ToolOutcome.RejectedBeforeAction("Выбрано не то приложение. Найди через apps именно приложение из запроса.")
                 authorize(action.arg)
                 goal.launched(action.arg, label)
                 val already = runCatching { ui {

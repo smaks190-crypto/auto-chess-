@@ -3,7 +3,9 @@ package dev.nox.local
 import java.math.BigInteger
 
 /** Independent, deliberately narrow verifier. Unknown goals remain unverified. */
-internal data class GoalNode(val resource: String, val label: String)
+internal data class GoalNode(val resource: String, val label: String,
+    val id: String = "", val hint: String = "", val description: String = "", val kind: String = "",
+    val enabled: Boolean = true, val clickable: Boolean = false, val editable: Boolean = false)
 internal data class GoalObservation(val seq: Long, val pkg: String, val nodes: List<GoalNode>)
 internal class GoalState(private val request: String) {
     companion object {
@@ -42,7 +44,11 @@ internal class GoalState(private val request: String) {
     }
     private val openTarget = Regex("^(?:открой|запусти|open|launch)\\s+([\\p{L}0-9 ._-]+)$", RegexOption.IGNORE_CASE)
         .matchEntire(request.trim())?.groupValues?.get(1)?.trim()
-    val supported: Boolean get() = formula != null || openTarget != null
+    val searchTarget = SearchNavigation.target(request)
+    val searchNavigation: Boolean get() = searchTarget != null
+    val supported: Boolean get() = formula != null || openTarget != null || searchNavigation
+    fun matchesSearchApp(pkg: String, label: String): Boolean =
+        searchTarget?.let { SearchNavigation.matchesApp(it, label, pkg) } ?: true
     val arithmetic: Boolean get() = formula != null
     fun allowsLaunch(pkg: String) = !arithmetic || pkg == CALC
     private var verifiedEqualsSeq: Long? = null
@@ -52,6 +58,13 @@ internal class GoalState(private val request: String) {
     private var launchPkg: String? = null
     fun sequence() = ++nextSeq
     fun launched(pkg: String, label: String) { launchPkg = pkg; launchName = label }
+    fun searchScreen(o: GoalObservation): Boolean = searchNavigation && o.pkg == launchPkg &&
+        matchesSearchApp(o.pkg, launchName.orEmpty())
+    fun searchNext(o: GoalObservation): String? =
+        if (searchScreen(o) && o.seq > lastMutation) SearchNavigation.next(o.nodes) else null
+    fun searchAfter(before: GoalObservation, after: GoalObservation): Boolean =
+        searchScreen(before) && searchScreen(after) && after.seq > lastMutation && after.seq > before.seq &&
+            SearchNavigation.advanced(before.nodes, after.nodes)
     fun mutation(): Long { verifiedEqualsSeq = null; return sequence().also { lastMutation = it } }
     private fun value(o: GoalObservation): String? {
         if (o.pkg != CALC) return null
@@ -132,6 +145,11 @@ internal class GoalState(private val request: String) {
             if (verifiedEqualsSeq != null && o.seq >= verifiedEqualsSeq!! && value(o) == expected)
                 return "В калькуляторе подтверждено: " + formula + " = " + expected + "."
             return null
+        }
+        if (searchNavigation) {
+            return if (searchScreen(o) && SearchNavigation.state(o.nodes) == SearchNavigation.State.SEARCH)
+                "В приложении " + launchName + " подтверждено открытие поиска. Сообщения не отправлял."
+            else null
         }
         val target = openTarget ?: return null
         if (o.pkg == launchPkg && (target.equals(launchName, true) || target.equals(launchPkg, true) || (o.pkg == CALC && target.equals("calculator", true))))
