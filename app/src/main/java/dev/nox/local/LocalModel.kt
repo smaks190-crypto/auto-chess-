@@ -60,9 +60,9 @@ internal class LocalModel : AutoCloseable {
         }
     }
 
-    fun chat(command: String, image: File?, deep: Boolean, cancelled: () -> Boolean, update: (String) -> Unit): String {
+    fun chat(command: String, image: File?, deep: Boolean, cancelled: () -> Boolean, thinkingBudget: Int = if (deep) 1024 else 0, update: (String) -> Unit): String {
         val prompt = PromptPolicy.build(command) + "\nОтвечай естественно, кратко и по существу. Не перечисляй свои возможности без запроса."
-        return generate(prompt, image, deep, cancelled, update)
+        return generate(prompt, image, deep, cancelled, update, thinkingBudget = thinkingBudget)
     }
 
     fun classifyRequest(prompt: String, cancelled: () -> Boolean): String =
@@ -102,16 +102,16 @@ internal class LocalModel : AutoCloseable {
     }
 
     private fun generate(prompt: String, image: File?, deep: Boolean, cancelled: () -> Boolean,
-        update: (String) -> Unit, maxOutputTokens: Int = if (deep) 2048 else 512): String {
+        update: (String) -> Unit, maxOutputTokens: Int = if (deep) 2048 else 512, thinkingBudget: Int = if (deep) 1024 else 0): String {
         val active = engine()
         return active.createConversation().use { conversation ->
-            generateInConversation(conversation, prompt, image, deep, cancelled, update, maxOutputTokens)
+            generateInConversation(conversation, prompt, image, deep, cancelled, update, maxOutputTokens, thinkingBudget = thinkingBudget)
         }
     }
 
     private fun generateInConversation(conversation: Conversation, prompt: String, image: File?,
         deep: Boolean, cancelled: () -> Boolean, update: (String) -> Unit,
-        maxOutputTokens: Int, trace: Boolean = false): String {
+        maxOutputTokens: Int, trace: Boolean = false, thinkingBudget: Int = if (deep) 1024 else 0): String {
             val started = SystemClock.elapsedRealtime()
             val firstChunk = AtomicLong(-1L)
             val done = CountDownLatch(1)
@@ -140,8 +140,8 @@ internal class LocalModel : AutoCloseable {
             return try {
                 conversation.sendMessageAsync(contents, callback,
                     maxOutputToken = maxOutputTokens,
-                    thinkingConfig = ThinkingConfig(enableThinking = deep,
-                        thinkingTokenBudget = if (deep) 1024 else 0))
+                    thinkingConfig = ThinkingConfig(enableThinking = thinkingBudget > 0,
+                        thinkingTokenBudget = thinkingBudget))
                 val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(if (deep) 300 else 120)
                 while (!done.await(200, TimeUnit.MILLISECONDS)) {
                     if (cancelled() || System.nanoTime() >= deadline) {

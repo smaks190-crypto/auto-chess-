@@ -43,7 +43,6 @@ class MainActivity : Activity() {
     private lateinit var gpu: Switch
     private lateinit var vision: Switch
     private lateinit var tts: Switch
-    private lateinit var deep: Switch
     private lateinit var modelButton: Button
     private lateinit var cancel: Button
     private lateinit var stopGeneration: Button
@@ -54,9 +53,21 @@ class MainActivity : Activity() {
     private lateinit var microphoneRouteLabel: TextView
     private lateinit var overlayButton: Button
     private lateinit var details: TextView
-    private lateinit var openSettings: Button
+    private lateinit var visionPage: ScrollView
+    private lateinit var actionsPage: ScrollView
+    private lateinit var actionStatus: TextView
+    private lateinit var actionJournal: TextView
+    private lateinit var actionStop: Button
+    private lateinit var visionInfo: TextView
+    private lateinit var analyzeImage: Button
+    private lateinit var effortChip: Button
+    private lateinit var effortSetting: Button
+    private lateinit var matrix: ObsidianMatrix
+    private val navButtons = mutableListOf<Button>()
+    private var activePage = 0
+    private var effort = ChatEffort.AUTO
     private val workControls = mutableListOf<View>()
-    private var lastChat = ""
+    private var lastChat = "\u0000"
     private var lastTurns: List<NoxService.Turn>? = null
     private var partialView: TextView? = null
     private var pendingVoice = false
@@ -69,11 +80,11 @@ class MainActivity : Activity() {
     private val perceptionRefresh = object : Runnable {
         override fun run() { renderPerception(); perceptionUi.postDelayed(this, 750) }
     }
-    private val bg = 0xFF08090C.toInt()
-    private val surface = 0xFF171922.toInt()
-    private val ink = 0xFFF0EFF5.toInt()
-    private val muted = 0xFFA8A8B5.toInt()
-    private val accent = 0xFFB6A1FF.toInt()
+    private val bg = 0xFF111113.toInt()
+    private val surface = 0xFF19191C.toInt()
+    private val ink = 0xFFF3F2F0.toInt()
+    private val muted = 0xFFA3A1A4.toInt()
+    private val accent = 0xFFC9B6FF.toInt()
     private val prefs by lazy { getSharedPreferences("nox_ui", MODE_PRIVATE) }
 
     private val connection = object : ServiceConnection {
@@ -132,27 +143,28 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL; setBackgroundColor(bg)
             setPadding(dp(16), dp(12), dp(16), dp(10))
         }
-        setContentView(root)
-        root.setOnApplyWindowInsetsListener { view, insets ->
+        val frame = FrameLayout(this).apply { setBackgroundColor(bg) }
+        frame.addView(root, FrameLayout.LayoutParams(-1, -1))
+        setContentView(frame)
+        frame.setOnApplyWindowInsetsListener { view, insets ->
             val bars = insets.getInsets(android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.displayCutout())
             val ime = insets.getInsets(android.view.WindowInsets.Type.ime())
-            view.setPadding(dp(16) + bars.left, dp(12) + bars.top, dp(16) + bars.right, dp(10) + maxOf(bars.bottom, ime.bottom))
+            view.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, ime.bottom))
             insets
         }
-        root.requestApplyInsets()
+        frame.requestApplyInsets()
         val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         val brand = textLabel("N.O.X.", 24f).apply { typeface = Typeface.DEFAULT_BOLD }
         top.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
-        openSettings = button("Настройки") { toggleSettings() }
-        top.addView(button("Obsidian") { startActivity(Intent(this, ObsidianPreviewActivity::class.java)) }.also { workControls.add(it) }, LinearLayout.LayoutParams(-2, dp(48)).apply { marginEnd = dp(6) })
-        top.addView(openSettings, LinearLayout.LayoutParams(-2, dp(48)))
+        top.addView(textLabel("ЛОКАЛЬНО", 11f, muted))
+        effort = runCatching { ChatEffort.valueOf(prefs.getString("chat_effort", "AUTO") ?: "AUTO") }.getOrDefault(ChatEffort.AUTO)
         root.addView(top)
         header = textLabel("Локальный ассистент", 13f, accent)
         root.addView(header)
 
         chatPage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         chatScroll = ScrollView(this).apply { isFillViewport = true }
-        messages = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.BOTTOM }
+        messages = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.TOP }
         chatScroll.addView(messages, FrameLayout.LayoutParams(-1, -2))
         chatPage.addView(chatScroll, LinearLayout.LayoutParams(-1, 0, 1f))
         attachment = textLabel("", 13f, muted).apply {
@@ -160,24 +172,28 @@ class MainActivity : Activity() {
         }
         chatPage.addView(attachment)
         val composer = LinearLayout(this).apply {
-            gravity = Gravity.CENTER_VERTICAL; background = panel(surface, 24)
-            setPadding(dp(6), dp(4), dp(6), dp(4))
+            orientation = LinearLayout.VERTICAL; background = panel(0xFF222225.toInt(), 24).apply { setStroke(dp(1), 0xFF45404C.toInt()) }
+            setPadding(dp(10), dp(8), dp(10), dp(8))
         }
+        val controls = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         val attach = button("+") { pick(11, "image/*") }.apply { contentDescription = "Прикрепить изображение" }
-        composer.addView(attach, LinearLayout.LayoutParams(dp(44), dp(48))); workControls.add(attach)
+        controls.addView(attach, LinearLayout.LayoutParams(dp(44), dp(48))); workControls.add(attach)
         input = EditText(this).apply {
             hint = "Сообщение Ноксу"; setHintTextColor(muted); setTextColor(ink); textSize = 16f
             background = null; maxLines = 4; setPadding(dp(4), dp(6), dp(4), dp(6))
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
         }
-        composer.addView(input, LinearLayout.LayoutParams(0, -2, 1f))
+        composer.addView(input, LinearLayout.LayoutParams(-1, -2))
+        effortChip = button(effort.label) {}.apply { setTextColor(accent); textSize = 13f; setPadding(dp(8),0,dp(8),0) }
+        controls.addView(effortChip, LinearLayout.LayoutParams(-2,dp(48))); workControls.add(effortChip)
+        controls.addView(View(this), LinearLayout.LayoutParams(0,1,1f))
         mic = button("◉") { voice(false) }.apply { contentDescription = "Голосовая команда"; setTextColor(accent) }
-        composer.addView(mic, LinearLayout.LayoutParams(dp(48), dp(48)))
+        controls.addView(mic, LinearLayout.LayoutParams(dp(48), dp(48)))
         send = button("↑") {
             val s = service ?: return@button
             val command = input.text.toString()
             if (command.isNotBlank() && !s.busy) {
-                s.ask(command, s.attachedImage, tts.isChecked, deep.isChecked)
+                s.ask(command, s.attachedImage, tts.isChecked, thinkingBudget = effort.budget(command, s.attachedImage != null))
                 input.text.clear()
             }
         }.apply {
@@ -190,14 +206,46 @@ class MainActivity : Activity() {
                 true // Consume the hold: releasing must not send or clear the draft.
             }
         }
-        composer.addView(send, LinearLayout.LayoutParams(dp(48), dp(48)))
+        controls.addView(send, LinearLayout.LayoutParams(dp(48), dp(48)))
         stopGeneration = button("■") { service?.cancelGeneration() }.apply {
             contentDescription = "Остановить генерацию"
             visibility = View.GONE
         }
-        composer.addView(stopGeneration, LinearLayout.LayoutParams(dp(48), dp(48)))
+        controls.addView(stopGeneration, LinearLayout.LayoutParams(dp(48), dp(48)))
+        composer.addView(controls, LinearLayout.LayoutParams(-1,-2))
         chatPage.addView(composer, LinearLayout.LayoutParams(-1, -2))
         root.addView(chatPage, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        visionPage = ScrollView(this).apply { visibility = View.GONE }
+        val visionContent = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        visionPage.addView(visionContent)
+        root.addView(visionPage, LinearLayout.LayoutParams(-1, 0, 1f))
+        visionContent.addView(textLabel("Vision", 28f).apply { typeface = Typeface.DEFAULT_BOLD })
+        visionContent.addView(textLabel("Контекст, который видит ассистент", 13f, muted))
+        visionInfo = textLabel("Изображение не выбрано", 15f).apply { background = panel(surface, 18); setPadding(dp(16),dp(16),dp(16),dp(16)) }
+        visionContent.addView(visionInfo, LinearLayout.LayoutParams(-1, -2))
+        addButton(visionContent, "Прикрепить изображение") { pick(11, "image/*") }
+        analyzeImage = addButton(visionContent, "Анализировать изображение") {
+            val s = service ?: return@addButton
+            val image = s.attachedImage ?: return@addButton
+            if (s.loaded?.vision != true || s.busy) return@addButton
+            val query = "Опиши, что видно на изображении."
+            s.ask(query, image, tts.isChecked, thinkingBudget = effort.budget(query, true))
+            showPage(0)
+        }
+        addButton(visionContent, "Убрать изображение") { service?.removeImage() }
+        actionsPage = ScrollView(this).apply { visibility = View.GONE }
+        val actions = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        actionsPage.addView(actions)
+        root.addView(actionsPage, LinearLayout.LayoutParams(-1,0,1f))
+        actions.addView(textLabel("Действия", 28f).apply { typeface = Typeface.DEFAULT_BOLD })
+        actionStatus = textLabel("Подключение…", 16f, accent)
+        actions.addView(actionStatus)
+        actionStop = addButton(actions, "Остановить текущую задачу", false) { service?.cancelGeneration() }
+        addButton(actions, "Разрешения агента", false) { showAgentGrants() }
+        actions.addView(textLabel("Журнал текущего сеанса", 18f))
+        actionJournal = textLabel("Действий пока нет", 13f, muted).apply { background = panel(surface, 16); setPadding(dp(12),dp(12),dp(12),dp(12)) }
+        actions.addView(actionJournal, LinearLayout.LayoutParams(-1,-2))
 
         settingsPage = ScrollView(this).apply { visibility = View.GONE }
         val settings = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -230,18 +278,18 @@ class MainActivity : Activity() {
         settings.addView(textLabel("Агент запрашивает доступ к каждому приложению. Проверенные безопасные действия выполняются самостоятельно; неизвестные и критические требуют отдельного подтверждения.", 13f, muted))
         addButton(settings, "Разрешения агента") { showAgentGrants() }
 
-        settings.addView(textLabel("Зрение и слух", 19f).apply { typeface = Typeface.DEFAULT_BOLD })
-        perceptionButton = addButton(settings, "Включить восприятие", false) {
+        visionContent.addView(textLabel("Зрение и слух", 19f).apply { typeface = Typeface.DEFAULT_BOLD })
+        perceptionButton = addButton(visionContent, "Включить восприятие", false) {
             if (LivePerception.active) stopService(Intent(this, PerceptionService::class.java))
             else choosePerceptionApp()
         }
         perceptionStatus = textLabel("", 13f, muted)
-        settings.addView(perceptionStatus)
-        addButton(settings, "Обсудить увиденное и услышанное") {
+        visionContent.addView(perceptionStatus)
+        addButton(visionContent, "Обсудить увиденное и услышанное") {
             service?.reviewPerception()
-            if (settingsPage.visibility == View.VISIBLE) toggleSettings()
+            showPage(0)
         }
-        settings.addView(textLabel("Выбери приложение для звука и в системном окне Android выбери тот же экран. Захват продолжается вне чата до остановки или блокировки экрана. Аудио не записывается в файл. Последний кадр и распознанная речь хранятся в памяти; для Gemma создаётся временное изображение, которое удаляется после анализа.", 13f, muted))
+        visionContent.addView(textLabel("Выбери приложение для звука и в системном окне Android выбери тот же экран. Захват продолжается вне чата до остановки или блокировки экрана. Аудио не записывается в файл. Последний кадр и распознанная речь хранятся в памяти; для Gemma создаётся временное изображение, которое удаляется после анализа.", 13f, muted))
         settings.addView(textLabel("Модель", 19f).apply { typeface = Typeface.DEFAULT_BOLD })
         models = Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, catalog.map { it.name })
@@ -251,8 +299,10 @@ class MainActivity : Activity() {
         gpu = Switch(this).apply { text = "GPU для языка"; setTextColor(ink); isChecked = prefs.getBoolean("gpu", true) }
         vision = Switch(this).apply { text = "Анализ изображений"; setTextColor(ink); isChecked = prefs.getBoolean("vision", true) }
         tts = Switch(this).apply { text = "Озвучивать текстовые ответы"; setTextColor(ink); isChecked = false }
-        deep = Switch(this).apply { text = "Глубокий анализ (медленнее)"; setTextColor(ink); isChecked = false }
-        settings.addView(gpu); settings.addView(vision); settings.addView(tts); settings.addView(deep)
+        effortSetting = button("Мышление · " + effort.label) {}
+        settings.addView(gpu); settings.addView(vision); settings.addView(tts)
+        settings.addView(effortSetting, LinearLayout.LayoutParams(-1, dp(48))); workControls.add(effortSetting)
+        settings.addView(textLabel("Авто: 0 токенов для короткого текста, 256 для длинного запроса или изображения. Быстро: 0, Стандарт: 256, Глубоко: 1024. Планировщик агента работает отдельно.", 12f, muted))
         workControls.add(gpu); workControls.add(vision)
         modelButton = addButton(settings, "Скачать и запустить") { selectModel() }
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100; visibility = View.GONE }
@@ -284,6 +334,21 @@ class MainActivity : Activity() {
         }
         addButton(settings, "Очистить чат") { service?.clearChat() }
         details = textLabel("", 13f, muted); settings.addView(details)
+        val nav = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,dp(8),0,0) }
+        listOf("Чат", "Vision", "Действия", "Настройки").forEachIndexed { index, name ->
+            val item = button(name) { showPage(index) }.apply {
+                textSize = 12f; minWidth = 0; minimumWidth = 0; setPadding(dp(2),0,dp(2),0)
+            }
+            navButtons.add(item)
+            nav.addView(item, LinearLayout.LayoutParams(0,dp(52),1f).apply { marginEnd = if (index == 3) 0 else dp(4) })
+        }
+        root.addView(nav, LinearLayout.LayoutParams(-1,-2))
+        matrix = ObsidianMatrix(frame, catalog.map { it.name }, {
+            MatrixChoice(service?.loaded?.index ?: models.selectedItemPosition.coerceIn(catalog.indices), effort)
+        }, ::applyMatrix)
+        matrix.bind(effortChip)
+        matrix.bind(effortSetting)
+        updateNavigation()
         models.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: AdapterView<*>?) {}
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
@@ -356,12 +421,46 @@ class MainActivity : Activity() {
             }.setNegativeButton("Отмена", null).show()
     }
 
-    private fun toggleSettings() {
-        val show = settingsPage.visibility != View.VISIBLE
-        settingsPage.visibility = if (show) View.VISIBLE else View.GONE
-        chatPage.visibility = if (show) View.GONE else View.VISIBLE
-        openSettings.text = if (show) "Чат" else "Настройки"
+    private fun showPage(page: Int) {
+        activePage = page
+        listOf(chatPage, visionPage, actionsPage, settingsPage).forEachIndexed { i, view -> view.visibility = if (i == page) View.VISIBLE else View.GONE }
+        if (page != 0) {
+            input.clearFocus()
+            (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager).hideSoftInputFromWindow(input.windowToken, 0)
+        }
+        updateNavigation()
         render()
+    }
+
+    private fun updateNavigation() {
+        navButtons.forEachIndexed { i, button ->
+            button.isSelected = i == activePage
+            button.setTextColor(if (i == activePage) accent else muted)
+            button.background = panel(if (i == activePage) 0xFF29243A.toInt() else surface, 14)
+        }
+    }
+
+    private fun applyMatrix(choice: MatrixChoice) {
+        val s = service ?: return
+        if (s.busy) return
+        effort = choice.effort
+        prefs.edit().putString("chat_effort", effort.name).apply()
+        effortChip.text = effort.label
+        effortSetting.text = "Мышление · " + effort.label
+        if (choice.model != s.loaded?.index) {
+            models.setSelection(choice.model)
+            val pkg = catalog[choice.model]
+            if (pkg.cpuOnly) gpu.isChecked = false
+            if (!pkg.vision) vision.isChecked = false
+            selectModel()
+        }
+        render()
+    }
+
+    @Deprecated("Back navigation for native sheet")
+    override fun onBackPressed() {
+        if (::matrix.isInitialized && matrix.dismiss()) return
+        if (activePage != 0) showPage(0) else super.onBackPressed()
     }
 
     private fun render() {
@@ -394,6 +493,16 @@ class MainActivity : Activity() {
         cancel.visibility = progress.visibility
         attachment.text = "Изображение прикреплено · убрать"
         attachment.visibility = if (s?.attachedImage != null) View.VISIBLE else View.GONE
+        val attached = s?.attachedImage
+        visionInfo.text = (if (attached != null) "Изображение прикреплено · " + attached.length() + " байт" else "Изображение не выбрано") +
+            "\nАнализ: " + if (s?.loaded?.vision == true) "доступен" else "модель без Vision или не загружена"
+        analyzeImage.isEnabled = !busy && attached != null && s?.loaded?.vision == true
+        actionStop.isEnabled = s?.generating == true
+        actionStatus.text = s?.status ?: "Подключение…"
+        if (activePage == 2) actionJournal.text = s?.agentJournal?.takeIf { it.isNotEmpty() }?.joinToString("\n") ?: "Действий в этом сеансе пока нет"
+        effortChip.text = effort.label
+        effortChip.contentDescription = "Мышление " + effort.label + ". Модель " + (s?.loaded?.let { catalog[it.index].name } ?: "не загружена") + ". Удерживай для выбора"
+        effortSetting.text = "Мышление · " + effort.label
         val turns = s?.turns.orEmpty()
         val partial = s?.partial.orEmpty()
         val signature = turns.toString() + partial
@@ -404,8 +513,12 @@ class MainActivity : Activity() {
             messages.removeAllViews()
             partialView = null
             if (turns.isEmpty() && partial.isEmpty()) {
-                messages.addView(textLabel("Я Нокс. Чем помочь?", 24f))
-                messages.addView(textLabel("Для начала выбери модель в настройках. Простые команды работают и без модели.", 14f, muted))
+                messages.addView(textLabel("С чего начнём?", 30f).apply { typeface = Typeface.DEFAULT_BOLD })
+                messages.addView(textLabel("Локальный ассистент · спроси, покажи или поручи действие.", 14f, muted))
+                addButton(messages, "Посмотреть экран", false) { showPage(1) }
+                addButton(messages, "Журнал действий", false) { showPage(2) }
+                addButton(messages, "Голосовая команда", false) { voice(false) }
+                addButton(messages, "Настройки модели", false) { showPage(3) }
             }
             for (turn in turns) addTurn(turn.user, turn.text)
         }
@@ -574,6 +687,7 @@ class MainActivity : Activity() {
         consumeAssistantVoice()
     }
     override fun onPause() {
+        if (::matrix.isInitialized) matrix.dismiss()
         isVisible = false
         // A delayed handoff must not activate the microphone on a later unrelated visit.
         intent?.removeExtra(AssistantHandoff.EXTRA_TICKET)

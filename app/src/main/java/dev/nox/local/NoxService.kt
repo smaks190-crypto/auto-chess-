@@ -339,6 +339,8 @@ class NoxService : Service() {
         private set
     internal var attachedImage: File? = null
         private set
+    private val agentEvents = ArrayDeque<String>()
+    internal val agentJournal: List<String> get() = agentEvents.toList()
     internal var report = ""
         private set
     internal var elapsedMs: Long? = null
@@ -1051,7 +1053,7 @@ class NoxService : Service() {
         if (!busy) { attachedImage?.delete(); attachedImage = null; publish() }
     }
 
-    internal fun ask(command: String, image: File? = null, speak: Boolean = false, deep: Boolean = false) {
+    internal fun ask(command: String, image: File? = null, speak: Boolean = false, deep: Boolean = false, thinkingBudget: Int = if (deep) 1024 else 0) {
         val text = command.trim()
         if (text.isEmpty() || busy || destroyed) return
         if (listening) stopListening()
@@ -1112,7 +1114,16 @@ class NoxService : Service() {
                         try { tools.execute(action) }
                         finally { if (action.name == "launch") traceMemory("after_launch") }
                     },
-                    trace = { event -> android.util.Log.i("NoxAgent", event) },
+                    trace = { event ->
+                        android.util.Log.i("NoxAgent", event)
+                        main.post {
+                            if (!destroyed) {
+                                agentEvents.addLast(event)
+                                while (agentEvents.size > 60) agentEvents.removeFirst()
+                                listener?.invoke()
+                            }
+                        }
+                    },
                     cancelled = stop,
                     goal = goal,
                     verifyFinish = tools::verifyFinish,
@@ -1125,7 +1136,7 @@ class NoxService : Service() {
                     } }
                 ).run(text, previous)
                 }
-            } else model.chat(prompt, image, deep, stop) { chunk ->
+            } else model.chat(prompt, image, thinkingBudget > 0, stop, thinkingBudget = thinkingBudget) { chunk ->
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastUpdate >= 80) {
                     lastUpdate = now
