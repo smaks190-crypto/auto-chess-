@@ -52,4 +52,37 @@ class AssistantLaunchGateTest {
         g.revoke()
         assertFalse(g.consume(c, true, true))
     }
+    @Test fun draftOnlyDeliveredToValidTicketOnce() {
+        val g = Fixture().gate
+        val ticket = g.issueDraft(true, true, "Проверка диктовки")
+        assertNotNull(ticket)
+        assertNull(g.consumeDraft("forged", true, true))
+        assertEquals("Проверка диктовки", g.consumeDraft(ticket, true, true))
+        assertNull(g.consumeDraft(ticket, true, true))
+    }
+
+    @Test fun draftExpiredOrLockedIsNeverDelivered() {
+        val f = Fixture()
+        val ticket = f.gate.issueDraft(true, true, "Текст")
+        f.now = 5000L
+        assertNull(f.gate.consumeDraft(ticket, true, true))
+        val second = f.gate.issueDraft(true, true, "Другой")
+        assertNull(f.gate.consumeDraft(second, true, false))
+        assertNull(f.gate.consumeDraft(second, true, true))
+    }
+
+    @Test fun oldExpiryDoesNotEraseNewDraft() {
+        val g = Fixture().gate
+        val first = checkNotNull(g.issueDraft(true, true, "Старый"))
+        val second = g.issueDraft(true, true, "Новый")
+        g.expire(first)
+        assertEquals("Новый", g.consumeDraft(second, true, true))
+    }
+
+    @Test fun blankOrOversizedDraftIsBounded() {
+        val g = Fixture().gate
+        assertNull(g.issueDraft(true, true, "  "))
+        val t = g.issueDraft(true, true, "x".repeat(3000))
+        assertEquals(2000, g.consumeDraft(t, true, true)?.length)
+    }
 }

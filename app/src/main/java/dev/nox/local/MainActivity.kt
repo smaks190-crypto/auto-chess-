@@ -70,12 +70,17 @@ class MainActivity : ComponentActivity() {
     private var advanced = false
     private var webPage = "chat"
     private var webVoiceOpen = false
+    private var webDictationId: Long? = null
+    private var pendingAssistantDraft: String? = null
     private var webImageKey = ""
     private var webStateKey = ""
     private val voiceRefresh = object : Runnable {
         override fun run() {
             if (!isVisible || !webVoiceOpen || advanced) return
-            if (::obsidian.isInitialized) obsidian.send(org.json.JSONObject().put("type", "level").put("value", (service?.manualVoiceLevel ?: 0f).toDouble()))
+            val s = service
+            val level = if (s != null && webDictationId != null && s.webDictationSession == webDictationId && s.webDictationActive)
+                s.manualVoiceLevel else 0f
+            if (::obsidian.isInitialized) obsidian.send(org.json.JSONObject().put("type", "level").put("value", level.toDouble()))
             perceptionUi.postDelayed(this, 100)
         }
     }
@@ -144,7 +149,7 @@ class MainActivity : ComponentActivity() {
             consumeAssistantVoice()
         }
         override fun onServiceDisconnected(name: ComponentName?) {
-            service = null; render()
+            service = null; closeWebDictation(); render()
         }
     }
 
@@ -508,8 +513,7 @@ class MainActivity : ComponentActivity() {
     private fun openAdvanced() {
         if (!::obsidian.isInitialized) return
         advanced = true
-        webVoiceOpen = false
-        perceptionUi.removeCallbacks(voiceRefresh)
+        closeWebDictation()
         obsidian.view.visibility = View.GONE
         legacyRoot.visibility = View.VISIBLE
         showPage(3)
@@ -527,23 +531,53 @@ class MainActivity : ComponentActivity() {
         obsidian.send(org.json.JSONObject().put("type", "ack").put("op", op).put("ok", ok).put("message", message))
     }
 
+    private fun closeWebDictation() {
+        val id = webDictationId
+        webDictationId = null
+        webVoiceOpen = false
+        perceptionUi.removeCallbacks(voiceRefresh)
+        if (id != null) service?.cancelWebDictation(id)
+    }
+
     private fun handleWebCommand(raw: String) {
         val c = ObsidianCommand.parse(raw) ?: return
         if (!::obsidian.isInitialized || isFinishing || isDestroyed) return
         if (c.op == "ready") { webStateKey = ""; webImageKey = ""; renderWeb(); return }
         if (!isVisible || advanced || !DeviceInteraction.unlocked(this)) { ack(c.op, false, "Открой и разблокируй Нокс"); return }
         val s = service
-        if (c.op == "page") { webPage = c.text; renderWeb(); return }
+        if (c.op == "page") {
+            webPage = c.text
+            if (webPage != "chat") closeWebDictation()
+            renderWeb(); return
+        }
         if (c.op == "voice_open") {
+            if (webPage != "chat") { ack(c.op, false); return }
             webVoiceOpen = true
             perceptionUi.removeCallbacks(voiceRefresh)
             perceptionUi.post(voiceRefresh)
+            return
+        }
+        if (c.op == "voice_start") {
+            if (!webVoiceOpen || webPage != "chat" || webDictationId != null || s == null || s.busy) {
+                closeWebDictation(); ack(c.op, false, "Диктовка недоступна"); return
+            }
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                closeWebDictation()
+                ack(c.op, false, "Разреши микрофон и нажми ещё раз")
+                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 33)
+                return
+            }
+            webDictationId = s.startWebDictation()
+            if (webDictationId == null) {
+                closeWebDictation(); ack(c.op, false, "Микрофон недоступен"); return
+            }
+            ack(c.op, true)
             renderWeb()
             return
         }
         if (c.op == "voice_close" || c.op == "voice_stop") {
-            s?.cancelManualVoice()
-            if (c.op == "voice_close") { webVoiceOpen = false; perceptionUi.removeCallbacks(voiceRefresh) }
+            if (c.op == "voice_close") closeWebDictation()
+            else webDictationId?.let { s?.stopWebDictation(it) }
             renderWeb()
             return
         }
@@ -594,7 +628,6 @@ class MainActivity : ComponentActivity() {
                 s.ask(q, image, tts.isChecked, thinkingBudget = effort.budget(q, true))
             }
             "review" -> s.reviewPerception()
-            "voice_start" -> voice(false)
         }
         render()
     }
@@ -603,6 +636,8 @@ class MainActivity : ComponentActivity() {
         if (!::obsidian.isInitialized || !obsidian.ready || advanced) return
         val s = service
         val loaded = s?.loaded
+        val dictationId = webDictationId?.takeIf { s != null && s.webDictationSession == it }
+        val dictationActive = dictationId != null && s?.webDictationActive == true
         val image = s?.attachedImage
         val frame = if (image == null && isVisible && webPage == "vision" && LivePerception.active)
             LivePerception.buffer.snapshot(android.os.SystemClock.elapsedRealtime()).frame else null
@@ -629,13 +664,20 @@ class MainActivity : ComponentActivity() {
             .put("bluetooth", s?.preferBluetooth == true)
             .put("micRoute", s?.microphoneRoute.orEmpty())
             .put("manualListening", s?.listening == true && !s.waitingForName)
-            .put("recognized", s?.recognizedText.orEmpty())
+            .put("recognized", if (dictationActive) s?.recognizedText.orEmpty() else "")
+            .put("dictationSession", dictationId ?: org.json.JSONObject.NULL)
+            .put("dictationActive", dictationActive)
+            .put("dictationResult", if (dictationId != null && !dictationActive) s?.webDictationResult.orEmpty() else "")
             .put("elapsedMs", s?.elapsedMs ?: org.json.JSONObject.NULL)
             .put("partial", s?.partial.orEmpty())
             .put("turns", org.json.JSONArray(s?.turns.orEmpty().map { org.json.JSONObject().put("user", it.user).put("text", it.text) }))
             .put("events", org.json.JSONArray(s?.agentJournal.orEmpty()))
         val key = st.toString()
         if (key != webStateKey) { webStateKey = key; obsidian.send(st) }
+        if (isVisible && DeviceInteraction.unlocked(this)) pendingAssistantDraft?.let { draft ->
+            pendingAssistantDraft = null
+            obsidian.send(org.json.JSONObject().put("type", "draft").put("text", draft))
+        }
         if (webImageKey != attachedKey) {
             webImageKey = attachedKey
             runCatching {
@@ -761,17 +803,15 @@ class MainActivity : ComponentActivity() {
                 .onFailure { header.text = "Открой настройки Android → Приложения по умолчанию → Цифровой помощник" }
     }
 
-    /** MainActivity is exported; never trust an ACTION or extra alone to start the microphone. */
+    /** Only an authenticated in-memory handoff may populate a draft. It never submits a command. */
     private fun consumeAssistantVoice() {
-        if (!isVisible || service == null) return
+        if (!isVisible) return
         val ticket = intent?.getStringExtra(AssistantHandoff.EXTRA_TICKET) ?: return
         intent.removeExtra(AssistantHandoff.EXTRA_TICKET)
-        if (!AssistantHandoff.gate.consume(ticket, AssistantHandoff.active(this), DeviceInteraction.unlocked(this))) return
-        if (service?.busy != false) {
-            header.text = "Нокс занят или загружает модель · нажми микрофон после готовности"
-            return
-        }
-        voice(false)
+        val draft = AssistantHandoff.gate.consumeDraft(ticket, AssistantHandoff.active(this),
+            DeviceInteraction.unlocked(this)) ?: return
+        pendingAssistantDraft = draft.take(2000)
+        if (advanced) closeAdvanced() else renderWeb()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -877,15 +917,17 @@ class MainActivity : ComponentActivity() {
     }
     override fun onPause() {
         if (::matrix.isInitialized) matrix.dismiss()
-        perceptionUi.removeCallbacks(voiceRefresh)
         isVisible = false
+        closeWebDictation()
+        pendingAssistantDraft = null
         // A delayed handoff must not activate the microphone on a later unrelated visit.
         intent?.removeExtra(AssistantHandoff.EXTRA_TICKET)
         service?.listener = null
         super.onPause()
     }
     override fun onDestroy() {
-        perceptionUi.removeCallbacks(voiceRefresh)
+        closeWebDictation()
+        pendingAssistantDraft = null
         if (::obsidian.isInitialized) obsidian.destroy()
         service?.listener = null
         if (bound) unbindService(connection)

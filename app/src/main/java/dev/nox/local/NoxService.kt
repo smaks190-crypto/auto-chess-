@@ -159,6 +159,10 @@ class NoxService : Service() {
     }
     private val commandTimeout = Runnable {
         if (listening && listeningMode == VoiceInputMode.MANUAL) {
+            if (webDictationActive) {
+                stopWebDictation(webDictationSession)
+                return@Runnable
+            }
             stopListening()
             status = if (background) "Жду имя «Нокс»" else "Голосовая команда не получена"
             publish()
@@ -169,6 +173,8 @@ class NoxService : Service() {
             if (intent.action == Intent.ACTION_SCREEN_OFF) {
                 if (generating) generationCancelled = true
                 voiceEpoch++
+                webDictationResult = ""
+                webDictationSession++
                 if (listeningMode != VoiceInputMode.LOCKED_WAKE) stopListening()
                 stopSpeech()
                 if (background) status = lockedStatus()
@@ -1196,12 +1202,55 @@ class NoxService : Service() {
 
     internal fun clearChat() { if (!busy) { history.clear(); persistHistory(); partial = ""; publish() } }
 
+    internal var webDictationActive = false
+        private set
+    internal var webDictationSession = 0L
+        private set
+    internal var webDictationResult = ""
+        private set
+
     internal fun cancelManualVoice() {
         if (listeningMode == VoiceInputMode.MANUAL) {
+            if (webDictationActive) cancelWebDictation(webDictationSession)
+            else {
+                stopListening()
+                status = "Микрофон выключен"
+                publish()
+            }
+        }
+    }
+
+    /** A UI-owned dictation session never routes recognized speech as a command. */
+    internal fun startWebDictation(): Long? {
+        if (destroyed || busy || activeSpeech != null || speaking || !unlocked() ||
+            (listening && !waitingForName)) return null
+        webDictationSession++
+        webDictationResult = ""
+        wakeDetected = false
+        if (waitingForName) stopListening()
+        startVoice(VoiceInputMode.MANUAL, dictation = true)
+        return if (webDictationActive && listening && listeningMode == VoiceInputMode.MANUAL)
+            webDictationSession else null
+    }
+
+    internal fun stopWebDictation(session: Long) {
+        if (session != webDictationSession || !webDictationActive) return
+        webDictationResult = if (unlocked()) recognizedText.trim().take(2000) else ""
+        stopListening()
+        status = if (webDictationResult.isEmpty()) "Речь не распознана" else "Диктовка готова"
+        publish()
+    }
+
+    internal fun cancelWebDictation(session: Long) {
+        if (session != webDictationSession) return
+        val wasActive = webDictationActive
+        webDictationSession++
+        webDictationResult = ""
+        if (wasActive) {
             stopListening()
             status = "Микрофон выключен"
-            publish()
         }
+        publish()
     }
 
     internal fun listen() {
@@ -1211,7 +1260,7 @@ class NoxService : Service() {
         startVoice(VoiceInputMode.MANUAL)
     }
 
-    private fun startVoice(mode: VoiceInputMode) {
+    private fun startVoice(mode: VoiceInputMode, dictation: Boolean = false) {
         if (destroyed || listening || activeSpeech != null || speaking) return
         if (busy) { status = "Подожди, Нокс занят…"; publish(); return }
         if (mode != VoiceInputMode.MANUAL && !background) return
@@ -1225,6 +1274,7 @@ class NoxService : Service() {
         }
         loopBlocked = false
         stopListening()
+        webDictationActive = dictation
         val token = ++speechId
         try {
             val engine = recognizer ?: SilentRecognizer(applicationContext).also { recognizer = it }
@@ -1271,6 +1321,15 @@ class NoxService : Service() {
                 }
                 override fun onResult(text: String) {
                     if (token != speechId || !listening) return
+                    if (dictation) {
+                        webDictationResult = if (webDictationActive && unlocked() && activeSpeech == null && !speaking)
+                            text.trim().take(2000) else ""
+                        stopListening()
+                        recognitionFailures = 0; retryAt = 0L
+                        status = if (webDictationResult.isEmpty()) "Диктовка завершена" else "Диктовка готова"
+                        publish()
+                        return
+                    }
                     stopListening()
                     recognitionFailures = 0; retryAt = 0L
                     if (!BackgroundVoicePolicy.canCapture(mode, background, unlocked()) ||
@@ -1294,7 +1353,7 @@ class NoxService : Service() {
                 override fun onError(message: String, permanent: Boolean) {
                     if (token == speechId && listening) recognitionFailed(message, permanent)
                 }
-            }, acceptFinal = { WakeWordPolicy.route(mode, it) != WakeInput.Ignore }, emitLive = live,
+            }, acceptFinal = { if (dictation) it.isNotBlank() else WakeWordPolicy.route(mode, it) != WakeInput.Ignore }, emitLive = live,
                 preferBluetooth = preferBluetooth)
         } catch (e: Exception) {
             recognitionFailed("Ошибка микрофона: " + e.message, true)
@@ -1309,6 +1368,7 @@ class NoxService : Service() {
         listeningMode = null
         microphoneRoute = ""
         listening = false; voiceLevel = 0f; recognizedText = ""
+        webDictationActive = false
     }
 
     internal fun benchmark(index: Int, gpu: Boolean, vision: Boolean) {

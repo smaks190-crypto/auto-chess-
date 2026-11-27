@@ -8,6 +8,7 @@ internal class AssistantLaunchGate(
     private val ttlMs: Long = 5000L
 ) {
     private var pending: String? = null
+    private var pendingDraft: String? = null
     private var deadline = 0L
     init { require(ttlMs > 0) }
 
@@ -27,5 +28,21 @@ internal class AssistantLaunchGate(
         return true
     }
 
-    @Synchronized fun revoke() { pending = null; deadline = 0L }
+    @Synchronized fun issueDraft(activeAssistant: Boolean, unlocked: Boolean, text: String): String? {
+        if (text.isBlank()) { revoke(); return null }
+        val token = issue(activeAssistant, unlocked) ?: return null
+        pendingDraft = text.take(2000)
+        return token
+    }
+
+    @Synchronized fun consumeDraft(token: String?, activeAssistant: Boolean, unlocked: Boolean): String? {
+        val value = pendingDraft
+        return if (consume(token, activeAssistant, unlocked)) value else null
+    }
+
+    @Synchronized fun expire(token: String) {
+        if (pending == token) revoke()
+    }
+
+    @Synchronized fun revoke() { pending = null; pendingDraft = null; deadline = 0L }
 }
