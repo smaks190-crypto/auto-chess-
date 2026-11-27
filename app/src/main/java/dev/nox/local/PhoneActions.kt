@@ -20,7 +20,16 @@ class NoxNavigationService : AccessibilityService() {
     }
     override fun onCreate() { super.onCreate(); lifecycle("create") }
     override fun onServiceConnected() { super.onServiceConnected(); active.set(this); lifecycle("connected") }
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (current !== this || event == null) return
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
+            AccessibilityEvent.TYPE_VIEW_CLICKED,
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ->
+                uiChanges.publish(event.packageName?.toString(), event.windowId)
+        }
+    }
     override fun onInterrupt() { lifecycle("interrupt") }
     override fun onUnbind(intent: Intent?): Boolean {
         active.compareAndSet(this, null)
@@ -34,6 +43,7 @@ class NoxNavigationService : AccessibilityService() {
     }
     companion object {
         private val active = AtomicReference<NoxNavigationService?>()
+        internal val uiChanges = UiChangeRelay()
         internal val current: NoxNavigationService? get() = active.get()
 
         // Compare parsed components, not their short/long string spellings.

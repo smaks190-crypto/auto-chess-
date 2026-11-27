@@ -289,7 +289,9 @@ internal class AndroidAgentTools(
         snapshot = screen
         return describeGoal(screen)
     }
-    private fun describeAfter(prefix: String, previous: Screen? = null, fastRead: Boolean = false, condition: (Screen) -> Boolean = { true }): ToolOutcome {
+    private fun describeAfter(prefix: String, previous: Screen? = null, fastRead: Boolean = false,
+                              changeSignal: UiChangeSignal? = null, changeMarker: Long = 0L,
+                              condition: (Screen) -> Boolean = { true }): ToolOutcome {
         // This runs on the agent worker. Only bounded, read-only captures are posted to main.
         check(Looper.myLooper() != Looper.getMainLooper()) { "Post-action settle must run off main" }
         val started = SystemClock.elapsedRealtime()
@@ -329,10 +331,46 @@ internal class AndroidAgentTools(
             }
         }
         try {
-            waitForRead(if (fastRead) 100 else 150)
-            val screen = settleObservation(5, { waitForRead(if (fastRead) 300 else 650) }, ::read) { observed ->
+            fun matches(observed: Screen): Boolean {
                 checkActive()
-                if (condition(observed)) true else { reason = "EXPECT_NOT_MET"; false }
+                if (condition(observed)) return true
+                reason = "EXPECT_NOT_MET"
+                return false
+            }
+            val screen = if (fastRead && changeSignal != null) {
+                var marker = changeMarker
+                var first = true
+                var result: Screen? = null
+                var eventWakes = 0
+                var fallbackWakes = 0
+                var reads = 0
+                while (remaining() > 0L) {
+                    checkActive()
+                    // Bound read rate under event storms; use fallback even if Android emits no event.
+                    if (!first) waitForRead(40L)
+                    val next = try {
+                        changeSignal.awaitAfter(marker, minOf(if (first) 100L else 200L, remaining()), ::checkActive)
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        throw AgentDenied("Ожидание изменения экрана прервано.")
+                    }
+                    if (next != marker) eventWakes++ else fallbackWakes++
+                    marker = next
+                    first = false
+                    if (remaining() == 0L) break
+                    reads++
+                    val observed = try { read() } catch (_: AgentToolUnavailable) { null }
+                    // The event is never proof of success. Only the fresh postcondition is.
+                    if (observed != null && remaining() > 0L && matches(observed)) {
+                        result = observed
+                        break
+                    }
+                }
+                Log.i("NoxCapture", "settle_event wakes=$eventWakes fallback=$fallbackWakes reads=$reads verified=${result != null}")
+                result
+            } else {
+                waitForRead(if (fastRead) 100 else 150)
+                settleObservation(5, { waitForRead(if (fastRead) 300 else 650) }, ::read, ::matches)
             }
             checkActive()
             if (screen == null) {
@@ -524,6 +562,10 @@ internal class AndroidAgentTools(
             pause(250)
         }
         snapshot = null
+        // Subscribe before dispatch; marker captured immediately before the single mutation.
+        val changeSignal = if (plan != null) NoxNavigationService.uiChanges.begin(before.pkg, before.window) else null
+        var changeMarker = 0L
+        try {
         val accepted = try {
             ui {
                 require(permissions.allowed(before.pkg)) { "Разрешение отозвано" }
@@ -544,6 +586,7 @@ internal class AndroidAgentTools(
                         if (!node.isClickable) throw NodeChanged("CAPABILITY")
                         if (plan != null && !plan.dispatch(before.pkg, before.window, target.resource))
                             throw AgentDenied("Разрешённый план истёк или изменился. Действие не выполнено.")
+                        changeMarker = changeSignal?.mark() ?: 0L
                         node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     }
                 }
@@ -562,7 +605,8 @@ internal class AndroidAgentTools(
         }
         val outcome = try {
             describeAfter("Android принял действие: " + actionText + ". Проверяй фактический результат.",
-                if (goal.arithmetic) before else null, fastRead = plan != null) { after ->
+                if (goal.arithmetic) before else null, fastRead = plan != null,
+                changeSignal = changeSignal, changeMarker = changeMarker) { after ->
                 !goal.arithmetic || goal.afterClick(beforeGoal, target.resource, goalObservation(after))
             }
         } catch (e: Exception) { plan?.revoke(); throw e }
@@ -572,6 +616,9 @@ internal class AndroidAgentTools(
             } else plan.revoke()
         }
         return outcome
+        } finally {
+            if (changeSignal != null) NoxNavigationService.uiChanges.end(changeSignal)
+        }
     }
 
     fun execute(action: AgentDecision.Tool): ToolOutcome {
