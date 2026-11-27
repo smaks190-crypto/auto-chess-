@@ -3,6 +3,7 @@ package dev.nox.local
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.role.RoleManager
 import android.content.*
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -48,6 +49,7 @@ class MainActivity : Activity() {
     private lateinit var stopGeneration: Button
     private lateinit var progress: ProgressBar
     private lateinit var backgroundButton: Button
+    private lateinit var systemAssistantButton: Button
     private lateinit var bluetoothInputButton: Button
     private lateinit var microphoneRouteLabel: TextView
     private lateinit var overlayButton: Button
@@ -92,6 +94,7 @@ class MainActivity : Activity() {
                 }
             }
             render()
+            consumeAssistantVoice()
         }
         override fun onServiceDisconnected(name: ComponentName?) {
             service = null; render()
@@ -199,6 +202,11 @@ class MainActivity : Activity() {
         val settings = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         settingsPage.addView(settings)
         root.addView(settingsPage, LinearLayout.LayoutParams(-1, 0, 1f))
+        settings.addView(textLabel("Системный ассистент Android", 19f).apply { typeface = Typeface.DEFAULT_BOLD })
+        systemAssistantButton = addButton(settings, "Выбрать Нокс системным ассистентом", false) {
+            chooseSystemAssistant()
+        }
+        settings.addView(textLabel("Системный жест или кнопка ассистента открывает панель Нокса. Выбор не включает микрофон автоматически; фоновое ожидание имени настраивается отдельно. Действия на заблокированном телефоне запрещены.", 13f, muted))
         settings.addView(textLabel("Голос вне приложения", 19f).apply { typeface = Typeface.DEFAULT_BOLD })
         backgroundButton = addButton(settings, "Включить фоновый голос", false) {
             toggleBackgroundVoice()
@@ -366,6 +374,7 @@ class MainActivity : Activity() {
         val exists = s?.modelFile(index)?.isFile == true
         modelButton.text = if (exists) "Запустить " + pkg.name else "Скачать и запустить · " +
             String.format(Locale.US, "%.2f", pkg.size / 1e9) + " ГБ"
+        systemAssistantButton.text = if (AssistantHandoff.active(this)) "Нокс — системный ассистент · настройки" else "Выбрать Нокс системным ассистентом"
         backgroundButton.text = if (s?.background == true) "Выключить фоновый голос" else "Включить фоновый голос"
         bluetoothInputButton.text = if (s?.preferBluetooth == true) "Bluetooth предпочтителен · отключить" else "Предпочитать Bluetooth-микрофон"
         bluetoothInputButton.isEnabled = s != null && !busy
@@ -439,6 +448,36 @@ class MainActivity : Activity() {
             .putBoolean("vision", vision.isChecked).apply()
     }
 
+    private fun chooseSystemAssistant() {
+        val role = getSystemService(RoleManager::class.java)
+        if (role != null && role.isRoleAvailable(RoleManager.ROLE_ASSISTANT) && !role.isRoleHeld(RoleManager.ROLE_ASSISTANT)) {
+            if (runCatching { startActivityForResult(role.createRequestRoleIntent(RoleManager.ROLE_ASSISTANT), 41) }.isSuccess)
+                return
+        }
+        if (runCatching { startActivity(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS)) }.isFailure)
+            runCatching { startActivity(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)) }
+                .onFailure { header.text = "Открой настройки Android → Приложения по умолчанию → Цифровой помощник" }
+    }
+
+    /** MainActivity is exported; never trust an ACTION or extra alone to start the microphone. */
+    private fun consumeAssistantVoice() {
+        if (!isVisible || service == null) return
+        val ticket = intent?.getStringExtra(AssistantHandoff.EXTRA_TICKET) ?: return
+        intent.removeExtra(AssistantHandoff.EXTRA_TICKET)
+        if (!AssistantHandoff.gate.consume(ticket, AssistantHandoff.active(this), DeviceInteraction.unlocked(this))) return
+        if (service?.busy != false) {
+            header.text = "Нокс занят или загружает модель · нажми микрофон после готовности"
+            return
+        }
+        voice(false)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        consumeAssistantVoice()
+    }
+
     private fun toggleBackgroundVoice() {
         val s = service ?: return
         if (s.background) s.disableBackground() else voice(true)
@@ -490,6 +529,7 @@ class MainActivity : Activity() {
     @Deprecated("Prototype document picker")
     override fun onActivityResult(request: Int, result: Int, data: Intent?) {
         super.onActivityResult(request, result, data)
+        if (request == 41) { render(); return }
         if (request == 31) {
             if (result == RESULT_OK && data != null && perceptionUid >= 0) {
                 runCatching {
@@ -530,9 +570,12 @@ class MainActivity : Activity() {
         service?.listener = { render() }
         service?.syncOverlay()
         render()
+        consumeAssistantVoice()
     }
     override fun onPause() {
         isVisible = false
+        // A delayed handoff must not activate the microphone on a later unrelated visit.
+        intent?.removeExtra(AssistantHandoff.EXTRA_TICKET)
         service?.listener = null
         super.onPause()
     }
