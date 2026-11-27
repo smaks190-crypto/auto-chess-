@@ -5,6 +5,10 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
+import android.content.res.ColorStateList
 import android.os.Bundle
 import android.os.SystemClock
 import android.service.voice.VoiceInteractionService
@@ -12,8 +16,14 @@ import android.service.voice.VoiceInteractionSession
 import android.service.voice.VoiceInteractionSessionService
 import android.speech.RecognitionService
 import android.speech.SpeechRecognizer
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
+import android.view.WindowInsets
+import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.util.UUID
@@ -53,43 +63,122 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
     private var shown = false
 
     override fun onCreateContentView(): View {
-        val pad = (20 * ctx.resources.displayMetrics.density).toInt()
+        val density = ctx.resources.displayMetrics.density
+        fun dp(value: Int) = (value * density + 0.5f).toInt()
+        val root = FrameLayout(ctx).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            setOnClickListener { hide() }
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            setOnApplyWindowInsetsListener { v, insets ->
+                val safe = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                v.setPadding(safe.left, safe.top, safe.right, safe.bottom)
+                insets
+            }
+        }
         val panel = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
-            setBackgroundColor(Color.rgb(23, 25, 34))
+            isClickable = true
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(20), dp(18), dp(20), dp(18))
+            background = GradientDrawable().apply {
+                setColor(Color.rgb(25, 25, 28))
+                cornerRadius = dp(24).toFloat()
+                setStroke(dp(1), Color.rgb(54, 52, 61))
+            }
+            elevation = dp(12).toFloat()
         }
-        panel.addView(TextView(ctx).apply {
+        val header = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val logo = ImageView(ctx).apply {
+            setImageResource(R.drawable.ic_nox)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        header.addView(logo, LinearLayout.LayoutParams(dp(48), dp(48)))
+        val identity = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), 0, 0, 0)
+        }
+        identity.addView(TextView(ctx).apply {
             text = "N.O.X."
-            textSize = 26f
+            textSize = 18f
             setTypeface(typeface, Typeface.BOLD)
-            setTextColor(Color.rgb(182, 161, 255))
+            setTextColor(Color.rgb(245, 243, 248))
         })
         status = TextView(ctx).apply {
-            textSize = 15f
-            setTextColor(Color.WHITE)
-        }.also { panel.addView(it) }
-        talk = Button(ctx).apply {
-            text = "Говорить"
-            isAllCaps = false
-            setOnClickListener { launch(true) }
-        }.also { panel.addView(it) }
-        chat = Button(ctx).apply {
-            text = "Открыть Нокс"
-            isAllCaps = false
-            setOnClickListener { launch(false) }
-        }.also { panel.addView(it) }
-        panel.addView(Button(ctx).apply {
-            text = "Закрыть"
-            isAllCaps = false
-            setOnClickListener { hide() }
+            textSize = 13f
+            setTextColor(Color.rgb(190, 187, 198))
+            maxLines = 2
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        }.also { identity.addView(it) }
+        header.addView(identity, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        panel.addView(header)
+
+        talk = action("Говорить", R.drawable.ic_nox_mic, Color.rgb(201, 182, 255), Color.rgb(32, 29, 40)) {
+            launch(true)
+        }.also { panel.addView(it, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)).apply {
+            topMargin = dp(16)
+        }) }
+        val secondary = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        chat = action("Открыть чат", R.drawable.ic_nox_chat, Color.rgb(232, 229, 238), Color.rgb(43, 43, 48)) {
+            launch(false)
+        }.also { secondary.addView(it, LinearLayout.LayoutParams(0, dp(48), 1f)) }
+        secondary.addView(action("Закрыть", R.drawable.ic_nox_close, Color.rgb(208, 205, 215), Color.rgb(43, 43, 48)) {
+            hide()
+        }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(8) })
+        panel.addView(secondary, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply {
+            topMargin = dp(8)
         })
+        val panelParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        panelParams.setMargins(dp(12), 0, dp(12), dp(12))
+        root.addView(panel, panelParams)
         refresh()
-        return panel
+        return root
+    }
+
+    private fun action(label: String, icon: Int, foreground: Int, backgroundColor: Int, onClick: () -> Unit): Button {
+        val density = ctx.resources.displayMetrics.density
+        val height = (48 * density + 0.5f).toInt()
+        return Button(ctx).apply {
+            text = label
+            isAllCaps = false
+            stateListAnimator = null
+            minWidth = 0
+            minimumWidth = 0
+            setPadding((12 * density).toInt(), 0, (12 * density).toInt(), 0)
+            setCompoundDrawablesRelativeWithIntrinsicBounds(icon, 0, 0, 0)
+            compoundDrawablePadding = (6 * density).toInt()
+            textSize = 15f
+            gravity = Gravity.CENTER
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(foreground)
+            val surface = GradientDrawable().apply {
+                setColor(backgroundColor)
+                cornerRadius = height / 2f
+            }
+            backgroundTintList = null
+            background = RippleDrawable(ColorStateList.valueOf(Color.rgb(80, 70, 100)), surface, null)
+            isClickable = true
+            isFocusable = true
+            minHeight = height
+            contentDescription = label
+            setOnClickListener { onClick() }
+        }
     }
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
+        getWindow().window?.apply {
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            setDimAmount(0.28f)
+        }
         shown = true
         refresh()
     }
@@ -99,9 +188,11 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
     }
     private fun refresh() {
         val allowed = shown && AssistantHandoff.active(ctx) && DeviceInteraction.unlocked(ctx)
-        status?.text = if (allowed) "Локальный ассистент · выбери действие" else "Разблокируй телефон или выбери Нокса системным ассистентом"
+        status?.text = if (allowed) "Локальный ассистент готов" else "Разблокируй телефон или выбери Нокса системным ассистентом"
         talk?.isEnabled = allowed
         chat?.isEnabled = allowed
+        talk?.alpha = if (allowed) 1f else 0.45f
+        chat?.alpha = if (allowed) 1f else 0.45f
     }
     private fun launch(voice: Boolean) {
         if (!shown || !AssistantHandoff.active(ctx) || !DeviceInteraction.unlocked(ctx)) {
