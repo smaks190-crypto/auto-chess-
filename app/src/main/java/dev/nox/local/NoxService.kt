@@ -927,8 +927,9 @@ class NoxService : Service() {
                         MainActivity.isVisible ||
                             (background && bubble != null && Settings.canDrawOverlays(this))
                     })
+                model.withAgentPlanner(stop, shortDecisions = goal.arithmetic) { decide ->
                 AgentCore(
-                    decide = { model.decide(it, stop) },
+                    decide = decide,
                     execute = { error("Legacy executor disabled") },
                     executeTyped = tools::execute,
                     cancelled = stop,
@@ -942,6 +943,7 @@ class NoxService : Service() {
                         }
                     } }
                 ).run(text, previous)
+                }
             } else model.chat(prompt, image, deep, stop) { chunk ->
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastUpdate >= 80) {
