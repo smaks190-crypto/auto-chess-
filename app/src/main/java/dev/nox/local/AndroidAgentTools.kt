@@ -248,7 +248,7 @@ internal class AndroidAgentTools(
 
     private fun goalObservation(screen: Screen) = GoalObservation(goal.sequence(), screen.pkg,
         screen.nodes.map { GoalNode(it.resource, it.label, it.id, it.hint,
-            it.identity.description.orEmpty(), it.kind, it.enabled, it.clickable, it.editable) })
+            it.identity.description.orEmpty(), it.kind, it.enabled, it.clickable, it.editable, it.identity.text) })
     private fun describeGoal(screen: Screen): String = screen.describe() +
         (goal.hint(goalObservation(screen))?.let { "\n" + it } ?: "")
 
@@ -260,6 +260,8 @@ internal class AndroidAgentTools(
         val observed = goalObservation(current)
         if (goal.searchNavigation) {
             if (goal.finish(observed) != null) return AgentDecision.Finish("")
+            val query = goal.searchQuery
+            if (query != null) goal.searchInput(observed)?.let { return AgentDecision.Tool("type", it, query) }
             return goal.searchNext(observed)?.let { AgentDecision.Tool("click", it) }
         }
         if (!goal.arithmetic || !goal.allowsLaunch(current.pkg)) return null
@@ -524,8 +526,15 @@ internal class AndroidAgentTools(
             return ToolOutcome.RejectedBeforeAction("UNSUPPORTED_NODE: узел не поддерживает это действие. Выбери другой доступный узел после observe.")
         }
         val beforeGoal = goalObservation(before)
-        if (goal.searchNavigation && (action.name != "click" || goal.searchNext(beforeGoal) != target.id))
-            return ToolOutcome.RejectedBeforeAction("Поиск: разрешён только однозначно распознанный следующий элемент навигации. Не вводи сообщения и не меняй настройки.\n" + describeGoal(before))
+        if (goal.searchNavigation) {
+            val allowed = when (action.name) {
+                "click" -> goal.searchNext(beforeGoal) == target.id
+                "type" -> goal.searchQuery != null && action.text == goal.searchQuery && goal.searchInput(beforeGoal) == target.id
+                else -> false
+            }
+            if (!allowed) return ToolOutcome.RejectedBeforeAction(
+                "Поиск: разрешена только проверенная навигация или точный запрошенный текст в однозначном поле поиска. Не вводи сообщения.\n" + describeGoal(before))
+        }
         goal.reject(beforeGoal, action.name, target.resource)?.let {
             if (calcPlan != null) { calcPlan?.revoke(); throw AgentDenied("План изменился. Задача остановлена.") }
             return ToolOutcome.RejectedBeforeAction(it + "\n" + describeGoal(before))
@@ -533,7 +542,7 @@ internal class AndroidAgentTools(
         val generic = !goal.arithmetic && !goal.searchNavigation
         val beforeEffect = before.effectFrame(beforeGoal.seq)
         val targetEffect = target.effectNode()
-        if (generic) {
+        if (generic || action.name == "type") {
             val rejection = if (action.name == "click") EffectCheck.clickRejection(beforeEffect, action.expect)
                 else EffectCheck.typeRejection(targetEffect, action.text)
             if (rejection != null)
@@ -628,6 +637,11 @@ internal class AndroidAgentTools(
                 changeSignal = changeSignal, changeMarker = changeMarker) { after ->
                 when {
                     goal.arithmetic -> goal.afterClick(beforeGoal, target.resource, goalObservation(after))
+                    goal.searchNavigation && action.name == "type" -> {
+                        val observed = goalObservation(after)
+                        goal.searchTyped(beforeGoal, observed) &&
+                            EffectCheck.typed(beforeEffect, mutation, after.effectFrame(observed.seq), targetEffect, action.text)
+                    }
                     goal.searchNavigation -> goal.searchAfter(beforeGoal, goalObservation(after))
                     action.name == "click" -> EffectCheck.clicked(beforeEffect, mutation, after.effectFrame(goal.sequence()), action.expect)
                     else -> EffectCheck.typed(beforeEffect, mutation, after.effectFrame(goal.sequence()), targetEffect, action.text)
@@ -651,8 +665,9 @@ internal class AndroidAgentTools(
             calcPlan?.revoke()
             throw AgentDenied("Для разрешённого плана допустимы только подтверждённые клавиши. Задача остановлена.")
         }
-        if (goal.searchNavigation && action.name !in setOf("apps", "launch", "observe", "click"))
-            return ToolOutcome.RejectedBeforeAction("Для открытия поиска допустимы только поиск приложения, наблюдение и проверенная навигация.")
+        if (goal.searchNavigation && action.name !in setOf("apps", "launch", "observe", "click") &&
+            !(action.name == "type" && goal.searchQuery != null))
+            return ToolOutcome.RejectedBeforeAction("Для поиска допустимы только поиск приложения, наблюдение, проверенная навигация и явно запрошенный ввод поиска.")
         if (goal.arithmetic && action.name !in setOf("apps", "launch", "observe", "click"))
             return ToolOutcome.RejectedBeforeAction("Для этой задачи нужны только кнопки калькулятора.")
         if (action.name == "launch" && !goal.allowsLaunch(action.arg))
@@ -664,7 +679,8 @@ internal class AndroidAgentTools(
                     .map { it.loadLabel(pm).toString() to it.activityInfo.packageName }
                     .distinctBy { it.second }
                     .filter { permitted(it.second) }
-                    .filter { action.arg.isBlank() || it.first.contains(action.arg, true) || it.second.contains(action.arg, true) }
+                    .filter { action.arg.isBlank() || it.first.contains(action.arg, true) || it.second.contains(action.arg, true) ||
+                        SearchNavigation.matchesApp(action.arg, it.first, it.second) }
                     .sortedBy { it.first.lowercase(Locale.ROOT) }.take(80)
                 list.forEach { apps[it.second] = it.first }
                 ToolOutcome.Ok(list.joinToString("\n") { it.first + " = " + it.second }.ifBlank { "Не найдено. Попробуй другое написание или пустой поиск." })

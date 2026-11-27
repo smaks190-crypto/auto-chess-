@@ -13,11 +13,34 @@ internal object SearchNavigation {
     private fun control(n: GoalNode, names: Set<String>) =
         n.enabled && n.clickable && !n.editable && n.kind in setOf("ImageButton", "ImageView", "Button") &&
             norm(n.description) in names
-    fun target(request: String): String? {
-        val en = Regex("^(?:open|launch)\\s+([\\p{L}0-9 ._-]{1,80}?)\\s+and\\s+(?:open|show)\\s+(?:the\\s+)?search[.!]?(?:\\s+do not send anything[.!]?)?$", RegexOption.IGNORE_CASE)
-        val ru = Regex("^(?:открой|запусти)\\s+([\\p{L}0-9 ._-]{1,80}?)\\s+и\\s+(?:открой|покажи)\\s+поиск[.!]?(?:\\s+ничего не отправляй[.!]?)?$", RegexOption.IGNORE_CASE)
-        return (en.matchEntire(request.trim()) ?: ru.matchEntire(request.trim()))?.groupValues?.get(1)?.trim()
+    data class Request(val app: String, val query: String? = null)
+
+    fun request(input: String): Request? {
+        val value = input.trim()
+        val openEn = Regex("^(?:open|launch)\\s+([\\p{L}0-9 ._-]{1,80}?)\\s+and\\s+(?:open|show)\\s+(?:the\\s+)?search[.!]?(?:\\s+do not send anything[.!]?)?$", RegexOption.IGNORE_CASE)
+        val openRu = Regex("^(?:открой|запусти)\\s+([\\p{L}0-9 ._-]{1,80}?)\\s+и\\s+(?:открой|покажи)\\s+поиск[.!]?(?:\\s+ничего не отправляй[.!]?)?$", RegexOption.IGNORE_CASE)
+        val openMatch = openEn.matchEntire(value) ?: openRu.matchEntire(value)
+        if (openMatch != null) return Request(openMatch.groupValues[1].trim())
+
+        val queryEn = Regex("^open\\s+(telegram)\\s+and\\s+type\\s+(.+?)\\s+in\\s+search[.!]?$", RegexOption.IGNORE_CASE)
+        val queryRu = Regex("^открой\\s+(telegram|телеграм|тг)\\s+и\\s+(?:напиши|введи)\\s+в\\s+поиск(?:е)?\\s+(.+?)[.!]?$", RegexOption.IGNORE_CASE)
+        val queryMatch = queryEn.matchEntire(value) ?: queryRu.matchEntire(value)
+        if (queryMatch != null) {
+            val app = queryMatch.groupValues[1]
+            val query = queryMatch.groupValues[2]
+            val parsedQuery = when {
+                query.startsWith('"') && query.endsWith('"') && query.length >= 2 &&
+                    '"' !in query.substring(1, query.length - 1) -> query.substring(1, query.length - 1)
+                query.matches(Regex("[\\p{L}0-9_-]{1,80}")) -> query
+                else -> return null
+            }
+            if (parsedQuery.isBlank() || parsedQuery.length > 80 || parsedQuery.any(Char::isISOControl)) return null
+            return Request(app, parsedQuery)
+        }
+        return null
     }
+
+    fun target(request: String): String? = request(request)?.app
     fun matchesApp(target: String, label: String, pkg: String): Boolean {
         val t = norm(target)
         val l = norm(label)
@@ -33,6 +56,12 @@ internal object SearchNavigation {
         if (composers == 0 && nodes.count { control(it, names) } == 1) return State.LIST
         return State.UNKNOWN
     }
+    /** Input requires an unambiguous search field; never a message composer. */
+    fun inputField(nodes: List<GoalNode>): GoalNode? =
+        if (state(nodes) == State.SEARCH && nodes.count { it.enabled && it.editable } == 1)
+            nodes.singleOrNull { field(it, names) }?.takeIf { it.id.isNotBlank() }
+        else null
+
     fun next(nodes: List<GoalNode>): String? = when (state(nodes)) {
         State.COMPOSER -> nodes.single { control(it, back) }.id.takeIf { it.isNotBlank() }
         State.LIST -> nodes.single { control(it, names) }.id.takeIf { it.isNotBlank() }

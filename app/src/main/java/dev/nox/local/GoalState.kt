@@ -5,7 +5,8 @@ import java.math.BigInteger
 /** Independent, deliberately narrow verifier. Unknown goals remain unverified. */
 internal data class GoalNode(val resource: String, val label: String,
     val id: String = "", val hint: String = "", val description: String = "", val kind: String = "",
-    val enabled: Boolean = true, val clickable: Boolean = false, val editable: Boolean = false)
+    val enabled: Boolean = true, val clickable: Boolean = false, val editable: Boolean = false,
+    val text: String? = null)
 internal data class GoalObservation(val seq: Long, val pkg: String, val nodes: List<GoalNode>)
 internal class GoalState(private val request: String) {
     companion object {
@@ -15,6 +16,7 @@ internal class GoalState(private val request: String) {
         private val expression = Regex("(?<![0-9.,-])([0-9]{1,12})\\s*([+−-])\\s*([0-9]{1,12})(?![0-9.,])")
         private val numberWords = mapOf("ноль" to "0", "один" to "1", "два" to "2", "три" to "3", "четыре" to "4", "пять" to "5", "шесть" to "6", "семь" to "7", "восемь" to "8", "девять" to "9")
     }
+    private val searchRequest = SearchNavigation.request(request)
     private val normalized = request.lowercase().let { original ->
         var s = original
         fun wordPattern(word: String) = Regex("(?<![\\p{L}\\p{N}_])" + Regex.escape(word) + "(?![\\p{L}\\p{N}_])")
@@ -24,7 +26,7 @@ internal class GoalState(private val request: String) {
     private val match = expression.findAll(normalized).toList().singleOrNull()
         ?.takeIf { m ->
             val remainder = normalized.removeRange(m.range)
-            (normalized.contains("calculator") || normalized.contains("калькулятор")) &&
+            searchRequest == null && (normalized.contains("calculator") || normalized.contains("калькулятор")) &&
                 remainder.none { it.isDigit() || it in "+−-*/×÷=" } &&
                 m.groupValues[1].let { it == "0" || !it.startsWith("0") } &&
                 m.groupValues[3].let { it == "0" || !it.startsWith("0") }
@@ -44,7 +46,8 @@ internal class GoalState(private val request: String) {
     }
     private val openTarget = Regex("^(?:открой|запусти|open|launch)\\s+([\\p{L}0-9 ._-]+?)[.!?]?\\s*$", RegexOption.IGNORE_CASE)
         .matchEntire(request.trim())?.groupValues?.get(1)?.trim()
-    val searchTarget = SearchNavigation.target(request)
+    val searchTarget = searchRequest?.app
+    val searchQuery = searchRequest?.query
     val searchNavigation: Boolean get() = searchTarget != null
     val supported: Boolean get() = formula != null || openTarget != null || searchNavigation
     fun matchesSearchApp(pkg: String, label: String): Boolean =
@@ -65,6 +68,18 @@ internal class GoalState(private val request: String) {
     fun searchAfter(before: GoalObservation, after: GoalObservation): Boolean =
         searchScreen(before) && searchScreen(after) && after.seq > lastMutation && after.seq > before.seq &&
             SearchNavigation.advanced(before.nodes, after.nodes)
+    fun searchInput(o: GoalObservation): String? {
+        val query = searchQuery ?: return null
+        if (!searchScreen(o) || o.seq <= lastMutation) return null
+        val field = SearchNavigation.inputField(o.nodes) ?: return null
+        return field.id.takeIf { field.text != query }
+    }
+    fun searchTyped(before: GoalObservation, after: GoalObservation): Boolean {
+        val query = searchQuery ?: return false
+        return searchScreen(before) && searchScreen(after) && before.seq < lastMutation &&
+            after.seq > lastMutation && SearchNavigation.inputField(before.nodes)?.let { it.text != query } == true &&
+            SearchNavigation.inputField(after.nodes)?.text == query
+    }
     fun mutation(): Long { verifiedEqualsSeq = null; return sequence().also { lastMutation = it } }
     private fun value(o: GoalObservation): String? {
         if (o.pkg != CALC) return null
@@ -147,9 +162,13 @@ internal class GoalState(private val request: String) {
             return null
         }
         if (searchNavigation) {
-            return if (searchScreen(o) && SearchNavigation.state(o.nodes) == SearchNavigation.State.SEARCH)
-                "В приложении " + launchName + " подтверждено открытие поиска. Сообщения не отправлял."
-            else null
+            if (!searchScreen(o) || SearchNavigation.state(o.nodes) != SearchNavigation.State.SEARCH) return null
+            val query = searchQuery
+            if (query != null) {
+                if (SearchNavigation.inputField(o.nodes)?.text != query) return null
+                return "В приложении " + launchName + " подтверждён текст поиска: «" + query + "». Сообщения не отправлял."
+            }
+            return "В приложении " + launchName + " подтверждено открытие поиска. Сообщения не отправлял."
         }
         val target = openTarget ?: return null
         if (o.pkg == launchPkg && (SearchNavigation.matchesApp(target, launchName.orEmpty(), launchPkg.orEmpty()) || (o.pkg == CALC && target.equals("calculator", true))))

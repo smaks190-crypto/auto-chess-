@@ -45,11 +45,63 @@ class SearchNavigationTest {
     @Test fun narrowRequestAndAppBinding() {
         assertNull(SearchNavigation.target("Open Telegram and open search and send hello"))
         assertNull(SearchNavigation.target("Открой Telegram и напиши привет"))
+        assertEquals(SearchNavigation.Request("Telegram"), SearchNavigation.request("Open Telegram and open Search. Do not send anything"))
         val g = GoalState("Открой тг и открой поиск. Ничего не отправляй")
         assertTrue(g.matchesSearchApp(pkg, "Telegram"))
         assertFalse(g.matchesSearchApp("other.app", "Other"))
         assertNull(g.searchNext(GoalObservation(g.sequence(), pkg, listOf(search))))
     }
+    @Test fun explicitTelegramSearchQueriesAreParsedNarrowly() {
+        assertEquals(SearchNavigation.Request("Telegram", "дурка"), SearchNavigation.request("Открой Telegram и напиши в поиске дурка"))
+        assertEquals(SearchNavigation.Request("тг", "дурка"), SearchNavigation.request("Открой тг и введи в поиск дурка"))
+        assertEquals(SearchNavigation.Request("Telegram", "durka"), SearchNavigation.request("Open Telegram and type durka in search"))
+        assertEquals(SearchNavigation.Request("Telegram", "two words"), SearchNavigation.request("Открой Telegram и напиши в поиске \"two words\""))
+        assertNull(SearchNavigation.request("Открой Telegram и напиши в поиске \"\""))
+        assertNull(SearchNavigation.request("Открой Telegram и напиши в поиске дурка и отправь"))
+        assertNull(SearchNavigation.request("Открой Telegram и напиши привет"))
+        assertNull(SearchNavigation.request("Открой WhatsApp и напиши в поиске дурка"))
+        assertNull(SearchNavigation.request("Открой Telegram и напиши в поиске два слова"))
+        assertNull(SearchNavigation.request("Открой Telegram и напиши в поиске \"bad\nquery\""))
+    }
+    @Test fun typedQueryRequiresFreshExactSearchField() {
+        val goal = GoalState("Открой Telegram и напиши в поиске дурка")
+        assertTrue(goal.searchNavigation)
+        assertEquals("дурка", goal.searchQuery)
+        goal.launched(pkg, "Telegram")
+        fun observed(vararg nodes: GoalNode, app: String = pkg) =
+            GoalObservation(goal.sequence(), app, nodes.toList())
+        val empty = field.copy(text = "")
+        val before = observed(empty)
+        assertNull(goal.finish(before))
+        assertEquals(field.id, goal.searchInput(before))
+        assertNull(goal.searchInput(observed(composer)))
+        assertNull(goal.searchInput(observed(empty, composer)))
+        assertNull(goal.searchInput(observed(empty, empty.copy(id = "9"))))
+        assertNull(goal.searchInput(observed(empty, app = "other")))
+        goal.mutation()
+        assertNull(goal.searchInput(before))
+        assertFalse(goal.searchTyped(before, observed(empty.copy(text = "wrong"))))
+        assertFalse(goal.searchTyped(before, observed(composer.copy(text = "дурка"))))
+        assertFalse(goal.searchTyped(before, observed(empty.copy(text = "дурка"), app = "other")))
+        val after = observed(empty.copy(text = "дурка"))
+        assertTrue(goal.searchTyped(before, after))
+        assertNotNull(goal.finish(after))
+        assertNull(goal.searchInput(after))
+        assertNull(goal.finish(observed(empty.copy(text = "wrong"))))
+        assertNull(goal.finish(observed(empty.copy(text = "дурка"), composer)))
+    }
+
+    @Test fun openOnlyDoesNotPermitSearchInputAndQueryDoesNotBecomeArithmetic() {
+        val open = GoalState("Открой Telegram и открой поиск")
+        open.launched(pkg, "Telegram")
+        val o = GoalObservation(open.sequence(), pkg, listOf(field))
+        assertNull(open.searchInput(o))
+        assertNotNull(open.finish(o))
+        val query = GoalState("""Открой Telegram и напиши в поиске "calculator 2+2"""")
+        assertEquals("calculator 2+2", query.searchQuery)
+        assertFalse(query.arithmetic)
+    }
+
     @Test fun rejectedLaunchPreconditionIsRecoverableWithoutRepeatingMutation() {
         val calls = mutableListOf<String>()
         var i = 0
