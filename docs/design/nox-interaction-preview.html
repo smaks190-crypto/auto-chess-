@@ -103,6 +103,22 @@
 @media(prefers-reduced-motion:reduce){.composer:after,.thinkgrid i{animation:none!important}.voicecore{transform:none!important}}
 .reduced .voicecore{transform:none!important}
 
+
+/* Inline voice composition: no additional dialog, audio is explicitly simulated. */
+.composer.voice-active{border-color:#5c4c70;box-shadow:0 0 24px -12px #bba3ef70,0 7px 25px #0007;padding:13px 11px 10px}
+.listenLabel{display:flex;align-items:center;justify-content:space-between;gap:6px;color:#dac9ff;padding:0 4px 7px;font-size:13px}
+.listenLabel strong{font-weight:650}.listenLabel span{font-size:10px;color:var(--muted);text-align:right}
+.voiceTranscript{padding:4px;min-height:35px;color:#eee7fa;font-size:15px;line-height:1.45;overflow-wrap:anywhere}
+.voiceWave{display:block;width:100%;height:58px;margin:0 0 -4px;filter:drop-shadow(0 0 3px #c5b5ff44)}
+.composer.voice-active .controls{justify-content:space-between}
+.composer.voice-active #voiceCancel{margin-left:auto}
+.composer.voice-active #voiceStop{border-radius:50%;background:#332941;color:#e9ddff;border:1px solid #bb9aff;box-shadow:0 0 14px #bd9bff70}
+.composer.voice-active #attach:disabled{opacity:.65}
+.composer.voice-active:after{height:1px;opacity:.6}
+@media(max-width:360px){.listenLabel{font-size:12px}.listenLabel span{font-size:9px}.voiceWave{height:46px}}
+@media(max-height:520px){.voiceWave{height:35px}}
+.reduced .voiceWave{filter:none}@media(prefers-reduced-motion:reduce){.voiceWave{filter:none}}
+
 </style></head>
 <body>
 <svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
@@ -111,7 +127,7 @@
 <header class="top"><div class="brand"><div class="mark"><svg><use href="#i-logo"/></svg></div><div><div class="brandname">N.O.X</div><div class="brandmeta"><span class="dot" id="kernelDot"></span><span id="kernelStatus">Локальное ядро · подключение</span></div></div></div><div class="topright"><span class="tag" id="connectionTag">LOCAL</span><button class="iconbtn" id="newChat" aria-label="Новый чат"><svg><use href="#i-plus"/></svg></button></div></header>
 <main class="main">
 <section id="screen-chat" class="screen chat" aria-label="Чат"><div class="scrollchat" id="feed"><div id="welcome"><div class="eyebrow"><span class="dot"></span> ОБСИДИАН / ИНТЕРАКТИВНОЕ ДЕМО</div><div class="hero"><h1>С чего <em>начнём?</em></h1><p>Попробуй обновлённые взаимодействия. Это визуальное демо, без запуска модели и системных действий.</p></div><div class="quickgrid"><button class="quick" data-prompt="Покажи состояние системы"><svg><use href="#i-chip"/></svg><span>Статус системы</span></button><button class="quick" data-go="vision"><svg><use href="#i-eye"/></svg><span>Посмотреть экран</span></button><button class="quick" data-prompt="Включи Vision" data-agent="true"><svg><use href="#i-act"/></svg><span>Действие агента</span></button><button class="quick" data-voice><svg><use href="#i-mic"/></svg><span>Голосовой режим</span></button></div></div><div id="messages" aria-live="polite"></div><div class="think" id="thinking" hidden><span class="thinkgrid"><i style="--i:0"></i><i style="--i:1"></i><i style="--i:2"></i><i style="--i:3"></i><i style="--i:4"></i><i style="--i:5"></i><i style="--i:6"></i><i style="--i:7"></i><i style="--i:8"></i></span> <span id="thinkingLabel">Обработка запроса</span> <button id="cancel" aria-label="Остановить" class="tiny"><svg><use href="#i-stop"/></svg></button></div></div>
-<div class="composerArea"><button class="tiny" id="attachmentChip" hidden style="margin:0 0 6px 3px">Изображение прикреплено · убрать</button><div class="composer"><textarea id="prompt" rows="1" placeholder="Поручи что-нибудь N.O.X…" aria-label="Сообщение"></textarea><div class="controls"><button class="round" id="attach" aria-label="Добавить изображение"><svg><use href="#i-plus"/></svg></button><button class="chip" id="mode" aria-pressed="false" aria-label="Автоматический выбор маршрута"><svg><use href="#i-act"/></svg><span>Чат</span></button><button class="chip active" id="effortBtn"><svg><use href="#i-bolt"/></svg><span id="effortLabel">Авто</span><svg><use href="#i-down"/></svg></button><button class="round" data-voice aria-label="Голос"><svg><use href="#i-mic"/></svg></button><button class="round send" id="send" aria-label="Отправить" disabled><svg><use href="#i-send"/></svg></button></div></div></div></section>
+<div class="composerArea"><button class="tiny" id="attachmentChip" hidden style="margin:0 0 6px 3px">Изображение прикреплено · убрать</button><div class="composer" id="composer"><div class="listenLabel" id="listenLabel" aria-live="polite" hidden><strong id="voicePhase">Слушаю…</strong><span>ДЕМО · без микрофона</span></div><textarea id="prompt" rows="1" placeholder="Поручи что-нибудь N.O.X…" aria-label="Сообщение"></textarea><div class="voiceTranscript" id="voiceTranscript" aria-live="polite" hidden></div><canvas class="voiceWave" id="voiceWave" aria-hidden="true" hidden></canvas><div class="controls"><button class="round" id="attach" aria-label="Добавить изображение"><svg><use href="#i-plus"/></svg></button><button class="chip" id="mode" aria-pressed="false" aria-label="Автоматический выбор маршрута"><svg><use href="#i-act"/></svg><span>Чат</span></button><button class="chip active" id="effortBtn"><svg><use href="#i-bolt"/></svg><span id="effortLabel">Авто</span><svg><use href="#i-down"/></svg></button><button class="round" id="voiceCancel" aria-label="Отменить диктовку" hidden><svg><use href="#i-close"/></svg></button><button class="round" data-voice aria-label="Голос"><svg><use href="#i-mic"/></svg></button><button class="round send" id="voiceStop" aria-label="Остановить запись" hidden><svg><use href="#i-stop"/></svg></button><button class="round send" id="send" aria-label="Отправить" disabled><svg><use href="#i-send"/></svg></button></div></div></div></section>
 <section id="screen-vision" class="screen" aria-label="Vision" hidden><div class="sectionhead"><div><h1>Vision</h1><p>Контекст, который видит ассистент</p></div><span class="tag" id="visionTag">LOCAL</span></div><div class="viewfinder" id="viewfinder"><div class="placeholder" id="visionEmpty"><svg><use href="#i-eye"/></svg><p>Источник не выбран.<br>Добавь изображение для предпросмотра.</p></div><img id="preview" alt="Выбранное изображение" hidden><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i></div><div class="sourceRow"><button class="btn primary" id="chooseImage"><svg><use href="#i-image"/></svg>Изображение</button><button class="btn" id="screenCapture"><svg><use href="#i-screen"/></svg>Экран</button></div><div class="card"><div class="cardhead"><h3>Состояние источника</h3><span class="tag" id="visionState">НЕТ ДАННЫХ</span></div><div class="rowline"><strong>Размер изображения</strong><span id="imageDims">—</span></div><div class="rowline"><strong>Модель анализа</strong><span id="visionModel">—</span></div><div class="rowline"><strong>Захват экрана Android</strong><span id="captureState">Выключен</span></div><button class="btn full" id="analyze" disabled style="margin-top:13px"><svg><use href="#i-eye"/></svg>Анализировать</button><button class="btn full" id="removeImage" hidden style="margin-top:8px">Убрать изображение</button><div id="perceptionText" class="evidence" hidden></div><button class="btn full" id="reviewScreen" hidden style="margin-top:8px">Обсудить увиденное и услышанное</button></div><div class="note">ДЕМО · Захват экрана и доступ к изображениям отключены.</div></section>
 <section id="screen-actions" class="screen" aria-label="Действия" hidden><div class="sectionhead"><div><h1>Действия</h1><p>Подтверждение и доказательства</p></div><span class="tag" id="actionCount">0 В ОЧЕРЕДИ</span></div><div class="filter" id="filters"><button data-filter="all" class="active">Все</button><button data-filter="running">Выполняется</button><button data-filter="verified">Проверено</button><button data-filter="failed">Ошибки</button></div><div id="actionList" tabindex="-1"></div><button id="stopTask" class="btn full" style="margin-top:14px" disabled><svg><use href="#i-stop"/></svg>Остановить задачу</button><button id="grants" class="btn full" style="margin-top:8px"><svg><use href="#i-lock"/></svg>Разрешения агента</button></section>
 <section id="screen-settings" class="screen" aria-label="Настройки" hidden><div class="sectionhead"><div><h1>Настройки</h1><p>Управление ядром и интерфейсом</p></div><span class="tag">LOCAL</span></div><div class="card"><div class="modelrow"><div class="mark"><svg><use href="#i-chip"/></svg></div><div><h3 id="loadedModel">Модель не подключена</h3><p id="modelDetails">Подключение к ядру</p></div><span class="dot"></span></div><button id="modelInfo" class="btn full">Состояние модели <svg><use href="#i-down"/></svg></button><div class="rowline"><div><strong>Режим мышления</strong><small>Бюджет токенов для чата</small></div><button class="chip active" id="effortSettings"><span id="effortSettingLabel">Авто</span><svg><use href="#i-down"/></svg></button></div></div><div class="card"><div class="cardhead"><h3>Ресурсы устройства</h3><span class="tag">НЕТ ДАННЫХ</span></div><div class="metrics"><div class="metric"><small>GPU</small><b>—</b><div class="line"></div></div><div class="metric"><small>RAM</small><b>—</b><div class="line"></div></div><div class="metric"><small>CPU</small><b>—</b><div class="line"></div></div><div class="metric"><small>ТОК/С</small><b>—</b><div class="line"></div></div></div><p id="metricsNote">Показатели GPU, CPU, RAM и токенов/с пока недоступны.</p></div><div class="card"><h3>Ассистент</h3><div class="rowline"><div><strong>Vision</strong><small>Поддержка изображений выбранной моделью</small></div><button class="switch" role="switch" aria-label="Vision" id="visionToggle" aria-checked="false"></button></div><div class="rowline"><div><strong>Плавающий ассистент</strong><small>Кнопка внутри приложения; можно перемещать</small></div><button class="switch" role="switch" aria-label="Плавающий ассистент" id="floatToggle" aria-checked="false"></button></div><div class="rowline"><div><strong>Уменьшить движение</strong><small>Остановить декоративную анимацию</small></div><button class="switch" role="switch" aria-label="Уменьшить движение" id="reduceToggle" aria-checked="false"></button></div><div class="rowline"><div><strong>Голосовая визуализация</strong><small>Демо без доступа к микрофону</small></div><button class="btn" data-voice>Открыть</button></div></div><div class="card"><h3>Система и модель</h3>
@@ -123,7 +139,7 @@
 <nav class="nav" aria-label="Навигация"><button data-tab="chat" class="active" aria-current="page"><svg><use href="#i-chat"/></svg>Чат</button><button data-tab="vision"><svg><use href="#i-eye"/></svg>Vision</button><button data-tab="actions"><svg><use href="#i-act"/></svg>Действия<span id="navCount" class="count" hidden></span></button><button data-tab="settings"><svg><use href="#i-settings"/></svg>Настройки</button></nav>
 <button class="floating" id="floating" aria-label="Открыть голосовой режим" hidden><svg><use href="#i-logo"/></svg></button>
 <div class="sheetback" id="effortSheet" hidden><section class="sheet" role="dialog" aria-modal="true" aria-label="Модель и глубина мышления"><div class="matrixHead" id="matrixHead"><div><small>Модель</small><strong id="matrixModel">Gemma 4 E2B</strong></div><div><small>Мышление</small><strong id="matrixEffort">Авто</strong></div></div><div class="matrixLayout"><div class="matrixRows" id="matrixRows"></div><div class="matrixBoard" id="matrixBoard" role="radiogroup" aria-label="Выбор сочетания модели и мышления"><span class="matrixOrb" aria-hidden="true"></span></div><div class="matrixCols" id="matrixCols"></div></div><div class="matrixFoot"><button id="matrixReset">↶ Сбросить</button><span>Перетащи · нажми · стрелки</span></div><p class="matrixNote">ДЕМО · Модели из каталога N.O.X. Выбор сохраняется в этом сеансе, реальная загрузка не выполняется.</p><button class="btn full matrixDone" data-close="effortSheet">Готово</button></section></div>
-<div class="sheetback" id="voiceSheet" hidden><section class="sheet voiceSheet" role="dialog" aria-modal="true" aria-label="Голосовой режим"><div class="handle"></div><div class="sheettitle"><h2>Голосовой режим</h2><button class="iconbtn" id="closeVoice" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button></div><p class="sheetdesc">ДЕМО · Микрофон не используется. Волна показывает симулируемую амплитуду.</p><div class="voiceVisual"><canvas id="wave" aria-label="График амплитуды"></canvas><div class="voicecore"><svg><use href="#i-mic"/></svg></div></div><div class="voiceStatus" id="voiceStatus" aria-live="polite">Микрофон выключен</div><div class="voiceControls"><button class="btn primary" id="micStart"><svg><use href="#i-mic"/></svg>Симуляция записи</button><button class="btn" id="micStop" disabled><svg><use href="#i-stop"/></svg>Стоп</button></div></section></div>
+
 <div class="toast" id="toast" role="status" aria-atomic="true"></div>
 </div>
 <script>
@@ -163,7 +179,7 @@ board.addEventListener('pointermove',e=>{if(e.pointerId===pointer)pickPoint(e)})
 function endDrag(e){if(e.pointerId!==pointer)return;pointer=null;endFluid()}
 board.addEventListener('pointerup',endDrag);board.addEventListener('pointercancel',endDrag);board.addEventListener('lostpointercapture',endDrag);
 $('matrixReset').onclick=()=>setEff(0,0);setEff(0,0);
-let opener=null;const setInert=v=>['.top','.main','.nav','#floating'].forEach(s=>qa(s).forEach(e=>e.inert=v));const sheet=id=>{opener=document.activeElement;$(id).hidden=false;setInert(true);(id==='effortSheet'?points[S.model*E.length+S.effort]:$('closeVoice')).focus()};const close=id=>{$(id).hidden=true;setInert(false);if(opener&&opener.isConnected)opener.focus();opener=null};$('effortBtn').onclick=$('effortSettings').onclick=()=>sheet('effortSheet');qa('[data-close]').forEach(b=>b.onclick=()=>close(b.dataset.close));let bd=null;document.addEventListener('pointerdown',e=>bd=e.target,true);const back=(id,fn)=>$(id).onclick=e=>{if(e.target===$(id)&&bd===e.target)fn()};back('effortSheet',()=>{restoreChoice();close('effortSheet')});
+let opener=null;const setInert=v=>['.top','.main','.nav','#floating'].forEach(s=>qa(s).forEach(e=>e.inert=v));const sheet=id=>{opener=document.activeElement;$(id).hidden=false;setInert(true);points[S.model*E.length+S.effort].focus()};const close=id=>{$(id).hidden=true;setInert(false);if(opener&&opener.isConnected)opener.focus();opener=null};$('effortBtn').onclick=$('effortSettings').onclick=()=>sheet('effortSheet');qa('[data-close]').forEach(b=>b.onclick=()=>close(b.dataset.close));let bd=null;document.addEventListener('pointerdown',e=>bd=e.target,true);const back=(id,fn)=>$(id).onclick=e=>{if(e.target===$(id)&&bd===e.target)fn()};back('effortSheet',()=>{restoreChoice();close('effortSheet')});
 let hold=null,skipClickUntil=0;
 const holdSheet=$('effortSheet'),holdHint=holdSheet.querySelector('.matrixFoot span'),holdApp=$('app');
 function cancelHold(commit,e){
@@ -232,14 +248,14 @@ function renderChat(st){
 }
 function updateInput(){
  document.querySelector('.composer').classList.toggle('busy',!!S.busy);
- $('send').disabled=!nativeState||S.busy||!!pendingSend||choicePending||!$('prompt').value.trim();
+ $('send').disabled=!nativeState||S.busy||!!pendingSend||choicePending||voicePhase!=='idle'||!$('prompt').value.trim();
  $('prompt').style.height='auto';$('prompt').style.height=Math.min(100,$('prompt').scrollHeight)+'px';positionFloat()
 }
 $('prompt').addEventListener('input',updateInput);
 $('prompt').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&matchMedia('(pointer:fine)').matches){e.preventDefault();send()}});
-function send(v){const t=(v??$('prompt').value).trim();if(!t||S.busy||pendingSend||choicePending)return;if(t.length>2000){toast('Команда слишком длинная');return}pendingSend=t;if(request('send',{text:t,agent:S.agent})){tab('chat');updateInput()}else pendingSend=null}
+function send(v){const t=(v??$('prompt').value).trim();if(!t||S.busy||pendingSend||choicePending||voicePhase!=='idle')return;if(t.length>2000){toast('Команда слишком длинная');return}pendingSend=t;if(request('send',{text:t,agent:S.agent})){tab('chat');updateInput()}else pendingSend=null}
 $('send').onclick=()=>send();$('cancel').onclick=()=>request('cancel');
-$('newChat').onclick=()=>request('clear');
+$('newChat').onclick=()=>{if(voicePhase!=='idle')closeVoice(true,false);request('clear')};
 qa('[data-prompt]').forEach(b=>b.onclick=()=>{if(b.dataset.agent)mode(true);send(b.dataset.prompt)});
 function renderActions(){
  const list=$('actionList');list.replaceChildren();const arr=S.actions.filter(a=>S.filter==='all'||a.state===S.filter);
@@ -272,20 +288,72 @@ function renderImage(st){
  $('screenCapture').lastChild.textContent=st.perception?' Остановить':' Экран';
  $('perceptionText').hidden=!st.perception;text($('perceptionText'),st.perceptionText||'');$('reviewScreen').hidden=!st.perception;$('reviewScreen').disabled=st.busy||!st.vision;
 }
-function openVoice(){sheet('voiceSheet');voiceOpen=true;request('voice_open');drawVoice(false)}
-qa('[data-voice]').forEach(b=>b.onclick=openVoice);
-function closeVoice(){voiceOpen=false;request('voice_close');close('voiceSheet');cancelAnimationFrame(raf);raf=null}
-$('closeVoice').onclick=closeVoice;back('voiceSheet',closeVoice);
-$('micStart').onclick=()=>request('voice_start');$('micStop').onclick=()=>request('voice_stop');
-function drawVoice(loop){
- const c=$('wave'),r=c.getBoundingClientRect();if(!r.width||!r.height)return;
- const ratio=Math.min(2,window.devicePixelRatio||1);if(c.width!==Math.round(r.width*ratio)||c.height!==Math.round(r.height*ratio)){c.width=Math.round(r.width*ratio);c.height=Math.round(r.height*ratio)}
- const ctx=c.getContext('2d'),w=c.width,h=c.height;ctx.clearRect(0,0,w,h);
- const amp=nativeState?.manualListening?Math.max(0,Math.min(1,lastVoiceLevel)):0;
- c.parentElement.classList.toggle('live',!!nativeState?.manualListening);
- document.querySelector('.voicecore').style.setProperty('--vs',String(1+amp*.12));
- const count=54,step=w/(count+4),phase=performance.now()/170;for(let i=0;i<count;i++){const envelope=.25+.75*Math.sin((i+1)/55*Math.PI),v=amp*envelope*(.65+.35*Math.sin(i*.47+phase)),len=(3+v*75)*ratio;ctx.fillStyle=i%7===0?'#f0bf83':'#a894e3';ctx.globalAlpha=.20+v*.8;ctx.beginPath();(ctx.roundRect||ctx.rect).call(ctx,(i+2)*step,h/2-len/2,Math.max(2,step*.45),len,2*ratio);ctx.fill()}ctx.globalAlpha=1
+let voiceDraft='',voiceText='',voicePhase='idle',transcriptTimer=0,processingTimer=0,voiceOrigin=null;
+const voiceWords=['Напомни',' мне',' позвонить',' завтра',' утром'];
+function stopVoiceTimers(){clearInterval(transcriptTimer);clearTimeout(processingTimer);transcriptTimer=processingTimer=0}
+function updateVoiceUI(){
+ const active=voicePhase!=='idle', listening=voicePhase==='listening', c=$('composer');
+ c.classList.toggle('listening',listening);c.classList.toggle('voice-active',active);
+ $('listenLabel').hidden=!active;$('voiceTranscript').hidden=!active;$('voiceWave').hidden=!active;
+ $('prompt').hidden=active;$('voiceCancel').hidden=!active;$('voiceStop').hidden=!listening;
+ $('send').hidden=active;$('attach').disabled=active;
+ $('mode').hidden=active;$('effortBtn').hidden=active;
+ qa('.composer [data-voice]').forEach(b=>{b.hidden=active;b.disabled=S.busy||!!pendingSend||choicePending});
+ text($('voicePhase'),listening?'Слушаю…':'Обработка речи…');
+ text($('voiceTranscript'),voiceText|| (listening?'Говори…':''));
+ if(active)drawVoice();positionFloat()
 }
+function openVoice(){
+ if(voiceOpen||S.busy||pendingSend||choicePending)return;
+ if(S.tab!=='chat')tab('chat');
+ voiceOrigin=qa('.composer [data-voice]')[0];voiceDraft=$('prompt').value;voiceText='';
+ $('prompt').blur();voicePhase='listening';voiceOpen=true;updateVoiceUI();
+ request('voice_open');request('voice_start');
+ let i=0;transcriptTimer=setInterval(()=>{
+  if(voicePhase!=='listening'||document.hidden)return;
+  if(i<voiceWords.length){voiceText+=voiceWords[i++];text($('voiceTranscript'),voiceText)}
+  if(i===voiceWords.length){clearInterval(transcriptTimer);transcriptTimer=0}
+ },380);
+ $('voiceStop').focus({preventScroll:true})
+}
+qa('[data-voice]').forEach(b=>b.onclick=openVoice);
+function closeVoice(cancelled=false,restoreFocus=true){
+ if(voicePhase==='idle')return;
+ stopVoiceTimers();voiceOpen=false;voicePhase='idle';
+ const spoken=voiceText.trim();$('prompt').value=cancelled?voiceDraft:[voiceDraft.trimEnd(),spoken].filter(Boolean).join(' ');
+ request('voice_close');updateVoiceUI();updateInput();
+ if(restoreFocus&&S.tab==='chat'&&!document.hidden&&voiceOrigin?.isConnected)voiceOrigin.focus({preventScroll:true})
+}
+function finishVoice(){
+ if(voicePhase!=='listening')return;
+ stopVoiceTimers();voicePhase='processing';voiceOpen=false;request('voice_stop');updateVoiceUI();
+ processingTimer=setTimeout(()=>closeVoice(false),350)
+}
+$('voiceCancel').onclick=()=>closeVoice(true);$('voiceStop').onclick=finishVoice;
+function drawVoice(){
+ const c=$('voiceWave');if(c.hidden)return;
+ const r=c.getBoundingClientRect();if(!r.width||!r.height)return;
+ const ratio=Math.min(1.5,window.devicePixelRatio||1),w=Math.round(r.width*ratio),h=Math.round(r.height*ratio);
+ if(c.width!==w||c.height!==h){c.width=w;c.height=h}
+ const ctx=c.getContext('2d');if(!ctx)return;ctx.clearRect(0,0,w,h);
+ const reduced=$('app').classList.contains('reduced')||matchMedia('(prefers-reduced-motion:reduce)').matches;
+ const amp=voicePhase==='listening'?(reduced?.24:Math.max(0,Math.min(1,lastVoiceLevel))):0;
+ const t=reduced?0:performance.now()/230,cols=Math.max(26,Math.min(52,Math.floor(r.width/6))),rows=9;
+ for(let i=0;i<cols;i++){
+  const u=i/(cols-1),env=Math.pow(Math.sin(u*Math.PI),1.5);
+  const a=env*(.15+.85*amp)*(.74+.26*Math.sin(i*.43+t));
+  const hue=300-255*u;
+  for(let j=0;j<rows;j++){
+   const v=j/(rows-1);if(v>a+.12)continue;
+   const x=(i+.5)*w/cols,y=h*(.91-v*.84);
+   ctx.globalAlpha=Math.min(1,.24+.64*(1-v)+.1*amp);
+   ctx.fillStyle='hsl('+hue+' 78% 72%)';ctx.beginPath();
+   ctx.arc(x,y,(1.05+.45*(1-v))*ratio,0,Math.PI*2);ctx.fill()
+  }
+ }
+ ctx.globalAlpha=1
+}
+
 function receive(st){
  if(st.type==='ack'){
    if(st.op==='send'){if(st.ok&&$('prompt').value.trim()===pendingSend)$('prompt').value='';pendingSend=null}
@@ -305,8 +373,7 @@ function receive(st){
  text($('loadedModel'),st.modelName);text($('modelDetails'),st.modelDetails);
  text($('metricsNote'),st.elapsedMs!=null?'Последний ответ: '+st.elapsedMs+' мс. Другие метрики не измеряются.':'Метрики пока не измеряются.');
  sw('visionToggle',st.vision);sw('bgToggle',st.background);sw('ttsToggle',st.tts);sw('btToggle',st.bluetooth);text($('micRoute'),st.micRoute||'Вход выбирает Android');
- $('micStart').disabled=st.busy||st.manualListening;$('micStop').disabled=!st.manualListening;
- text($('voiceStatus'),st.recognized||st.status);if(voiceOpen)drawVoice(false);
+ updateVoiceUI();
  $('stopTask').disabled=!st.generating;
  $('effortBtn').disabled=S.busy||choicePending;$('effortSettings').disabled=S.busy||choicePending;
  $('visionToggle').disabled=S.busy||!st.loaded;$('btToggle').disabled=S.busy;
@@ -319,11 +386,11 @@ function receive(st){
  updateInput();
 }
 window.addEventListener('message',e=>{if(nativePort||e.data!=='nox-init'||e.ports.length!==1)return;nativePort=e.ports[0];nativePort.onmessage=m=>{try{receive(JSON.parse(m.data))}catch{toast('Ошибка данных ядра')}};nativePort.start?.();request('ready')});
-window.noxBack=()=>{if(hold){cancelHold(false);return true}if(!$('voiceSheet').hidden){closeVoice();return true}if(!$('effortSheet').hidden){restoreChoice();close('effortSheet');return true}if(S.tab!=='chat'){tab('chat');return true}return false};
+window.noxBack=()=>{if(hold){cancelHold(false);return true}if(voicePhase!=='idle'){closeVoice(true);return true}if(!$('effortSheet').hidden){restoreChoice();close('effortSheet');return true}if(S.tab!=='chat'){tab('chat');return true}return false};
 document.querySelector('.matrixDone').onclick=()=>{close('effortSheet');commitChoice()};
-const originalTab=tab;tab=function(t){originalTab(t);request('page',{page:t})};
+const originalTab=tab;tab=function(t){if(t!=='chat'&&voicePhase!=='idle')closeVoice(true,false);originalTab(t);request('page',{page:t})};
 let drag=null;const floating=$('floating');floating.addEventListener('pointerdown',e=>{const r=floating.getBoundingClientRect();drag={x:e.clientX,y:e.clientY,left:r.left,top:r.top,moved:false};floating.setPointerCapture(e.pointerId)});floating.addEventListener('pointermove',e=>{if(!drag)return;let dx=e.clientX-drag.x,dy=e.clientY-drag.y;if(Math.hypot(dx,dy)>5)drag.moved=true;if(drag.moved){const r=$('app').getBoundingClientRect();floating.style.left=Math.max(6,Math.min(r.width-54,drag.left-r.left+dx))+'px';floating.style.top=Math.max(65,Math.min(r.height-145,drag.top-r.top+dy))+'px';floating.style.right='auto';floating.style.bottom='auto'}});let wasDrag=false;floating.addEventListener('pointerup',()=>{wasDrag=!!(drag&&drag.moved);drag=null});floating.addEventListener('click',()=>{if(wasDrag){wasDrag=false;return}openVoice()});floating.addEventListener('pointercancel',()=>drag=null);
-document.addEventListener('keydown',e=>{if(e.key==='Escape')window.noxBack()});document.addEventListener('visibilitychange',()=>{if(document.hidden&&voiceOpen)request('voice_stop')});$('effortBtn').setAttribute('aria-haspopup','dialog');updateInput();originalTab('chat');
+document.addEventListener('keydown',e=>{if(e.key==='Escape')window.noxBack()});document.addEventListener('visibilitychange',()=>{if(document.hidden&&voicePhase!=='idle')closeVoice(true,false)});$('effortBtn').setAttribute('aria-haspopup','dialog');updateInput();originalTab('chat');
 </script>
 <script>
 
@@ -331,7 +398,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')window.noxBack()});d
 (()=>{
  const state={type:'state',status:'Визуальное демо · без ядра',connected:false,loaded:true,busy:false,generating:false,modelIndex:0,effort:0,modelName:MODELS[0],modelDetails:'Демонстрационный выбор · модель не загружается',turns:[],partial:'',events:[],vision:false,background:false,tts:false,bluetooth:false,manualListening:false,recognized:'',attached:false,perception:false,imageKey:'',perceptionText:'',elapsedMs:null};
  let timers=[],voiceTimer=0,started=0;
- const publish=()=>{state.modelName=MODELS[state.modelIndex];receive({...state,turns:state.turns.slice(),events:state.events.slice()});text($('connectionTag'),'DEMO');document.querySelector('.composer').classList.toggle('listening',state.manualListening)};
+ const publish=()=>{state.modelName=MODELS[state.modelIndex];receive({...state,turns:state.turns.slice(),events:state.events.slice()});text($('connectionTag'),'DEMO');updateVoiceUI()};
  const ack=(op,ok=true,message='')=>receive({type:'ack',op,ok,message});
  const later=(fn,ms)=>{timers.push(setTimeout(fn,ms))};
  const cancel=()=>{timers.forEach(clearTimeout);timers=[];if(state.generating){state.generating=false;state.busy=false;state.partial='';state.status='Демо · отменено';state.events.push('ДЕМО: outcome=Denied — отменено');publish()}};
@@ -356,7 +423,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')window.noxBack()});d
   default:toast('Демо · действие недоступно');
  }}};
  text($('connectionTag'),'DEMO');publish();
- document.addEventListener('visibilitychange',()=>{if(document.hidden)stopVoice()});
+ document.addEventListener('visibilitychange',()=>{if(document.hidden&&state.manualListening)stopVoice()});
 })();
 
 </script></body></html>
