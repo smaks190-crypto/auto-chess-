@@ -1,7 +1,8 @@
 package dev.nox.local
 
 import android.Manifest
-import android.app.Activity
+import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import android.app.AlertDialog
 import android.app.role.RoleManager
 import android.content.*
@@ -20,7 +21,7 @@ import android.widget.*
 import java.util.Locale
 
 /** Chat is a view of the session; the foreground service owns the model and microphone. */
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
     companion object {
         /** True only while the chat Activity is on screen; a bound Service is not enough. */
         @Volatile internal var isVisible = false
@@ -65,6 +66,17 @@ class MainActivity : Activity() {
     private lateinit var matrix: ObsidianMatrix
     private val navButtons = mutableListOf<Button>()
     private var activePage = 0
+    private var matrixVisible = false
+    private val backCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            if (::matrix.isInitialized && matrix.dismiss()) return
+            if (activePage != 0) showPage(0)
+        }
+    }
+
+    private fun updateBackCallback() {
+        backCallback.isEnabled = activePage != 0 || matrixVisible
+    }
     private var effort = ChatEffort.AUTO
     private val workControls = mutableListOf<View>()
     private var lastChat = "\u0000"
@@ -345,7 +357,11 @@ class MainActivity : Activity() {
         root.addView(nav, LinearLayout.LayoutParams(-1,-2))
         matrix = ObsidianMatrix(frame, catalog.map { it.name }, {
             MatrixChoice(service?.loaded?.index ?: models.selectedItemPosition.coerceIn(catalog.indices), effort)
-        }, ::applyMatrix)
+        }, ::applyMatrix) { visible ->
+            matrixVisible = visible
+            updateBackCallback()
+        }
+        onBackPressedDispatcher.addCallback(this, backCallback)
         matrix.bind(effortChip)
         matrix.bind(effortSetting)
         updateNavigation()
@@ -423,6 +439,7 @@ class MainActivity : Activity() {
 
     private fun showPage(page: Int) {
         activePage = page
+        updateBackCallback()
         listOf(chatPage, visionPage, actionsPage, settingsPage).forEachIndexed { i, view -> view.visibility = if (i == page) View.VISIBLE else View.GONE }
         if (page != 0) {
             input.clearFocus()
@@ -455,12 +472,6 @@ class MainActivity : Activity() {
             selectModel()
         }
         render()
-    }
-
-    @Deprecated("Back navigation for native sheet")
-    override fun onBackPressed() {
-        if (::matrix.isInitialized && matrix.dismiss()) return
-        if (activePage != 0) showPage(0) else super.onBackPressed()
     }
 
     private fun render() {

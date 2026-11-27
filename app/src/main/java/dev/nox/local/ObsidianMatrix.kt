@@ -19,7 +19,8 @@ internal class ObsidianMatrix(
     private val host: FrameLayout,
     private val names: List<String>,
     private val current: () -> MatrixChoice,
-    private val commit: (MatrixChoice) -> Unit
+    private val commit: (MatrixChoice) -> Unit,
+    private val onVisibilityChanged: (Boolean) -> Unit
 ) {
     private val ctx: Context = host.context
     private var layer: FrameLayout? = null
@@ -95,6 +96,7 @@ internal class ObsidianMatrix(
         val old = layer ?: return false
         host.removeView(old)
         layer = null; board = null; title = null; cells.clear(); picked = null
+        onVisibilityChanged(false)
         return true
     }
 
@@ -153,6 +155,7 @@ internal class ObsidianMatrix(
         }
         layer = overlay
         host.addView(overlay, FrameLayout.LayoutParams(-1, -1))
+        onVisibilityChanged(true)
         select(current())
     }
 

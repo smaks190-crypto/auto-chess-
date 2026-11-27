@@ -45,8 +45,8 @@ android {
         applicationId = "dev.nox.local"
         minSdk = 31
         targetSdk = 36
-        versionCode = 29
-        versionName = "0.4.24-obsidian-native-dev"
+        versionCode = 30
+        versionName = "0.4.25-obsidian-backfix-dev"
         manifestPlaceholders["noxAppLabel"] = "N.O.X."
         manifestPlaceholders["noxNavigationLabel"] = "Нокс — навигация"
         ndk { abiFilters += "arm64-v8a" }
@@ -68,6 +68,7 @@ android {
 tasks.named("preBuild") { dependsOn(prepareRussianAsr) }
 kotlin { jvmToolchain(17) }
 dependencies {
+    implementation("androidx.activity:activity:1.11.0")
     implementation("net.java.dev.jna:jna:5.18.1@aar")
     implementation("com.alphacephei:vosk-android:0.3.75@aar")
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.18.0")
