@@ -1,6 +1,6 @@
 package dev.nox.local
 
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class WakeWordPolicyTest {
@@ -8,33 +8,39 @@ class WakeWordPolicyTest {
         assertEquals("$mode / $input", expected, WakeWordPolicy.route(mode, input))
 
     @Test fun ambientConversationCannotActivate() {
-        expect(VoiceInputMode.WAKE, "открой телеграм", WakeInput.Ignore)
-        expect(VoiceInputMode.WAKE, "позови Нокса", WakeInput.Ignore)
-        expect(VoiceInputMode.WAKE, "ноксик открой", WakeInput.Ignore)
-        expect(VoiceInputMode.WAKE, "", WakeInput.Ignore)
+        for (mode in listOf(VoiceInputMode.WAKE, VoiceInputMode.LOCKED_WAKE)) {
+            for (input in listOf("открой телеграм", "позови Нокса", "ноксик открой", "", "отмени задачу")) {
+                expect(mode, input, WakeInput.Ignore)
+            }
+        }
     }
-    @Test fun exactNameArmsCommandWindow() {
-        expect(VoiceInputMode.WAKE, "Нокс!", WakeInput.Arm)
-        expect(VoiceInputMode.COMMAND, "Нокс", WakeInput.Ignore)
+
+    @Test fun namedBackgroundRequestsOnlyPromptForManualInput() {
+        for (input in listOf("Нокс!", "  НОКС, Открой Telegram!", "NOX — открой браузер",
+                "Нокс, выключи микрофон", "Нокс, отмена")) {
+            expect(VoiceInputMode.WAKE, input, WakeInput.ManualRequired)
+            expect(VoiceInputMode.LOCKED_WAKE, input, WakeInput.UnlockRequired)
+        }
     }
-    @Test fun commandCanFollowNameInSameUtterance() {
-        expect(VoiceInputMode.WAKE, "  НОКС, Открой Telegram!", WakeInput.Command("Открой Telegram!"))
-        expect(VoiceInputMode.WAKE, "NOX — открой браузер", WakeInput.Command("открой браузер"))
+
+    @Test fun wakePromptDoesNotArmASecondAmbientUtterance() {
+        expect(VoiceInputMode.WAKE, "Нокс", WakeInput.ManualRequired)
+        expect(VoiceInputMode.WAKE, "открой браузер", WakeInput.Ignore)
     }
-    @Test fun commandWindowAcceptsSpeechWithoutRepeatingName() {
-        expect(VoiceInputMode.COMMAND, "открой браузер", WakeInput.Command("открой браузер"))
-    }
-    @Test fun explicitManualMicrophoneNeedsNoName() {
+
+    @Test fun explicitManualMicrophoneAcceptsCommandWithOrWithoutName() {
         expect(VoiceInputMode.MANUAL, "привет", WakeInput.Command("привет"))
+        expect(VoiceInputMode.MANUAL, "Нокс, открой браузер", WakeInput.Command("открой браузер"))
+        expect(VoiceInputMode.MANUAL, "Нокс", WakeInput.Ignore)
+        expect(VoiceInputMode.MANUAL, "  ", WakeInput.Ignore)
     }
-    @Test fun disableRequiresNameInStandby() {
-        expect(VoiceInputMode.WAKE, "Нокс, перестань слушать", WakeInput.Disable)
-        expect(VoiceInputMode.WAKE, "перестань слушать", WakeInput.Ignore)
-    }
-    @Test fun runningTaskOnlyAcceptsNamedCancellationOrDisable() {
-        expect(VoiceInputMode.STOP_ONLY, "отмена", WakeInput.Ignore)
-        expect(VoiceInputMode.STOP_ONLY, "Нокс, отмена", WakeInput.CancelTask)
-        expect(VoiceInputMode.STOP_ONLY, "Нокс, открой Telegram", WakeInput.Ignore)
-        expect(VoiceInputMode.STOP_ONLY, "Нокс, выключи микрофон", WakeInput.Disable)
+
+    @Test fun speechCannotChangePersistentMicrophoneSetting() {
+        for (phrase in listOf("перестань слушать", "отключи микрофон", "останови прослушивание")) {
+            expect(VoiceInputMode.MANUAL, phrase, WakeInput.Ignore)
+            expect(VoiceInputMode.MANUAL, "Нокс, $phrase", WakeInput.Ignore)
+            expect(VoiceInputMode.WAKE, phrase, WakeInput.Ignore)
+            expect(VoiceInputMode.LOCKED_WAKE, phrase, WakeInput.Ignore)
+        }
     }
 }

@@ -1,11 +1,10 @@
 package dev.nox.local
 
-/** Background microphone is opt-in. A locked session can only recognize the name or turn off. */
+/** Background microphone is opt-in. A background session can only recognize the name. */
 internal object BackgroundVoicePolicy {
-    fun autoMode(enabled: Boolean, busy: Boolean, agentCanCancel: Boolean, listening: Boolean,
+    fun autoMode(enabled: Boolean, busy: Boolean, listening: Boolean,
                  speechPending: Boolean, unlocked: Boolean, blocked: Boolean): VoiceInputMode? {
-        if (!enabled || listening || speechPending || blocked) return null
-        if (busy) return if (agentCanCancel && unlocked) VoiceInputMode.STOP_ONLY else null
+        if (!enabled || busy || listening || speechPending || blocked) return null
         return if (unlocked) VoiceInputMode.WAKE else VoiceInputMode.LOCKED_WAKE
     }
 

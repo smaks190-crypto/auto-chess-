@@ -4,10 +4,10 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class BackgroundVoicePolicyTest {
-    private fun mode(enabled: Boolean = true, busy: Boolean = false, agent: Boolean = false,
+    private fun mode(enabled: Boolean = true, busy: Boolean = false,
         listening: Boolean = false, speech: Boolean = false, unlocked: Boolean = true,
         blocked: Boolean = false) =
-        BackgroundVoicePolicy.autoMode(enabled, busy, agent, listening, speech, unlocked, blocked)
+        BackgroundVoicePolicy.autoMode(enabled, busy, listening, speech, unlocked, blocked)
 
     @Test fun standbyContinuesWhileLockedOnlyWhenOptedIn() {
         assertEquals(VoiceInputMode.LOCKED_WAKE, mode(unlocked = false))
@@ -20,14 +20,13 @@ class BackgroundVoicePolicyTest {
         assertNull(mode(speech = true, unlocked = false))
         assertNull(mode(speech = true))
     }
-    @Test fun activeAgentAcceptsCancellationOnlyWhileUnlocked() {
-        assertEquals(VoiceInputMode.STOP_ONLY, mode(busy = true, agent = true))
-        assertNull(mode(busy = true, agent = true, unlocked = false))
+    @Test fun busyAgentNeverProcessesAmbientSpeech() {
+        assertNull(mode(busy = true))
         assertNull(mode(busy = true, unlocked = false))
     }
     @Test fun lockTransitionInvalidatesOldVoiceSession() {
         assertFalse(BackgroundVoicePolicy.canCapture(VoiceInputMode.WAKE, true, false))
-        assertFalse(BackgroundVoicePolicy.canCapture(VoiceInputMode.COMMAND, true, false))
+        assertFalse(BackgroundVoicePolicy.canCapture(VoiceInputMode.MANUAL, true, false))
         assertTrue(BackgroundVoicePolicy.canCapture(VoiceInputMode.LOCKED_WAKE, true, false))
         assertFalse(BackgroundVoicePolicy.canCapture(VoiceInputMode.LOCKED_WAKE, true, true))
         assertTrue(BackgroundVoicePolicy.canCapture(VoiceInputMode.MANUAL, false, true))
@@ -38,7 +37,7 @@ class BackgroundVoicePolicyTest {
         assertEquals(WakeInput.UnlockRequired, WakeWordPolicy.route(VoiceInputMode.LOCKED_WAKE, "Нокс"))
         assertEquals(WakeInput.Ignore, WakeWordPolicy.route(VoiceInputMode.LOCKED_WAKE, "открой Telegram"))
         assertEquals(WakeInput.Ignore, WakeWordPolicy.route(VoiceInputMode.LOCKED_WAKE, "Ноксик"))
-        assertEquals(WakeInput.Disable, WakeWordPolicy.route(VoiceInputMode.LOCKED_WAKE, "Нокс, выключи микрофон"))
+        assertEquals(WakeInput.UnlockRequired, WakeWordPolicy.route(VoiceInputMode.LOCKED_WAKE, "Нокс, выключи микрофон"))
     }
     @Test fun swipeKeyguardAndUnknownStateAlsoDenyCommands() {
         assertTrue(BackgroundVoicePolicy.screenAllowsCommands(true, false, false))

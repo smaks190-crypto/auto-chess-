@@ -135,7 +135,7 @@ class NoxService : Service() {
     }
     private var receiverRegistered = false
     private var listeningMode: VoiceInputMode? = null
-    private var lockedWakeDetected = false
+    private var wakeDetected = false
     private var standbyWakeLock: PowerManager.WakeLock? = null
     internal val preferBluetooth: Boolean get() = sessionPrefs.getBoolean("prefer_bluetooth_mic", false)
     internal var microphoneRoute = ""
@@ -158,7 +158,7 @@ class NoxService : Service() {
         if (listening) recognitionFailed("Истекло время запуска микрофона", false)
     }
     private val commandTimeout = Runnable {
-        if (listening && (listeningMode == VoiceInputMode.COMMAND || listeningMode == VoiceInputMode.MANUAL)) {
+        if (listening && listeningMode == VoiceInputMode.MANUAL) {
             stopListening()
             status = if (background) "Жду имя «Нокс»" else "Голосовая команда не получена"
             publish()
@@ -177,8 +177,7 @@ class NoxService : Service() {
                     !BackgroundVoicePolicy.canCapture(checkNotNull(listeningMode), background, unlocked()))
                     stopListening()
                 if (unlocked()) {
-                    lockedWakeDetected = false
-                    if (background && !busy && !listening && !loopBlocked) status = "Жду имя «Нокс»"
+                    if (background && !busy && !listening && !loopBlocked) status = wakeStatus()
                 }
             }
             publish()
@@ -187,12 +186,15 @@ class NoxService : Service() {
     private fun unlocked(): Boolean = DeviceInteraction.unlocked(this)
 
     private fun autoVoiceMode(): VoiceInputMode? = if (destroyed) null else BackgroundVoicePolicy.autoMode(
-        background, busy, agentRunning && !generationCancelled, listening,
+        background, busy, listening,
         activeSpeech != null || speaking, unlocked(), loopBlocked)
     private fun canAutoListen(): Boolean = autoVoiceMode() != null
 
-    private fun lockedStatus(): String = if (lockedWakeDetected)
-        "Нокс услышал имя · разблокируй телефон и повтори" else "Жду имя «Нокс» · экран заблокирован"
+    private fun wakeStatus(): String = if (wakeDetected)
+        "Нажми микрофон и произнеси команду" else "Жду имя «Нокс»"
+
+    private fun lockedStatus(): String = if (wakeDetected)
+        "Нокс услышал имя · разблокируй телефон и нажми микрофон" else "Жду имя «Нокс» · экран заблокирован"
 
     /** Continuous, user-enabled capture needs the CPU while the screen is off.
      * Hold only during locked standby (including bounded retry delays); release on
@@ -539,7 +541,7 @@ class NoxService : Service() {
             startForeground(ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
             background = true
             sessionPrefs.edit().putBoolean("background_voice_active", true).apply()
-            lockedWakeDetected = false
+            wakeDetected = false
             if (listening) stopListening()
             loopBlocked = false
             recognitionFailures = 0
@@ -565,7 +567,7 @@ class NoxService : Service() {
         stopSpeech()
         background = false
         sessionPrefs.edit().putBoolean("background_voice_active", false).commit()
-        lockedWakeDetected = false
+        wakeDetected = false
         releaseStandbyPower()
         removeOverlay()
         main.removeCallbacks(restartVoice)
@@ -1184,16 +1186,14 @@ class NoxService : Service() {
 
     internal fun listen() {
         // Explicit UI / notification action remains push-to-talk, including in standby.
+        wakeDetected = false
         if (waitingForName) stopListening()
         startVoice(VoiceInputMode.MANUAL)
     }
 
-    private fun startVoice(requestedMode: VoiceInputMode) {
+    private fun startVoice(mode: VoiceInputMode) {
         if (destroyed || listening || activeSpeech != null || speaking) return
-        val stopOnly = agentRunning && busy && !generationCancelled
-        if (busy && !stopOnly) { status = "Подожди, Нокс занят…"; publish(); return }
-        if (stopOnly && !background) return
-        val mode = if (stopOnly) VoiceInputMode.STOP_ONLY else requestedMode
+        if (busy) { status = "Подожди, Нокс занят…"; publish(); return }
         if (mode != VoiceInputMode.MANUAL && !background) return
         main.removeCallbacks(restartVoice)
         if (!BackgroundVoicePolicy.canCapture(mode, background, unlocked())) {
@@ -1210,29 +1210,26 @@ class NoxService : Service() {
             val engine = recognizer ?: SilentRecognizer(applicationContext).also { recognizer = it }
             listeningMode = mode
             listening = true
-            if (!stopOnly) status = when (mode) {
-                VoiceInputMode.COMMAND -> "Имя распознано · говори"
+            status = when (mode) {
                 VoiceInputMode.LOCKED_WAKE -> lockedStatus()
                 else -> "Запускаю локальное распознавание…"
             }
             publish()
             main.postDelayed(recognitionTimeout, 60_000L)
-            val live = mode == VoiceInputMode.MANUAL || mode == VoiceInputMode.COMMAND
+            val live = mode == VoiceInputMode.MANUAL
             engine.start(object : SilentRecognizer.Listener {
                 override fun onReady() {
                     if (token != speechId || !listening) return
                     main.removeCallbacks(recognitionTimeout)
                     if (!BackgroundVoicePolicy.canCapture(mode, background, unlocked()) ||
                         activeSpeech != null || speaking) { stopListening(); publish(); return }
-                    if (!stopOnly) status = when (mode) {
-                        VoiceInputMode.WAKE -> "Жду имя «Нокс»"
+                    status = when (mode) {
+                        VoiceInputMode.WAKE -> wakeStatus()
                         VoiceInputMode.LOCKED_WAKE -> lockedStatus()
-                        VoiceInputMode.COMMAND -> "Имя распознано · говори"
-                        else -> "Слушаю…"
+                        VoiceInputMode.MANUAL -> "Слушаю…"
                     }
                     publish()
-                    if (mode == VoiceInputMode.COMMAND) main.postDelayed(commandTimeout, 10_000L)
-                    else if (mode == VoiceInputMode.MANUAL) main.postDelayed(commandTimeout, 30_000L)
+                    if (mode == VoiceInputMode.MANUAL) main.postDelayed(commandTimeout, 30_000L)
                 }
                 override fun onRouteChanged(route: String) {
                     if (token == speechId && listening && microphoneRoute != route) {
@@ -1262,13 +1259,15 @@ class NoxService : Service() {
                         WakeInput.Ignore -> publish()
                         WakeInput.UnlockRequired -> {
                             // No command is persisted, replayed or executed on the keyguard.
-                            lockedWakeDetected = true
+                            wakeDetected = true
                             status = lockedStatus()
                             publish()
                         }
-                        WakeInput.Arm -> if (!busy && background) startVoice(VoiceInputMode.COMMAND) else publish()
-                        WakeInput.Disable -> if (background) disableBackground() else publish()
-                        WakeInput.CancelTask -> if (agentRunning && busy && !generationCancelled) cancelGeneration() else publish()
+                        WakeInput.ManualRequired -> {
+                            wakeDetected = true
+                            status = wakeStatus()
+                            publish()
+                        }
                         is WakeInput.Command -> if (!busy) ask(action.text, speak = true) else publish()
                     }
                 }
