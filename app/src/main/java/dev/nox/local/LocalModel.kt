@@ -21,28 +21,37 @@ import android.util.Log
 
 /** All calls are owned by a single worker thread. No network client. */
 internal class LocalModel : AutoCloseable {
-    private var engine: Engine? = null
+    private data class Recipe(val file: File, val gpu: Boolean, val vision: Boolean)
+    private val resident = ResidentModel<Recipe, Engine>(
+        create = { config ->
+            require(config.file.isFile && config.file.length() > 0) { "Файл модели отсутствует" }
+            val started = SystemClock.elapsedRealtime()
+            val candidate = Engine(EngineConfig(
+                modelPath = config.file.absolutePath,
+                backend = if (config.gpu) Backend.GPU() else Backend.CPU(),
+                visionBackend = if (config.vision) Backend.GPU() else null
+            ))
+            try {
+                candidate.initialize()
+                Log.i("NoxMemory", "engine_ready elapsedMs=${SystemClock.elapsedRealtime() - started} gpu=${config.gpu} vision=${config.vision}")
+                candidate
+            } catch (error: Throwable) {
+                runCatching { candidate.close() }
+                throw error
+            }
+        },
+        release = { it.close() }
+    )
 
-    fun load(file: File, gpu: Boolean, vision: Boolean = true) {
-        require(file.isFile && file.length() > 0) { "Файл модели отсутствует" }
-        close()
-        val candidate = Engine(EngineConfig(
-            modelPath = file.absolutePath,
-            backend = if (gpu) Backend.GPU() else Backend.CPU(),
-            visionBackend = if (vision) Backend.GPU() else null
-        ))
-        try {
-            candidate.initialize()
-            engine = candidate
-        } catch (error: Throwable) {
-            runCatching { candidate.close() }
-            throw error
-        }
-    }
+    fun load(file: File, gpu: Boolean, vision: Boolean = true) =
+        resident.load(Recipe(file, gpu, vision))
+
+    fun hibernate(): Boolean = resident.hibernate()
+    private fun engine(): Engine = resident.requireResident()
 
     fun analyze(command: String, image: File?): String {
         val prompt = PromptPolicy.build(command)
-        val active = checkNotNull(engine) { "Сначала загрузите модель" }
+        val active = engine()
         return active.createConversation().use { conversation ->
             if (image == null) conversation.sendMessage(prompt).toString()
             else conversation.sendMessage(Contents.of(
@@ -63,7 +72,7 @@ internal class LocalModel : AutoCloseable {
      * still use independent conversations. All native calls remain on the existing worker. */
     fun <R> withAgentPlanner(cancelled: () -> Boolean, shortDecisions: Boolean,
                              block: ((String) -> AgentDecision) -> R): R {
-        val active = checkNotNull(engine) { "Сначала загрузите модель" }
+        val active = engine()
         val planner = PlannerSession<Conversation, AgentDecision>(
             create = {
                 val started = SystemClock.elapsedRealtime()
@@ -94,7 +103,7 @@ internal class LocalModel : AutoCloseable {
 
     private fun generate(prompt: String, image: File?, deep: Boolean, cancelled: () -> Boolean,
         update: (String) -> Unit, maxOutputTokens: Int = if (deep) 2048 else 512): String {
-        val active = checkNotNull(engine) { "Сначала загрузите модель" }
+        val active = engine()
         return active.createConversation().use { conversation ->
             generateInConversation(conversation, prompt, image, deep, cancelled, update, maxOutputTokens)
         }
@@ -158,9 +167,5 @@ internal class LocalModel : AutoCloseable {
             }
     }
 
-    override fun close() {
-        val previous = engine
-        engine = null
-        previous?.close()
-    }
+    override fun close() = resident.close()
 }

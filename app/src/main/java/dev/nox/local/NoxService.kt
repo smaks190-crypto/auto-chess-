@@ -108,6 +108,31 @@ class NoxService : Service() {
     private var recognitionFailures = 0
     private var retryAt = 0L
     private var clientBound = false
+    private var taskForeground = false
+    private var idleModelReleased = false
+    private val idleModel = Runnable {
+        if (mayHibernateModel() && !idleModelReleased) {
+            idleModelReleased = true
+            // Ordered with all inference, model selection and perception work.
+            worker.execute {
+                if (!destroyed) {
+                    traceMemory("idle_before")
+                    runCatching { model.hibernate() }
+                        .onSuccess { if (it) traceMemory("idle_after") }
+                        .onFailure {
+                            android.util.Log.w("NoxMemory", "engine_release_failed")
+                            main.post {
+                                if (!destroyed) {
+                                    loaded = null
+                                    status = "Не удалось освободить модель · загрузи её заново"
+                                    publish()
+                                }
+                            }
+                        }
+                }
+            }
+        }
+    }
     private var receiverRegistered = false
     private var listeningMode: VoiceInputMode? = null
     private var lockedWakeDetected = false
@@ -204,7 +229,40 @@ class NoxService : Service() {
         }
     }
 
+    private fun mayHibernateModel(): Boolean = !destroyed && !busy && !perceptionWorking &&
+        !LivePerception.active && !MainActivity.isOnScreen && loaded != null
+
+    private fun syncModelIdle() {
+        if (!mayHibernateModel()) {
+            idleModelReleased = false
+            main.removeCallbacks(idleModel)
+        } else if (!idleModelReleased && !main.hasCallbacks(idleModel)) {
+            main.postDelayed(idleModel, 60_000L)
+        }
+    }
+
+    // Some recent Android versions do not deliver memory-pressure trim levels.
+    // Idle timeout remains the normal path; trim never interrupts active inference.
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN && mayHibernateModel()) {
+            main.removeCallbacks(idleModel)
+            main.post(idleModel)
+        }
+    }
+
+    private fun traceMemory(stage: String) {
+        runCatching {
+            val am = getSystemService(ActivityManager::class.java) ?: return
+            val info = ActivityManager.MemoryInfo()
+            am.getMemoryInfo(info)
+            val pss = Debug.getPss() / 1024L
+            android.util.Log.i("NoxMemory", "stage=$stage pssMiB=$pss availableMiB=${info.availMem / 1048576L} low=${info.lowMemory}")
+        }
+    }
+
     private fun syncIdleLifetime() {
+        syncModelIdle()
         if (clientBound || background || busy || listening || activeSpeech != null || LivePerception.active) {
             main.removeCallbacks(releaseIdle)
         } else if (!main.hasCallbacks(releaseIdle)) main.postDelayed(releaseIdle, 60_000L)
@@ -437,8 +495,38 @@ class NoxService : Service() {
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .addAction(if (generating) Notification.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel, "Отменить задачу", action(CANCEL_TASK, 4)).build()
                 else Notification.Action.Builder(android.R.drawable.ic_btn_speak_now, "Говорить", action(LISTEN, 2)).build())
-            .addAction(Notification.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel, "Остановить", action(STOP, 3)).build())
+            .apply {
+                if (background) addAction(Notification.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel, "Остановить голос", action(STOP, 3)).build())
+            }
             .build()
+    }
+
+    /** Protect a user-initiated, finite request while another app is foreground.
+     * No microphone permission or recording is enabled by this promotion. */
+    private fun beginTaskForeground(): Boolean {
+        if (background || taskForeground) return true
+        if (!MainActivity.isOnScreen || !unlocked()) return false
+        return try {
+            val type = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
+            startForeground(ID, notification(), type)
+            taskForeground = true
+            lastNotificationStatus = null
+            android.util.Log.i("NoxMemory", "task_foreground_started")
+            true
+        } catch (e: RuntimeException) {
+            android.util.Log.w("NoxMemory", "task_foreground_failed " + e.javaClass.simpleName)
+            false
+        }
+    }
+
+    private fun endTaskForeground() {
+        if (!taskForeground) return
+        taskForeground = false
+        if (!background) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            lastNotificationStatus = null
+        }
+        android.util.Log.i("NoxMemory", "task_foreground_ended")
     }
 
     private fun enableBackground() {
@@ -481,6 +569,7 @@ class NoxService : Service() {
         releaseStandbyPower()
         removeOverlay()
         main.removeCallbacks(restartVoice)
+        taskForeground = false
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf() // no sticky restart after explicit stop; an existing bound Activity may remain
         syncIdleLifetime()
@@ -821,7 +910,7 @@ class NoxService : Service() {
         syncStandbyPower()
         syncIdleLifetime()
         listener?.invoke()
-        if (background && lastNotificationStatus != status &&
+        if ((background || taskForeground) && lastNotificationStatus != status &&
             (Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)) {
             getSystemService(NotificationManager::class.java)?.notify(ID, notification())
             lastNotificationStatus = status
@@ -846,6 +935,7 @@ class NoxService : Service() {
                         stopSpeech()
                     }
                     generating = false
+                    endTaskForeground()
                     busy = false; progress = null
                     if (wasCancelled) {
                         partial = ""; status = "Задача остановлена"
@@ -981,7 +1071,14 @@ class NoxService : Service() {
         generating = true
         agentRunning = false
         agentActionLabel = null
+        if (!beginTaskForeground()) {
+            generating = false
+            complete("Android не разрешил продолжение задачи в фоне. Открой чат Нокса и повтори запрос.", false)
+            publish()
+            return
+        }
         runWork("Думаю…", {
+            traceMemory("request_start")
             val start = SystemClock.elapsedRealtime()
             val deadline = SystemClock.elapsedRealtime() + 240_000L
             val stop = { destroyed || generationCancelled || SystemClock.elapsedRealtime() >= deadline }
@@ -1008,7 +1105,12 @@ class NoxService : Service() {
                 AgentCore(
                     decide = decide,
                     execute = { error("Legacy executor disabled") },
-                    executeTyped = tools::execute,
+                    executeTyped = { action ->
+                        if (action.name == "launch") traceMemory("before_launch")
+                        try { tools.execute(action) }
+                        finally { if (action.name == "launch") traceMemory("after_launch") }
+                    },
+                    trace = { event -> android.util.Log.i("NoxAgent", event) },
                     cancelled = stop,
                     goal = goal,
                     verifyFinish = tools::verifyFinish,
@@ -1029,6 +1131,7 @@ class NoxService : Service() {
                 }
             }
             val elapsed = SystemClock.elapsedRealtime() - start
+            traceMemory("request_end")
             main.post { elapsedMs = elapsed }
             response
         }, {
@@ -1241,6 +1344,7 @@ class NoxService : Service() {
         releaseStandbyPower()
         main.removeCallbacks(restartVoice)
         main.removeCallbacks(releaseIdle)
+        main.removeCallbacks(idleModel)
         main.removeCallbacks(perceptionTick)
         perceptionCancelEpoch++
         if (receiverRegistered) { runCatching { unregisterReceiver(screenReceiver) }; receiverRegistered = false }

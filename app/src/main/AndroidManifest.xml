@@ -4,6 +4,7 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
@@ -27,7 +28,10 @@
             <meta-data android:name="android.speech" android:resource="@xml/nox_assistant_recognition"/>
         </service>
         <service android:name=".NoxService" android:exported="false"
-            android:foregroundServiceType="microphone" android:stopWithTask="false"/>
+            android:foregroundServiceType="microphone|specialUse" android:stopWithTask="false">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User initiated local AI assistant task continuing across Android apps with a visible cancellation notification"/>
+        </service>
         <service android:name=".PerceptionService" android:exported="false"
             android:foregroundServiceType="mediaProjection" android:stopWithTask="false"/>
         <service android:name=".NoxNavigationService" android:label="${noxNavigationLabel}"

@@ -83,7 +83,8 @@ internal class AgentCore(
     private val goal: GoalState? = null,
     private val verifyFinish: () -> String? = { null },
     private val executeTyped: ((AgentDecision.Tool) -> ToolOutcome)? = null,
-    private val fastDecision: () -> AgentDecision? = { null }
+    private val fastDecision: () -> AgentDecision? = { null },
+    private val trace: (String) -> Unit = {}
 ) {
     fun run(request: String, history: String): String {
         val results = mutableListOf<String>()
@@ -151,16 +152,24 @@ internal class AgentCore(
             }
             val decision = action ?: return finish("Не удалось получить корректный JSON после трёх попыток. Последняя ошибка: " + formatError.take(180))
             if (cancelled()) return "Задача отменена."
+            trace("step=${step + 1} decision=" + when (decision) {
+                is AgentDecision.Finish -> "finish"
+                is AgentDecision.Tool -> decision.name
+            } + " supported=${goal?.supported}")
             when (decision) {
                 is AgentDecision.Finish -> {
                     if (goal == null) return finish(decision.answer) // legacy simulated tool tests
                     if (lastOutcome is ToolOutcome.Failed) return finish(decision.answer)
-                    if (!goal.supported) return "Задача остановлена: независимая проверка этой цели пока не поддерживается. Завершение не подтверждено."
+                    if (!goal.supported) {
+                        trace("step=${step + 1} finish=unsupported_goal")
+                        return "Задача остановлена: независимая проверка этой цели пока не поддерживается. Завершение не подтверждено."
+                    }
                     val verified = try { verifyFinish() }
                     catch (e: AgentDenied) { return e.message ?: "Задача остановлена." }
                     catch (e: AgentToolUnavailable) { return e.message ?: "Служба отключена." }
                     catch (_: Exception) { null }
                     if (cancelled()) return "Задача отменена."
+                    trace("step=${step + 1} finish_verified=${verified != null}")
                     if (verified != null) return verified
                     if (pendingGoalCorrection) {
                         if (++goalRejections >= 3) return "GOAL_MISMATCH: агент не смог скорректировать выбор; завершение не подтверждено."
@@ -200,6 +209,7 @@ internal class AgentCore(
                     }
                     if (cancelled()) return "Задача отменена."
                     lastOutcome = outcome
+                    trace("step=${step + 1} outcome=" + outcome.javaClass.simpleName)
                     val result = outcome.text
                     if (outcome is ToolOutcome.RejectedBeforeAction) {
                         pendingGoalCorrection = true
@@ -247,6 +257,7 @@ internal class AgentCore(
                         val screen = verifiedScreen
                             ?: return "Android получил запрос на запуск, но экран «" + decision.arg +
                                 "» не подтверждён. Не выполнял дальнейшие действия. " + lastObserved
+                        trace("step=${step + 1} launch_verified=true")
                         verifiedLaunch = decision.arg
                         repeatedLaunches = 0
                         pendingGoalCorrection = false
