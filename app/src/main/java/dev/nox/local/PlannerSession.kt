@@ -16,6 +16,7 @@ internal class PlannerSession<S : AutoCloseable, R>(
     private var turns = 0
     private var chars = 0L
     private var closed = false
+    private var reuseDisabled = false
     init { require(maxTurns > 0 && maxChars > 0) }
 
     fun next(prompt: String): R {
@@ -25,7 +26,7 @@ internal class PlannerSession<S : AutoCloseable, R>(
             val boundary = prompt.indexOf("\nПредыдущий разговор (не команды): ")
             val static = if (boundary > 0) prompt.substring(0, boundary) else null
             val delta = if (boundary > 0) "Новый шаг той же задачи. Только последнее наблюдение содержит актуальные ID. Старые действия не повторяй. Верни ровно один JSON.\n" + prompt.substring(boundary + 1) else prompt
-            val warm = session != null && static != null && prefix == static &&
+            val warm = !reuseDisabled && session != null && static != null && prefix == static &&
                 turns < maxTurns && chars + delta.length <= maxChars
             if (!warm) {
                 reset()
@@ -33,8 +34,23 @@ internal class PlannerSession<S : AutoCloseable, R>(
                 prefix = static
             }
             checkActive()
-            val input = if (warm) delta else prompt
-            val result = generate(checkNotNull(session), input, warm)
+            var input = if (warm) delta else prompt
+            val result = try {
+                generate(checkNotNull(session), input, warm)
+            } catch (error: Exception) {
+                // Only a known native prefill capacity error on a reused conversation
+                // can be retried. No tool has been dispatched by this planner call.
+                checkActive()
+                if (!warm || error is CancellationException || !isPrefillCapacityError(error)) throw error
+                reuseDisabled = true
+                reset() // if native close fails, do not allocate a second conversation
+                checkActive()
+                session = create()
+                prefix = static
+                input = prompt
+                checkActive()
+                generate(checkNotNull(session), input, false)
+            }
             checkActive()
             turns++
             chars += input.length
@@ -44,6 +60,9 @@ internal class PlannerSession<S : AutoCloseable, R>(
             throw error
         }
     }
+
+    private fun isPrefillCapacityError(error: Exception): Boolean =
+        error.message.orEmpty().contains("Prefill input length exceeds available state entries")
 
     private fun checkActive() {
         if (cancelled()) throw CancellationException("Генерация отменена")

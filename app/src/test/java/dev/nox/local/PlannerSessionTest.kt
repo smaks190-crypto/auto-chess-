@@ -14,9 +14,10 @@ class PlannerSessionTest {
         val calls = mutableListOf<Triple<Fake, String, Boolean>>()
         var cancel = false
         var failure: Exception? = null
+        var failWhen: (Boolean) -> Unit = {}
         val planner = PlannerSession({ Fake().also { sessions.add(it) } }, { s, p, warm ->
             check(!s.closed)
-            calls.add(Triple(s,p,warm)); failure?.let { throw it }; "ok"
+            calls.add(Triple(s,p,warm)); failWhen(warm); failure?.let { throw it }; "ok"
         }, { cancel }, maxTurns, maxChars)
     }
     private fun prompt(latest: String, prefix: String = "Rules") =
@@ -73,6 +74,68 @@ class PlannerSessionTest {
             assertEquals(1, f.calls.size); assertTrue(f.sessions.single().closed)
         }
     }
+    private fun overflow() = IllegalStateException(
+        "Status Code: 9. Message: Prefill input length exceeds available state entries (remaining capacity: 1065).")
+
+    @Test fun warmPrefillOverflowRestoresFullPromptInFreshConversation() {
+        val f = Fixture()
+        f.planner.use { p ->
+            p.next(prompt("old"))
+            f.failWhen = { if (it) throw overflow() }
+            assertEquals("ok", p.next(prompt("latest")))
+            assertEquals(listOf(false, true, false), f.calls.map { it.third })
+            assertEquals(prompt("latest"), f.calls.last().second)
+            assertTrue(f.sessions.first().closed)
+            p.next(prompt("next"))
+            assertEquals(listOf(false, true, false, false), f.calls.map { it.third })
+            assertEquals(3, f.sessions.size)
+        }
+        assertTrue(f.sessions.all { it.closed })
+    }
+
+    @Test fun coldPrefillOverflowIsNotRetried() {
+        val f = Fixture()
+        f.failWhen = { throw overflow() }
+        f.planner.use { p ->
+            assertThrows(IllegalStateException::class.java) { p.next(prompt("cold")) }
+            assertEquals(1, f.calls.size)
+            assertTrue(f.sessions.single().closed)
+        }
+    }
+
+    @Test fun repeatedPrefillOverflowStopsAfterOneRecoveryAttempt() {
+        val f = Fixture()
+        f.planner.use { p ->
+            p.next(prompt("old"))
+            f.failWhen = { throw overflow() }
+            assertThrows(IllegalStateException::class.java) { p.next(prompt("new")) }
+            assertEquals(listOf(false, true, false), f.calls.map { it.third })
+            assertTrue(f.sessions.all { it.closed })
+        }
+    }
+
+    @Test fun unrelatedNativeFailureDoesNotTriggerRecovery() {
+        val f = Fixture()
+        f.planner.use { p ->
+            p.next(prompt("old"))
+            f.failWhen = { throw IllegalStateException("Status Code: 9. Other failure") }
+            assertThrows(IllegalStateException::class.java) { p.next(prompt("new")) }
+            assertEquals(2, f.calls.size)
+            assertTrue(f.sessions.single().closed)
+        }
+    }
+
+    @Test fun cancellationDuringOverflowPreventsRecovery() {
+        val f = Fixture()
+        f.planner.use { p ->
+            p.next(prompt("old"))
+            f.failWhen = { f.cancel = true; throw overflow() }
+            assertThrows(CancellationException::class.java) { p.next(prompt("new")) }
+            assertEquals(2, f.calls.size)
+            assertTrue(f.sessions.single().closed)
+        }
+    }
+
     @Test fun closedPlannerCannotStartAnotherTask() {
         val f = Fixture()
         f.planner.close()
