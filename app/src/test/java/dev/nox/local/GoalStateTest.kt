@@ -165,13 +165,19 @@ class GoalStateTest {
         assertFalse(GoalState("Open Calculator and calculate 2+2 and 7").arithmetic)
     }
     @Test fun openRequiresMatchingActualPackageAndRequestedLabel() {
-        val g = GoalState("Open Calculator")
-        g.launched(pkg,"Калькулятор")
-        assertNotNull(g.finish(screen(g,"0")))
-        assertNull(g.finish(screen(g,"0","other.app")))
-        val other = GoalState("Open Telegram")
+        for (request in listOf("Открой Калькулятор", "Open Calculator", "Открой Калькулятор.", "Open Calculator.", "Open Calculator!", "Open Calculator?")) {
+            val g = GoalState(request)
+            g.launched(pkg,"Калькулятор")
+            assertNotNull(g.finish(screen(g,"0")))
+            assertNull(g.finish(screen(g,"0","other.app")))
+        }
+        val other = GoalState("Open Telegram.")
         other.launched(pkg,"Калькулятор")
         assertNull(other.finish(screen(other,"0")))
+
+        val dottedPackage = GoalState("Open com.example.app.")
+        dottedPackage.launched("com.example.app", "Different label")
+        assertNotNull(dottedPackage.finish(screen(dottedPackage,"0", "com.example.app")))
     }
     @Test fun finishGateIgnoresModelClaimsAndStopsAfterTwoRejections() {
         var attempts = 0
