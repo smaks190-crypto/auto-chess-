@@ -1108,8 +1108,9 @@ class NoxService : Service() {
             finishRequest(it, speak)
             return
         }
+        val telegram = if (image == null) TelegramDraft.request(text) else null
         val config = loaded
-        if (config == null || (image != null && !config.vision)) {
+        if (telegram == null && (config == null || (image != null && !config.vision))) {
             finishRequest(if (config == null) "Сначала загрузи модель в настройках." else "Выбранная модель не поддерживает изображения.", speak)
             return
         }
@@ -1132,10 +1133,10 @@ class NoxService : Service() {
             val start = SystemClock.elapsedRealtime()
             val deadline = SystemClock.elapsedRealtime() + 240_000L
             val stop = { destroyed || generationCancelled || SystemClock.elapsedRealtime() >= deadline }
-            val mode = if (forceAgent && image == null) RequestMode.AGENT else RequestRouter.route(text, image != null) { classificationPrompt ->
+            val mode = if (telegram != null || (forceAgent && image == null)) RequestMode.AGENT else RequestRouter.route(text, image != null) { classificationPrompt ->
                 model.classifyRequest(classificationPrompt, stop)
             }
-            val response = if (stop()) "Задача отменена." else if (inPlace && mode == RequestMode.AGENT) {
+            val response = if (stop()) "Задача отменена." else if (inPlace && mode == RequestMode.AGENT && telegram == null) {
                 "Эта команда требует управления приложениями. В компактном голосовом режиме я не открываю приложения."
             } else if (mode == RequestMode.AGENT) {
                 main.post {
@@ -1153,7 +1154,7 @@ class NoxService : Service() {
                         MainActivity.isVisible ||
                             (background && bubble != null && Settings.canDrawOverlays(this))
                     })
-                model.withAgentPlanner(stop, shortDecisions = goal.arithmetic) { decide ->
+                val executeGoal: ((String) -> AgentDecision) -> String = { decide ->
                 AgentCore(
                     decide = decide,
                     execute = { error("Legacy executor disabled") },
@@ -1184,6 +1185,8 @@ class NoxService : Service() {
                     } }
                 ).run(text, previous)
                 }
+                if (telegram != null) executeGoal { error("Current-chat Telegram goal must not invoke a model") }
+                else model.withAgentPlanner(stop, shortDecisions = goal.arithmetic, block = executeGoal)
             } else model.chat(if (inPlace) "Ответь на запрос текстом. Не заявляй о выполнении внешних действий или поиске, которых не было.\n" + prompt else prompt, image, thinkingBudget > 0, stop, thinkingBudget = thinkingBudget) { chunk ->
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastUpdate >= 80) {

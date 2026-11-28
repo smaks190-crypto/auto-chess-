@@ -18,6 +18,7 @@ internal object RequestRouter {
 
     fun route(request: String, hasImage: Boolean, classify: (String) -> String): RequestMode {
         if (hasImage || standaloneChat(request)) return RequestMode.CHAT
+        if (TelegramDraft.request(request) != null) return RequestMode.AGENT
         val text = normalized(request)
         // Explicit interface actions do not need another model generation.
         if (Regex("^(открой|запусти|нажми|прокрути|найди чат|прочитай экран)\\s+.+$").matches(text) ||

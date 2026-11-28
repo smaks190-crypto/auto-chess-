@@ -264,6 +264,13 @@ internal class AndroidAgentTools(
             if (query != null) goal.searchInput(observed)?.let { return AgentDecision.Tool("type", it, query) }
             return goal.searchNext(observed)?.let { AgentDecision.Tool("click", it) }
         }
+        if (goal.telegramDraftGoal && !goal.telegramSendRequested) {
+            if (goal.finish(observed) != null) return AgentDecision.Finish("")
+            goal.telegramComposer(observed)?.let {
+                if (!TelegramDraft.empty(it)) return null
+                return AgentDecision.Tool("type", it.id, goal.telegramDraftText.orEmpty())
+            }
+        }
         if (!goal.arithmetic || !goal.allowsLaunch(current.pkg)) return null
         if (goal.fastFinish(observed)) {
             Log.i("NoxPlan", "source=VERIFIED_GOAL action=finish")
@@ -290,7 +297,17 @@ internal class AndroidAgentTools(
 
     private fun observe(): String {
         snapshot = null
-        val pkg = ui { nav().rootInActiveWindow?.packageName?.toString().orEmpty() }
+        var pkg = ui { nav().rootInActiveWindow?.packageName?.toString().orEmpty() }
+        if (goal.telegramDraftGoal) {
+            // The explicit system-assistant panel may just be closing. Wait for
+            // the underlying window without navigating or reading another app.
+            for (attempt in 0 until 6) {
+                if (pkg != context.packageName && pkg.isNotBlank()) break
+                pause(200)
+                pkg = ui { nav().rootInActiveWindow?.packageName?.toString().orEmpty() }
+            }
+            if (!TelegramDraft.isTelegram(pkg)) throw AgentDenied("Открой нужный чат Telegram. Я не буду открывать приложения автоматически.")
+        }
         require(permitted(pkg)) { "Этот экран не доступен агенту: " + pkg }
         require(expectedLaunch == null || expectedLaunch == pkg) { "Ожидается экран " + expectedLaunch }
         authorize(pkg)
@@ -535,6 +552,13 @@ internal class AndroidAgentTools(
             if (!allowed) return ToolOutcome.RejectedBeforeAction(
                 "Поиск: разрешена только проверенная навигация или точный запрошенный текст в однозначном поле поиска. Не вводи сообщения.\n" + describeGoal(before))
         }
+        if (goal.telegramDraftGoal) {
+            val composer = goal.telegramComposer(beforeGoal)
+            val allowed = action.name == "type" && action.text == goal.telegramDraftText &&
+                composer != null && composer.id == target.id && TelegramDraft.empty(composer)
+            if (!allowed) return ToolOutcome.RejectedBeforeAction(
+                "Telegram: разрешён только точный запрошенный текст в однозначном поле текущего чата. Отправка сообщения не выполняется.\n" + describeGoal(before))
+        }
         goal.reject(beforeGoal, action.name, target.resource)?.let {
             if (calcPlan != null) { calcPlan?.revoke(); throw AgentDenied("План изменился. Задача остановлена.") }
             return ToolOutcome.RejectedBeforeAction(it + "\n" + describeGoal(before))
@@ -642,6 +666,11 @@ internal class AndroidAgentTools(
                         goal.searchTyped(beforeGoal, observed) &&
                             EffectCheck.typed(beforeEffect, mutation, after.effectFrame(observed.seq), targetEffect, action.text)
                     }
+                    goal.telegramDraftGoal && action.name == "type" -> {
+                        val observed = goalObservation(after)
+                        goal.telegramTyped(beforeGoal, observed, action.text) &&
+                            EffectCheck.typed(beforeEffect, mutation, after.effectFrame(observed.seq), targetEffect, action.text)
+                    }
                     goal.searchNavigation -> goal.searchAfter(beforeGoal, goalObservation(after))
                     action.name == "click" -> EffectCheck.clicked(beforeEffect, mutation, after.effectFrame(goal.sequence()), action.expect)
                     else -> EffectCheck.typed(beforeEffect, mutation, after.effectFrame(goal.sequence()), targetEffect, action.text)
@@ -668,6 +697,8 @@ internal class AndroidAgentTools(
         if (goal.searchNavigation && action.name !in setOf("apps", "launch", "observe", "click") &&
             !(action.name == "type" && goal.searchQuery != null))
             return ToolOutcome.RejectedBeforeAction("Для поиска допустимы только поиск приложения, наблюдение, проверенная навигация и явно запрошенный ввод поиска.")
+        if (goal.telegramDraftGoal && (goal.telegramSendRequested || action.name !in setOf("observe", "type")))
+            return ToolOutcome.RejectedBeforeAction("Для текущего чата Telegram допустимы только наблюдение и ввод точного текста черновика; запуск приложений и отправка не выполняются.")
         if (goal.arithmetic && action.name !in setOf("apps", "launch", "observe", "click"))
             return ToolOutcome.RejectedBeforeAction("Для этой задачи нужны только кнопки калькулятора.")
         if (action.name == "launch" && !goal.allowsLaunch(action.arg))

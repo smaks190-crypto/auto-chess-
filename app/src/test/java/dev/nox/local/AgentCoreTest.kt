@@ -127,6 +127,63 @@ class AgentCoreTest {
         assertEquals(1,mutations)
     }
 
+    @Test fun staleTargetRejectionForcesFreshObserveBeforeReplanningAndDoesNotRepeatAction() {
+        val decisions = listOf(AgentDecision.Tool("click", "stale"), AgentDecision.Tool("click", "fresh"), AgentDecision.Finish("done"))
+        var decisionIndex = 0
+        val actions = mutableListOf<String>()
+        val core = AgentCore(
+            decide = { prompt ->
+                if (prompt.contains("Экран обновлён")) assertTrue(prompt.contains("свежими ID"))
+                decisions[decisionIndex++]
+            }, execute = { error("typed executor required") }, cancelled = { false },
+            goal = GoalState("Open Telegram"), verifyFinish = { "verified" },
+            executeTyped = { action ->
+                actions.add(action.name + ":" + action.arg)
+                when {
+                    action.name == "click" && action.arg == "stale" -> ToolOutcome.RejectedBeforeAction("NODE_CHANGED:SCREEN")
+                    action.name == "click" -> ToolOutcome.Ok("fresh action", "org.telegram.messenger")
+                    action.name == "observe" -> ToolOutcome.Ok("Активное приложение: org.telegram.messenger\\n2 | EditText | Сообщение [type]", "org.telegram.messenger")
+                    else -> error("unexpected")
+                }
+            })
+        assertEquals("verified", core.run("Open Telegram", ""))
+        assertEquals(listOf("click:stale", "observe:", "click:fresh"), actions)
+    }
+
+    @Test fun currentTelegramDraftObservesThenTypesWithoutModelOrLaunch() {
+        val request = "напиши привет в чате тг"
+        val goal = GoalState(request)
+        val actions = mutableListOf<String>()
+        var done = false
+        val core = AgentCore(decide = { error("No model needed") }, execute = { error("Typed executor required") },
+            cancelled = { false }, goal = goal,
+            executeTyped = { action ->
+                actions.add(action.name)
+                if (action.name == "type") {
+                    assertEquals("привет", action.text)
+                    done = true
+                }
+                ToolOutcome.Ok("screen", "org.telegram.messenger.web")
+            },
+            fastDecision = { if (done) AgentDecision.Finish("") else AgentDecision.Tool("type", "1", "привет") },
+            verifyFinish = { if (done) "verified" else null })
+        assertEquals("verified", core.run(request, ""))
+        assertEquals(listOf("observe", "type"), actions)
+    }
+
+    @Test fun repeatedPreActionRejectionsHaveBoundedFreshObservations() {
+        var clicks = 0
+        var observes = 0
+        val core = AgentCore(decide = { AgentDecision.Tool("click", "same") }, execute = { error("typed executor required") },
+            cancelled = { false }, goal = GoalState("Open Telegram"), executeTyped = { action ->
+                if (action.name == "observe") { observes++; ToolOutcome.Ok("fresh screen", "org.telegram.messenger") }
+                else { clicks++; ToolOutcome.RejectedBeforeAction("stale node") }
+            })
+        assertTrue(core.run("Open Telegram", "").contains("GOAL_MISMATCH"))
+        assertEquals(3, clicks)
+        assertEquals(2, observes)
+    }
+
     @Test fun preActionRejectionBudgetIsBounded() {
         var attempts = 0
         val core = AgentCore(decide = { AgentDecision.Tool("click","wrong") },

@@ -413,7 +413,8 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         }
         val s = service ?: return
         if (s.busy) return
-        if (s.loaded == null && !modelLoadAttempted && AssistantVoiceCommand.dedicatedToolUnavailable(command) == null) {
+        val telegram = TelegramDraft.request(command)
+        if (s.loaded == null && telegram == null && !modelLoadAttempted && AssistantVoiceCommand.dedicatedToolUnavailable(command) == null) {
             modelLoadAttempted = true
             if (s.prepareAssistantModel()) {
                 notice = "Загружаю локальную модель…"
@@ -421,11 +422,20 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
             }
         }
         pendingCommand = null
+        // Keep the finite task alive when the assistant panel releases its binding.
+        // The panel must not cover the underlying Telegram composer during observation.
+        if (telegram != null && !telegram.send) {
+            val started = runCatching {
+                ctx.startService(Intent(ctx, NoxService::class.java).setAction(NoxService.KEEP_ALIVE)) != null
+            }.getOrDefault(false)
+            if (!started) { notice = "Android не разрешил выполнение команды в фоне"; return }
+        }
         requestId = s.askInPlace(command)
         if (requestId == null) notice = "Не удалось запустить команду"
         else {
             notice = null
             input?.setText(command)
+            if (telegram != null && !telegram.send && s.busy) main.post { hide() }
         }
     }
 

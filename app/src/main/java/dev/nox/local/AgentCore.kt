@@ -88,6 +88,7 @@ internal class AgentCore(
     private val trace: (String) -> Unit = {}
 ) {
     fun run(request: String, history: String): String {
+        if (goal?.telegramSendRequested == true) return "Автоматическая отправка в Telegram пока не поддерживается. Сообщение не отправлено."
         val results = mutableListOf<String>()
         var lastOutcome: ToolOutcome? = null
         fun invokeTool(a: AgentDecision.Tool) = executeTyped?.invoke(a) ?: ToolOutcome.legacy(execute(a))
@@ -110,8 +111,14 @@ internal class AgentCore(
             if (cancelled()) return "Задача отменена."
             // Only a typed, successful screen outcome can authorize a deterministic next decision.
             // Unknown outcomes stop below, and pre-action rejection requires fresh observation.
-            var action: AgentDecision? = if ((goal?.arithmetic == true || goal?.searchNavigation == true) &&
-                executeTyped != null && (lastOutcome as? ToolOutcome.Ok)?.pkg != null) fastDecision() else null
+            var action: AgentDecision? = when {
+                goal?.telegramDraftGoal == true && executeTyped != null && step == 0 -> AgentDecision.Tool("observe", "")
+                (goal?.arithmetic == true || goal?.searchNavigation == true || goal?.telegramDraftGoal == true) &&
+                    executeTyped != null && (lastOutcome as? ToolOutcome.Ok)?.pkg != null -> fastDecision()
+                else -> null
+            }
+            if (goal?.telegramDraftGoal == true && executeTyped != null && step > 0 && action == null)
+                return "Не удалось безопасно выбрать пустое поле сообщения в текущем чате Telegram. Открой нужный чат и проверь черновик."
             var formatError = ""
             if (action == null) {
             progress("Шаг " + (step + 1) + " · анализ")
@@ -121,12 +128,12 @@ internal class AgentCore(
                 appendLine("""{"tool":"apps","arg":"часть имени или пусто"} — найти реальные имена и пакеты приложений.""")
                 appendLine("""{"tool":"launch","arg":"точный пакет из apps"} — запустить приложение.""")
                 appendLine("""{"tool":"observe","arg":""} — прочитать активный экран; IDs действительны только до следующего наблюдения/действия.""")
-                if (goal?.arithmetic == true || goal?.searchNavigation == true || goal == null) {
+                if (goal?.arithmetic == true || goal?.searchNavigation == true || goal?.telegramDraftGoal == true || goal == null) {
                     appendLine("""{"tool":"click","arg":"ID"} — нажать видимый узел; {"tool":"type","arg":"ID","text":"текст"} — заменить текст в редактируемом поле.""")
                 } else {
                     appendLine("""{"tool":"click","arg":"ID","expect":{"field":"hint","value":"точная ожидаемая подсказка"}} — предскажи новый уникальный элемент после нажатия. field: text, hint или description. Не выбирай элемент, который уже существует. Не подменяй цель произвольным изменением экрана.""")
                     appendLine("""{"tool":"type","arg":"ID","text":"текст"} — заменить текст выбранного поля, ядро проверит точное содержимое этого поля.""")
-                    appendLine("Если открыт не тот экран, сначала определи его назначение и нужный переход. Не используй ввод сообщения для поиска контакта. Наблюдение после шага не означает выполнение всей задачи.")
+                    appendLine("Если открыт не тот экран, сначала определи его назначение и нужный переход. Не используй ввод сообщения для поиска контакта. Если уже открыт нужный Telegram-чат и цель — написать текст, можно сразу выбрать его единственное доступное поле сообщения; поиск и запуск не требуются. Ввод готовит черновик, отправляй только при явном запросе пользователя и отдельном подтверждении. Наблюдение после шага не означает выполнение всей задачи.")
                 }
                 appendLine("""{"tool":"scroll","arg":"down"} или up; {"tool":"back","arg":""}; {"tool":"home","arg":""}; {"tool":"volume","arg":"up"} или down.""")
                 appendLine("""{"finish":"ответ пользователю"} — обычный разговор, уточнение или завершение. Не заявляй об успехе без наблюдения. При отказе не повторяй действие.""")
@@ -219,10 +226,23 @@ internal class AgentCore(
                     trace("step=${step + 1} outcome=" + outcome.javaClass.simpleName)
                     val result = outcome.text
                     if (outcome is ToolOutcome.RejectedBeforeAction) {
+                        if (decision.name == "observe") return result
                         pendingGoalCorrection = true
                         if (++goalRejections >= 3)
                             return "GOAL_MISMATCH: не удалось скорректировать выбор. " + result.lineSequence().first().take(240)
-                        results.add("GOAL_REJECTED: действие НЕ выполнено. Исправь выбор, не завершай задачу.\n" + result.trim())
+                        // Rejections are pre-dispatch, but their captured node IDs may be stale.
+                        // Refresh before replanning; never replay the rejected action automatically.
+                        if (executeTyped != null && decision.name in setOf("click", "type", "scroll")) {
+                            val refreshed = try { invokeTool(AgentDecision.Tool("observe", "")) }
+                            catch (e: AgentDenied) { return e.message ?: "Задача остановлена." }
+                            catch (e: AgentToolUnavailable) { return e.message ?: "Служба отключена." }
+                            catch (e: Exception) { return "Не удалось обновить экран после отказа: " + (e.message ?: "ошибка наблюдения").take(180) }
+                            if (refreshed !is ToolOutcome.Ok) return refreshed.text
+                            lastOutcome = refreshed
+                            results.add("GOAL_REJECTED: действие НЕ выполнено. Экран обновлён; выбери заново только по свежим ID, не завершай задачу.\\n" + refreshed.text.take(7200))
+                        } else {
+                            results.add("GOAL_REJECTED: действие НЕ выполнено. Исправь выбор по результатам наблюдения; не завершай задачу.\n" + result.trim())
+                        }
                         return@repeat
                     }
                     if (outcome is ToolOutcome.Unverified || outcome is ToolOutcome.NeedsUserTap)
@@ -276,6 +296,7 @@ internal class AgentCore(
                         return@repeat
                     }
                     if (outcome is ToolOutcome.Failed) {
+                        if (goal?.telegramDraftGoal == true) return "Действие не выполнено. " + outcome.text.take(260)
                         val fingerprint = decision.name + ":" + decision.arg + ":" + result.take(150)
                         consecutiveFailures = if (fingerprint == lastFailure) consecutiveFailures + 1 else 1
                         lastFailure = fingerprint

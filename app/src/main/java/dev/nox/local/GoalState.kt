@@ -17,6 +17,7 @@ internal class GoalState(private val request: String) {
         private val numberWords = mapOf("ноль" to "0", "один" to "1", "два" to "2", "три" to "3", "четыре" to "4", "пять" to "5", "шесть" to "6", "семь" to "7", "восемь" to "8", "девять" to "9")
     }
     private val searchRequest = SearchNavigation.request(request)
+    private val telegramDraft = TelegramDraft.request(request)
     private val normalized = request.lowercase().let { original ->
         var s = original
         fun wordPattern(word: String) = Regex("(?<![\\p{L}\\p{N}_])" + Regex.escape(word) + "(?![\\p{L}\\p{N}_])")
@@ -49,12 +50,18 @@ internal class GoalState(private val request: String) {
     val searchTarget = searchRequest?.app
     val searchQuery = searchRequest?.query
     val searchNavigation: Boolean get() = searchTarget != null
-    val supported: Boolean get() = formula != null || openTarget != null || searchNavigation
+    val telegramDraftText = telegramDraft?.text
+    val telegramSendRequested = telegramDraft?.send == true
+    val telegramDraftGoal: Boolean get() = telegramDraft != null
+    val supported: Boolean get() = formula != null || openTarget != null || searchNavigation || telegramDraftGoal
     fun matchesSearchApp(pkg: String, label: String): Boolean =
         searchTarget?.let { SearchNavigation.matchesApp(it, label, pkg) } ?: true
     val arithmetic: Boolean get() = formula != null
     fun allowsLaunch(pkg: String) = !arithmetic || pkg == CALC
     private var verifiedEqualsSeq: Long? = null
+    private var verifiedDraftSeq: Long? = null
+    private var verifiedDraftField: GoalNode? = null
+    private var verifiedDraftPkg: String? = null
     private var lastMutation = -1L
     private var nextSeq = 0L
     private var launchName: String? = null
@@ -80,7 +87,28 @@ internal class GoalState(private val request: String) {
             after.seq > lastMutation && SearchNavigation.inputField(before.nodes)?.let { it.text != query } == true &&
             SearchNavigation.inputField(after.nodes)?.text == query
     }
-    fun mutation(): Long { verifiedEqualsSeq = null; return sequence().also { lastMutation = it } }
+    fun mutation(): Long { verifiedEqualsSeq = null; verifiedDraftSeq = null; return sequence().also { lastMutation = it } }
+    fun telegramComposer(o: GoalObservation): GoalNode? {
+        if (!telegramDraftGoal || telegramSendRequested || !TelegramDraft.isTelegram(o.pkg) || o.seq <= lastMutation) return null
+        return TelegramDraft.composer(o.nodes)
+    }
+    fun telegramTyped(before: GoalObservation, after: GoalObservation, text: String): Boolean {
+        val requested = telegramDraftText ?: return false
+        if (telegramSendRequested || text != requested || !TelegramDraft.isTelegram(before.pkg) ||
+            before.pkg != after.pkg || before.seq >= lastMutation || after.seq <= lastMutation || after.seq <= before.seq) return false
+        val field = TelegramDraft.composer(before.nodes) ?: return false
+        val updated = matchingDraftField(after, field) ?: return false
+        if (updated.text != requested) return false
+        verifiedDraftField = updated
+        verifiedDraftPkg = after.pkg
+        verifiedDraftSeq = after.seq
+        return true
+    }
+    private fun matchingDraftField(o: GoalObservation, field: GoalNode): GoalNode? {
+        val candidates = o.nodes.filter { it.enabled && it.editable && it.kind == field.kind &&
+            it.resource == field.resource }
+        return candidates.singleOrNull()
+    }
     private fun value(o: GoalObservation): String? {
         if (o.pkg != CALC) return null
         val raw = o.nodes.singleOrNull { it.resource == FORMULA }?.label ?: return null
@@ -156,6 +184,11 @@ internal class GoalState(private val request: String) {
     }
     fun finish(o: GoalObservation?): String? {
         if (o == null || o.seq <= lastMutation) return null
+        if (telegramDraftGoal) {
+            if (telegramSendRequested || verifiedDraftSeq == null || o.seq < verifiedDraftSeq!! || o.pkg != verifiedDraftPkg) return null
+            val field = matchingDraftField(o, verifiedDraftField ?: return null) ?: return null
+            return if (field.text == telegramDraftText) "В текущем чате Telegram подготовлен черновик. Сообщение не отправлял." else null
+        }
         if (formula != null) {
             if (verifiedEqualsSeq != null && o.seq >= verifiedEqualsSeq!! && value(o) == expected)
                 return "В калькуляторе подтверждено: " + formula + " = " + expected + "."
