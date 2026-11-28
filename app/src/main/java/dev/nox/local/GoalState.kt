@@ -19,6 +19,15 @@ internal class GoalState(private val request: String) {
     private val searchRequest = SearchNavigation.request(request)
     private val telegramDraft = TelegramDraft.request(request)
     val telegramOpenWrite = TelegramDraft.openWriteNeedsClarification(request)
+    private val clickRequest = ExplicitClick.parse(request).takeIf {
+        searchRequest == null && telegramDraft == null && !telegramOpenWrite
+    }
+    val explicitClick: Boolean get() = clickRequest != null
+    val clickApp = clickRequest?.app
+    fun clickLaunchPackage(candidates: Map<String, String>): String? {
+        val target = clickApp ?: return null
+        return candidates.entries.singleOrNull { SearchNavigation.matchesApp(target, it.value, it.key) }?.key
+    }
     private val normalized = request.lowercase().let { original ->
         var s = original
         fun wordPattern(word: String) = Regex("(?<![\\p{L}\\p{N}_])" + Regex.escape(word) + "(?![\\p{L}\\p{N}_])")
@@ -28,7 +37,7 @@ internal class GoalState(private val request: String) {
     private val match = expression.findAll(normalized).toList().singleOrNull()
         ?.takeIf { m ->
             val remainder = normalized.removeRange(m.range)
-            searchRequest == null && (normalized.contains("calculator") || normalized.contains("калькулятор")) &&
+            searchRequest == null && clickRequest == null && (normalized.contains("calculator") || normalized.contains("калькулятор")) &&
                 remainder.none { it.isDigit() || it in "+−-*/×÷=" } &&
                 m.groupValues[1].let { it == "0" || !it.startsWith("0") } &&
                 m.groupValues[3].let { it == "0" || !it.startsWith("0") }
@@ -48,27 +57,49 @@ internal class GoalState(private val request: String) {
     }
     // The existing Russian command grammar recognizes a single explicit app launch.
     // Follow-up actions and unknown requests remain on the ordinary guarded path.
-    val directOpenTarget: String? = if (searchRequest == null && telegramDraft == null && !telegramOpenWrite)
+    val directOpenTarget: String? = if (searchRequest == null && telegramDraft == null && !telegramOpenWrite && !explicitClick)
         (PhoneCommands.parse(request) as? PhoneCommand.Open)?.app else null
-    val requiresNoModel: Boolean get() = telegramDraftGoal || telegramOpenWrite || directOpenTarget != null
+    val requiresNoModel: Boolean get() = telegramDraftGoal || telegramOpenWrite || directOpenTarget != null || searchNavigation || explicitClick
     fun directOpenPackage(candidates: Map<String, String>): String? {
         val target = directOpenTarget ?: return null
         return candidates.entries.singleOrNull { SearchNavigation.matchesApp(target, it.value, it.key) }?.key
     }
     private val openTarget = if (telegramOpenWrite) "Telegram" else directOpenTarget ?: Regex("^(?:открой|запусти|open|launch)\\s+([\\p{L}0-9 ._-]+?)[.!?]?\\s*$", RegexOption.IGNORE_CASE)
         .matchEntire(request.trim())?.groupValues?.get(1)?.trim()
+        ?.takeUnless { Regex("(?i)\\s+(?:and|then|и|потом|затем)\\s+").containsMatchIn(it) }
     val searchTarget = searchRequest?.app
     val searchQuery = searchRequest?.query
+    fun searchLaunchPackage(candidates: Map<String, String>): String? {
+        val target = searchTarget ?: return null
+        return candidates.entries.singleOrNull { SearchNavigation.matchesApp(target, it.value, it.key) }?.key
+    }
     val searchNavigation: Boolean get() = searchTarget != null
     val telegramDraftText = telegramDraft?.text
     val telegramSendRequested = telegramDraft?.send == true
     val telegramDraftGoal: Boolean get() = telegramDraft != null
-    val supported: Boolean get() = formula != null || openTarget != null || searchNavigation || telegramDraftGoal
+    val supported: Boolean get() = formula != null || openTarget != null || searchNavigation || telegramDraftGoal || explicitClick
     fun matchesSearchApp(pkg: String, label: String): Boolean =
         if (telegramOpenWrite) TelegramDraft.isTelegram(pkg)
-        else (directOpenTarget ?: searchTarget)?.let { SearchNavigation.matchesApp(it, label, pkg) } ?: true
+        else (directOpenTarget ?: searchTarget ?: clickApp)?.let { SearchNavigation.matchesApp(it, label, pkg) } ?: true
     val arithmetic: Boolean get() = formula != null
-    fun allowsLaunch(pkg: String) = !arithmetic || pkg == CALC
+    fun allowsLaunch(pkg: String) = (!arithmetic || pkg == CALC) && (!explicitClick || clickApp != null)
+    private var verifiedClickSeq: Long? = null
+    private var verifiedClickPkg: String? = null
+    private fun matchingClickNode(o: GoalObservation): GoalNode? {
+        val requested = clickRequest ?: return null
+        if (requested.app != null && (o.pkg != launchPkg || !matchesSearchApp(o.pkg, launchName.orEmpty()))) return null
+        return ExplicitClick.node(requested, o.nodes)
+    }
+    fun explicitClickNode(o: GoalObservation): GoalNode? =
+        if (o.seq > lastMutation && verifiedClickSeq == null) matchingClickNode(o) else null
+    /** Called only after the executor independently observed the confirmed click's effect. */
+    fun clickObserved(before: GoalObservation, after: GoalObservation, target: GoalNode): Boolean {
+        if (!explicitClick || verifiedClickSeq != null || before.seq >= lastMutation ||
+            after.seq <= lastMutation || before.pkg != after.pkg || matchingClickNode(before) != target) return false
+        verifiedClickSeq = after.seq
+        verifiedClickPkg = after.pkg
+        return true
+    }
     private var verifiedEqualsSeq: Long? = null
     private var verifiedDraftSeq: Long? = null
     private var verifiedDraftField: GoalNode? = null
@@ -78,11 +109,20 @@ internal class GoalState(private val request: String) {
     private var launchName: String? = null
     private var launchPkg: String? = null
     fun sequence() = ++nextSeq
+    val hasLaunched: Boolean get() = launchPkg != null
     fun launched(pkg: String, label: String) { launchPkg = pkg; launchName = label }
     fun searchScreen(o: GoalObservation): Boolean = searchNavigation && o.pkg == launchPkg &&
         matchesSearchApp(o.pkg, launchName.orEmpty())
     fun searchNext(o: GoalObservation): String? =
         if (searchScreen(o) && o.seq > lastMutation) SearchNavigation.next(o.nodes) else null
+    /** Only a unique, explicitly requested search control/query. Back from a chat
+     * remains individually approved because it might abandon a draft. */
+    fun safeSearchAction(o: GoalObservation, action: String, id: String, text: String): Boolean =
+        when (action) {
+            "click" -> SearchNavigation.state(o.nodes) == SearchNavigation.State.LIST && searchNext(o) == id
+            "type" -> searchQuery != null && searchQuery == text && searchInput(o) == id
+            else -> false
+        }
     fun searchAfter(before: GoalObservation, after: GoalObservation): Boolean =
         searchScreen(before) && searchScreen(after) && after.seq > lastMutation && after.seq > before.seq &&
             SearchNavigation.advanced(before.nodes, after.nodes)
@@ -98,7 +138,7 @@ internal class GoalState(private val request: String) {
             after.seq > lastMutation && SearchNavigation.inputField(before.nodes)?.let { it.text != query } == true &&
             SearchNavigation.inputField(after.nodes)?.text == query
     }
-    fun mutation(): Long { verifiedEqualsSeq = null; verifiedDraftSeq = null; return sequence().also { lastMutation = it } }
+    fun mutation(): Long { verifiedEqualsSeq = null; verifiedDraftSeq = null; verifiedClickSeq = null; verifiedClickPkg = null; return sequence().also { lastMutation = it } }
     fun telegramComposer(o: GoalObservation): GoalNode? {
         if (!telegramDraftGoal || telegramSendRequested || !TelegramDraft.isTelegram(o.pkg) || o.seq <= lastMutation) return null
         return TelegramDraft.composer(o.nodes)
@@ -195,6 +235,11 @@ internal class GoalState(private val request: String) {
     }
     fun finish(o: GoalObservation?): String? {
         if (o == null || o.seq <= lastMutation) return null
+        if (explicitClick) {
+            val seq = verifiedClickSeq ?: return null
+            return if (o.pkg == verifiedClickPkg && o.seq >= seq)
+                "Нажатие «" + clickRequest?.label + "» выполнено; изменение интерфейса наблюдалось." else null
+        }
         if (telegramDraftGoal) {
             if (telegramSendRequested || verifiedDraftSeq == null || o.seq < verifiedDraftSeq!! || o.pkg != verifiedDraftPkg) return null
             val field = matchingDraftField(o, verifiedDraftField ?: return null) ?: return null

@@ -22,8 +22,8 @@ internal object SearchNavigation {
         val openMatch = openEn.matchEntire(value) ?: openRu.matchEntire(value)
         if (openMatch != null) return Request(openMatch.groupValues[1].trim())
 
-        val queryEn = Regex("^open\\s+(telegram)\\s+and\\s+type\\s+(.+?)\\s+in\\s+search[.!]?$", RegexOption.IGNORE_CASE)
-        val queryRu = Regex("^открой\\s+(telegram|телеграм|тг)\\s+и\\s+(?:напиши|введи)\\s+в\\s+поиск(?:е)?\\s+(.+?)[.!]?$", RegexOption.IGNORE_CASE)
+        val queryEn = Regex("^open\\s+([\\p{L}0-9 ._-]{1,80}?)\\s+and\\s+type\\s+(.+?)\\s+in\\s+search[.!]?$", RegexOption.IGNORE_CASE)
+        val queryRu = Regex("^открой\\s+([\\p{L}0-9 ._-]{1,80}?)\\s+и\\s+(?:напиши|введи)\\s+в\\s+поиск(?:е)?\\s+(.+?)[.!]?$", RegexOption.IGNORE_CASE)
         val queryMatch = queryEn.matchEntire(value) ?: queryRu.matchEntire(value)
         if (queryMatch != null) {
             val app = queryMatch.groupValues[1]

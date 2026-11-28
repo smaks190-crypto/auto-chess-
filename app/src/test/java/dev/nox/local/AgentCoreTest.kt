@@ -4,6 +4,24 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AgentCoreTest {
+    @Test fun unsupportedGoalReportsObservedStepsNotModelClaim() {
+        val request = "Открой браузер и найди настройки, затем покажи историю"
+        var step = 0
+        val goal = GoalState(request)
+        assertFalse(goal.supported)
+        val core = AgentCore(decide = {
+            when (step++) {
+                0 -> AgentDecision.Tool("click", "1")
+                else -> AgentDecision.Finish("Всё выполнено, деньги переведены")
+            }
+        }, execute = { error("legacy") }, cancelled = { false }, goal = goal,
+            executeTyped = { ToolOutcome.Ok("Android принял нажатие", "browser.app") })
+        val answer = core.run(request, "")
+        assertTrue(answer.contains("Нажатий с наблюдением: 1"))
+        assertTrue(answer.contains("не подтверждено"))
+        assertFalse(answer.contains("деньги переведены"))
+    }
+
     @Test fun simpleRussianOpenUsesNoModelAndVerifiesFreshScreen() {
         val request = "Нокс, открой Telegram!"
         val goal = GoalState(request)

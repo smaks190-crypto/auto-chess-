@@ -19,14 +19,19 @@ internal object EffectCheck {
         } == expect.value
     }
     fun clickRejection(before: EffectFrame, expect: ExpectedNode?): String? = when {
-        expect == null -> "Укажи expect: точное новое поле text, hint или description."
+        expect == null -> null
         count(before, expect) != 0 -> "Ожидаемый элемент уже есть на экране; выбери другое проверяемое изменение."
         else -> null
     }
     private fun fresh(before: EffectFrame, mutation: Long, after: EffectFrame): Boolean =
         before.seq < mutation && mutation < after.seq && before.pkg == after.pkg
+    // Only observational progress: a new window or changed semantic structure, not a claim
+    // that the user's overall goal succeeded. Text-only churn is insufficient.
+    private fun structure(frame: EffectFrame) = frame.nodes.map { it.copy(text = null) }
     fun clicked(before: EffectFrame, mutation: Long, after: EffectFrame, expect: ExpectedNode?): Boolean =
-        expect != null && fresh(before, mutation, after) && count(before, expect) == 0 && count(after, expect) == 1
+        fresh(before, mutation, after) && if (expect != null)
+            count(before, expect) == 0 && count(after, expect) == 1
+        else after.nodes.isNotEmpty() && (before.window != after.window || structure(before) != structure(after))
     fun typeRejection(target: EffectNode, text: String): String? = when {
         !target.editable || !target.enabled -> "Поле недоступно для ввода."
         target.text == text -> "В поле уже находится этот текст."

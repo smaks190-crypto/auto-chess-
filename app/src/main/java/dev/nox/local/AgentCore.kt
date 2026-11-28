@@ -97,6 +97,11 @@ internal class AgentCore(
         var verifiedLaunch: String? = null
         var repeatedLaunches = 0
         var rejectedFinishes = 0
+        var observedClicks = 0
+        var verifiedInputs = 0
+        var observedLaunches = 0
+        fun progressReport(): String =
+            "Запусков с наблюдением: $observedLaunches. Нажатий с наблюдением: $observedClicks. Проверенных вводов: $verifiedInputs. Выполнение всей задачи не подтверждено."
         var pendingGoalCorrection = false
         var goalRejections = 0
         val readOnlyResults = mutableMapOf<Pair<AgentDecision.Tool, String>, Int>()
@@ -112,6 +117,11 @@ internal class AgentCore(
             // Only a typed, successful screen outcome can authorize a deterministic next decision.
             // Unknown outcomes stop below, and pre-action rejection requires fresh observation.
             var action: AgentDecision? = when {
+                goal?.explicitClick == true && executeTyped != null && step == 0 ->
+                    goal.clickApp?.let { AgentDecision.Tool("apps", it) } ?: AgentDecision.Tool("observe", "")
+                goal?.explicitClick == true && executeTyped != null && lastOutcome is ToolOutcome.Ok -> fastDecision()
+                goal?.searchTarget != null && executeTyped != null && step == 0 -> AgentDecision.Tool("apps", goal.searchTarget)
+                goal?.searchNavigation == true && executeTyped != null && lastOutcome is ToolOutcome.Ok -> fastDecision()
                 goal?.directOpenTarget != null && executeTyped != null && step == 0 -> AgentDecision.Tool("apps", goal.directOpenTarget)
                 goal?.directOpenTarget != null && executeTyped != null && lastOutcome is ToolOutcome.Ok -> fastDecision()
                 goal?.telegramOpenWrite == true && executeTyped != null && step == 0 -> AgentDecision.Tool("apps", "Telegram")
@@ -121,6 +131,10 @@ internal class AgentCore(
                     executeTyped != null && (lastOutcome as? ToolOutcome.Ok)?.pkg != null -> fastDecision()
                 else -> null
             }
+            if (goal?.explicitClick == true && executeTyped != null && step > 0 && action == null)
+                return "Не удалось однозначно найти кнопку или подтвердить нажатие. " + progressReport()
+            if (goal?.searchNavigation == true && executeTyped != null && step > 0 && action == null)
+                return "Не удалось однозначно выбрать приложение или продолжить поиск. " + progressReport()
             if (goal?.directOpenTarget != null && executeTyped != null && step > 0 && action == null)
                 return "Не удалось однозначно найти или подтвердить запуск приложения. Уточни его название."
             if (goal?.telegramOpenWrite == true && executeTyped != null && step > 0 && action == null)
@@ -140,7 +154,7 @@ internal class AgentCore(
                 if (goal?.arithmetic == true || goal?.searchNavigation == true || goal?.telegramDraftGoal == true || goal == null) {
                     appendLine("""{"tool":"click","arg":"ID"} — нажать видимый узел; {"tool":"type","arg":"ID","text":"текст"} — заменить текст в редактируемом поле.""")
                 } else {
-                    appendLine("""{"tool":"click","arg":"ID","expect":{"field":"hint","value":"точная ожидаемая подсказка"}} — предскажи новый уникальный элемент после нажатия. field: text, hint или description. Не выбирай элемент, который уже существует. Не подменяй цель произвольным изменением экрана.""")
+                    appendLine("""{"tool":"click","arg":"ID","expect":{"field":"hint","value":"точная ожидаемая подсказка"}} — если известен новый уникальный элемент, укажи его. field: text, hint или description. Если точный элемент неизвестен, используй {"tool":"click","arg":"ID"}; ядро запросит подтверждение и проверит изменение интерфейса. Изменение интерфейса не доказывает выполнение цели.""")
                     appendLine("""{"tool":"type","arg":"ID","text":"текст"} — заменить текст выбранного поля, ядро проверит точное содержимое этого поля.""")
                     appendLine("Если открыт не тот экран, сначала определи его назначение и нужный переход. Не используй ввод сообщения для поиска контакта. Если уже открыт нужный Telegram-чат и цель — написать текст, можно сразу выбрать его единственное доступное поле сообщения; поиск и запуск не требуются. Ввод готовит черновик, отправляй только при явном запросе пользователя и отдельном подтверждении. Наблюдение после шага не означает выполнение всей задачи.")
                 }
@@ -185,7 +199,8 @@ internal class AgentCore(
                     if (lastOutcome is ToolOutcome.Failed) return finish(decision.answer)
                     if (!goal.supported) {
                         trace("step=${step + 1} finish=unsupported_goal")
-                        return "Задача остановлена: независимая проверка этой цели пока не поддерживается. Завершение не подтверждено."
+                        return if (executeTyped != null) progressReport()
+                            else "Задача остановлена: независимая проверка этой цели пока не поддерживается. Завершение не подтверждено."
                     }
                     val verified = try { verifyFinish() }
                     catch (e: AgentDenied) { return e.message ?: "Задача остановлена." }
@@ -295,6 +310,7 @@ internal class AgentCore(
                                 "» не подтверждён. Не выполнял дальнейшие действия. " + lastObserved
                         trace("step=${step + 1} launch_verified=true")
                         verifiedLaunch = decision.arg
+                        observedLaunches++
                         repeatedLaunches = 0
                         pendingGoalCorrection = false
                         goalRejections = 0
@@ -315,6 +331,13 @@ internal class AgentCore(
                         consecutiveFailures = 0
                         lastFailure = null
                         val activePackage = (outcome as? ToolOutcome.Ok)?.pkg
+                        if (executeTyped != null && activePackage != null) {
+                            when (decision.name) {
+                                "launch" -> if (activePackage == decision.arg) observedLaunches++
+                                "click" -> observedClicks++
+                                "type" -> verifiedInputs++
+                            }
+                        }
                         if (activePackage != null && activePackage != verifiedLaunch) verifiedLaunch = null
                         if (decision.name == "launch" && activePackage == decision.arg) { verifiedLaunch = decision.arg; repeatedLaunches = 0 }
                         if (decision.name in setOf("click", "type", "scroll", "back", "home")) repeatedLaunches = 0

@@ -256,6 +256,14 @@ internal class AndroidAgentTools(
      *  The ordinary executor still checks permission, veto, identity and postcondition.
      */
     fun fastDecision(): AgentDecision? {
+        if (goal.explicitClick) {
+            val current = snapshot
+            if (current == null) return if (goal.hasLaunched) null
+                else goal.clickLaunchPackage(apps)?.let { AgentDecision.Tool("launch", it) }
+            val observed = goalObservation(current)
+            if (goal.finish(observed) != null) return AgentDecision.Finish("")
+            return goal.explicitClickNode(observed)?.let { AgentDecision.Tool("click", it.id) }
+        }
         if (goal.directOpenTarget != null) {
             val screen = snapshot
             if (screen != null) return if (goal.finish(goalObservation(screen)) != null)
@@ -268,6 +276,8 @@ internal class AndroidAgentTools(
                 AgentDecision.Finish("") else null
             return apps.keys.singleOrNull(TelegramDraft::isTelegram)?.let { AgentDecision.Tool("launch", it) }
         }
+        if (goal.searchNavigation && snapshot == null)
+            return if (goal.hasLaunched) null else goal.searchLaunchPackage(apps)?.let { AgentDecision.Tool("launch", it) }
         val current = snapshot ?: return null
         val observed = goalObservation(current)
         if (goal.searchNavigation) {
@@ -555,6 +565,9 @@ internal class AndroidAgentTools(
             return ToolOutcome.RejectedBeforeAction("UNSUPPORTED_NODE: узел не поддерживает это действие. Выбери другой доступный узел после observe.")
         }
         val beforeGoal = goalObservation(before)
+        val explicitTarget = if (goal.explicitClick) goal.explicitClickNode(beforeGoal) else null
+        if (goal.explicitClick && (action.name != "click" || explicitTarget?.id != target.id))
+            return ToolOutcome.RejectedBeforeAction("Нужна однозначная кнопка из команды пользователя.")
         if (goal.searchNavigation) {
             val allowed = when (action.name) {
                 "click" -> goal.searchNext(beforeGoal) == target.id
@@ -589,7 +602,8 @@ internal class AndroidAgentTools(
             else "Нажать «" + target.label.ifBlank { target.kind + " " + target.resource } + "»"
         val narration = if (action.name == "type") AgentNarration.type(target.hint.ifBlank { target.label }, target.resource, action.text)
             else AgentNarration.click(target.label, target.resource)
-        val safe = AgentPermissionPolicy.safeAction(before.pkg, action.name, target.label, target.resource, target.kind)
+        val safeSearch = goal.safeSearchAction(beforeGoal, action.name, target.id, action.text)
+        val safe = safeSearch || AgentPermissionPolicy.safeAction(before.pkg, action.name, target.label, target.resource, target.kind)
         if (calcPlan == null && safe) {
             val sequence = goal.approvedSequence(beforeGoal)
             if (sequence != null && sequence.firstOrNull() == target.resource) {
@@ -622,7 +636,10 @@ internal class AndroidAgentTools(
             checkActive()
         } else {
             actionGate.before(narration)
-            if (!safe) confirmed(appLabel(before.pkg) + " · " + before.pkg + "\n" + actionText)
+            // Generic clicks without a predicted node still require explicit action approval.
+            // Only the existing calculator allowlist can omit it.
+            if (!safe || (generic && action.name == "click" && action.expect == null))
+                confirmed(appLabel(before.pkg) + " · " + before.pkg + "\n" + actionText)
             pause(250)
         }
         snapshot = null
@@ -634,7 +651,16 @@ internal class AndroidAgentTools(
             ui {
                 require(permissions.allowed(before.pkg)) { "Разрешение отозвано" }
                 val current = readScreen()
-                if (current != before) throw NodeChanged("SCREEN")
+                if (current != before) {
+                    // Permit only benign unrelated changes during an exact, read-only search
+                    // step. The same app/window, same target identity/path and semantic
+                    // search state must all still match; general mutations retain full guard.
+                    val currentTarget = current.nodes.singleOrNull { it.path == target.path }
+                    if (!safeSearch || current.pkg != before.pkg || current.window != before.window ||
+                        currentTarget == null || currentTarget.identity != target.identity ||
+                        !goal.safeSearchAction(goalObservation(current), action.name, currentTarget.id, action.text))
+                        throw NodeChanged("SCREEN")
+                }
                 val node = resolveNode(before, target)
                 withVerifiedNode(target.identity, identity(node)) {
                     checkActive()
@@ -668,7 +694,10 @@ internal class AndroidAgentTools(
             return ToolOutcome.Unverified("Android не подтвердил действие. Повторять не буду.")
         }
         val outcome = try {
-            describeAfter("Android принял действие: " + actionText + ". Проверяй фактический результат.",
+            val prefix = if (generic && action.name == "click" && action.expect == null)
+                "Android принял нажатие: " + actionText + ". Наблюдается изменение интерфейса, не доказательство выполнения цели."
+                else "Android принял действие: " + actionText + ". Проверяй фактический результат."
+            describeAfter(prefix,
                 if (goal.arithmetic) before else null, fastRead = plan != null,
                 changeSignal = changeSignal, changeMarker = changeMarker) { after ->
                 when {
@@ -684,6 +713,11 @@ internal class AndroidAgentTools(
                             EffectCheck.typed(beforeEffect, mutation, after.effectFrame(observed.seq), targetEffect, action.text)
                     }
                     goal.searchNavigation -> goal.searchAfter(beforeGoal, goalObservation(after))
+                    goal.explicitClick && action.name == "click" -> {
+                        val observed = goalObservation(after)
+                        EffectCheck.clicked(beforeEffect, mutation, after.effectFrame(observed.seq), action.expect) &&
+                            explicitTarget != null && goal.clickObserved(beforeGoal, observed, explicitTarget)
+                    }
                     action.name == "click" -> EffectCheck.clicked(beforeEffect, mutation, after.effectFrame(goal.sequence()), action.expect)
                     else -> EffectCheck.typed(beforeEffect, mutation, after.effectFrame(goal.sequence()), targetEffect, action.text)
                 }
@@ -706,6 +740,10 @@ internal class AndroidAgentTools(
             calcPlan?.revoke()
             throw AgentDenied("Для разрешённого плана допустимы только подтверждённые клавиши. Задача остановлена.")
         }
+        if (goal.explicitClick && action.name !in setOf("apps", "launch", "observe", "click"))
+            return ToolOutcome.RejectedBeforeAction("Запрошено только нажатие конкретной кнопки.")
+        if (goal.explicitClick && action.name == "launch" && goal.clickApp == null)
+            return ToolOutcome.RejectedBeforeAction("Запрошено нажатие в текущем приложении, запуск не разрешён.")
         if (goal.searchNavigation && action.name !in setOf("apps", "launch", "observe", "click") &&
             !(action.name == "type" && goal.searchQuery != null))
             return ToolOutcome.RejectedBeforeAction("Для поиска допустимы только поиск приложения, наблюдение, проверенная навигация и явно запрошенный ввод поиска.")

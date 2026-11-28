@@ -59,9 +59,24 @@ class SearchNavigationTest {
         assertNull(SearchNavigation.request("Открой Telegram и напиши в поиске \"\""))
         assertNull(SearchNavigation.request("Открой Telegram и напиши в поиске дурка и отправь"))
         assertNull(SearchNavigation.request("Открой Telegram и напиши привет"))
-        assertNull(SearchNavigation.request("Открой WhatsApp и напиши в поиске дурка"))
+        assertEquals(SearchNavigation.Request("WhatsApp", "дурка"), SearchNavigation.request("Открой WhatsApp и напиши в поиске дурка"))
         assertNull(SearchNavigation.request("Открой Telegram и напиши в поиске два слова"))
         assertNull(SearchNavigation.request("Открой Telegram и напиши в поиске \"bad\nquery\""))
+    }
+    @Test fun onlyExplicitSearchOpenAndExactQueryAreSafeWithoutSecondApproval() {
+        val goal = GoalState("Открой Telegram и напиши в поиске дурка")
+        goal.launched(pkg, "Telegram")
+        fun screen(vararg nodes: GoalNode) = GoalObservation(goal.sequence(), pkg, nodes.toList())
+        val list = screen(search)
+        assertTrue(goal.safeSearchAction(list, "click", search.id, ""))
+        assertFalse(goal.safeSearchAction(screen(composer, back), "click", back.id, ""))
+        assertFalse(goal.safeSearchAction(screen(search, search.copy(id = "9")), "click", search.id, ""))
+        val input = screen(field)
+        assertTrue(goal.safeSearchAction(input, "type", field.id, "дурка"))
+        assertFalse(goal.safeSearchAction(input, "type", field.id, "wrong"))
+        assertFalse(goal.safeSearchAction(screen(composer), "type", composer.id, "дурка"))
+        goal.mutation()
+        assertFalse(goal.safeSearchAction(input, "type", field.id, "дурка"))
     }
     @Test fun typedQueryRequiresFreshExactSearchField() {
         val goal = GoalState("Открой Telegram и напиши в поиске дурка")
@@ -102,22 +117,46 @@ class SearchNavigationTest {
         assertFalse(query.arithmetic)
     }
 
-    @Test fun rejectedLaunchPreconditionIsRecoverableWithoutRepeatingMutation() {
+    @Test fun deterministicSearchRunsWithoutModelAndVerifiesGoal() {
+        val request = "Открой Telegram и открой поиск"
+        val g = GoalState(request)
         val calls = mutableListOf<String>()
-        var i = 0
-        val g = GoalState("Open Telegram and open Search")
-        val decisions = listOf(AgentDecision.Tool("launch", pkg), AgentDecision.Tool("apps", "Telegram"), AgentDecision.Tool("launch", pkg), AgentDecision.Finish("done"))
-        val core = AgentCore(decide = { decisions[i++] }, execute = { error("legacy") },
-            cancelled = { false }, goal = g, verifyFinish = { "search verified" },
+        var launched = false
+        var searched = false
+        val core = AgentCore(decide = { error("Search must not call model") }, execute = { error("typed tools required") },
+            cancelled = { false }, goal = g,
             executeTyped = { action ->
                 calls.add(action.name)
-                when {
-                    calls.size == 1 -> ToolOutcome.RejectedBeforeAction("lookup required")
-                    action.name == "apps" -> ToolOutcome.Ok("Telegram = $pkg")
-                    else -> ToolOutcome.Ok("search", pkg)
+                when (action.name) {
+                    "apps" -> { assertEquals("Telegram", action.arg); ToolOutcome.Ok("Telegram = $pkg") }
+                    "launch" -> { g.launched(pkg, "Telegram"); launched = true; ToolOutcome.Ok("list", pkg) }
+                    "click" -> { assertEquals("4", action.arg); searched = true; ToolOutcome.Ok("search", pkg) }
+                    else -> error("Unexpected action")
                 }
+            }, fastDecision = {
+                when {
+                    searched -> AgentDecision.Finish("")
+                    launched -> AgentDecision.Tool("click", "4")
+                    else -> g.searchLaunchPackage(mapOf(pkg to "Telegram"))?.let { AgentDecision.Tool("launch", it) }
+                }
+            }, verifyFinish = { if (searched) g.finish(GoalObservation(g.sequence(), pkg, listOf(field))) else null })
+        assertTrue(g.requiresNoModel)
+        assertEquals("В приложении Telegram подтверждено открытие поиска. Сообщения не отправлял.", core.run(request, ""))
+        assertEquals(listOf("apps", "launch", "click"), calls)
+        assertNull(g.searchLaunchPackage(mapOf("one.app" to "Telegram", "two.app" to "Telegram")))
+        assertNull(g.searchLaunchPackage(mapOf("other.app" to "Telegram Plus")))
+    }
+
+    @Test fun missingSearchAppStopsWithoutModel() {
+        val calls = mutableListOf<String>()
+        val g = GoalState("Open Telegram and open Search")
+        val core = AgentCore(decide = { error("No guessed app or model fallback") }, execute = { error("legacy") },
+            cancelled = { false }, goal = g,
+            executeTyped = { action ->
+                calls.add(action.name)
+                ToolOutcome.Ok("Not found")
             })
-        assertEquals("search verified", core.run("Open Telegram and open Search", ""))
-        assertEquals(listOf("launch","apps","launch"), calls)
+        assertTrue(core.run("Open Telegram and open Search", "").contains("поиск"))
+        assertEquals(listOf("apps"), calls)
     }
 }
