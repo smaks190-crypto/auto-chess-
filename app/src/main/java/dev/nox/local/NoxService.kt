@@ -1358,7 +1358,7 @@ class NoxService : Service() {
                 }
                 override fun onLevel(level: Float) {
                     if (token == speechId && listening && live) {
-                        voiceLevel = voiceLevel * 0.65f + level * 0.35f
+                        voiceLevel = VoiceMeter.follow(voiceLevel, level)
                         bubble?.invalidate()
                     }
                 }

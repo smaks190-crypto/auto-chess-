@@ -18,7 +18,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.zip.ZipInputStream
-import kotlin.math.sqrt
 
 /** Local PCM capture. No system speech service, audio files, or network calls. */
 internal class SilentRecognizer(private val context: Context) : AutoCloseable {
@@ -116,12 +115,7 @@ internal class SilentRecognizer(private val context: Context) : AutoCloseable {
                         }
                     }
                     if (emitLive) {
-                        var energy = 0.0
-                        for (i in 0 until count) {
-                            val sample = buffer[i].toDouble() / 32768.0
-                            energy += sample * sample
-                        }
-                        val level = (sqrt(energy / count) * 6).toFloat().coerceIn(0f, 1f)
+                        val level = VoiceMeter.level(buffer, count)
                         post(token) { listener.onLevel(level) }
                     }
                     if (recognizer.acceptWaveForm(buffer, count)) {

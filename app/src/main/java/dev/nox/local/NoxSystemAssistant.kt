@@ -152,7 +152,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
                 return
             }
             refresh()
-            main.postDelayed(this, 100L)
+            main.postDelayed(this, if (session != null) 40L else 100L)
         }
     }
 
@@ -238,12 +238,12 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         controls.addView(control(R.drawable.ic_nox_close, "Закрыть") { hide() },
             LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(5) })
         content.addView(controls, LinearLayout.LayoutParams(-1, -2))
-        surface.addView(content, FrameLayout.LayoutParams(-1, -2))
         wave = AssistantWave(ctx).also {
             it.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             it.visibility = View.GONE
-            surface.addView(it, FrameLayout.LayoutParams(-1, dp(27), Gravity.BOTTOM))
+            content.addView(it, LinearLayout.LayoutParams(-1, dp(42)))
         }
+        surface.addView(content, FrameLayout.LayoutParams(-1, -2))
         val params = FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM)
         params.setMargins(dp(12), 0, dp(12), dp(10))
         root.addView(surface, params)
@@ -552,18 +552,18 @@ private class AssistantWave(context: Context) : View(context) {
         if (!active || !isShown || width == 0 || height == 0) return
         val animated = ValueAnimator.areAnimatorsEnabled()
         val now = SystemClock.uptimeMillis()
-        smooth = if (animated) smooth * .82f + level * .18f else level
+        smooth = if (animated) VoiceMeter.follow(smooth, level) else level
         val cols = (width / (4.0f * density)).toInt().coerceIn(24, 80)
         val t = if (animated) now / 330.0 else 0.0
         for (i in 0 until cols) {
             val u = i.toFloat() / (cols - 1)
             val envelope = sin(u * Math.PI).pow(1.7).toFloat()
-            val ridge = envelope * (.05f + smooth * .95f) * (.72f + .28f * sin(i * .24 + t).toFloat())
-            val count = (ridge * 6f).toInt().coerceIn(0, 6)
+            val ridge = envelope * smooth * (.78f + .22f * sin(i * .24 + t).toFloat())
+            val count = (ridge * 11f).toInt().coerceIn(0, 11)
             val x = (i + .5f) * width / cols
             for (j in 0..count) {
                 paint.color = colors[i * (colors.size - 1) / (cols - 1)]
-                paint.alpha = ((.18f + .72f * smooth) * (1f - j * .075f) * 255).toInt().coerceIn(0, 255)
+                paint.alpha = ((.24f + .76f * smooth) * (1f - j * .04f) * 255).toInt().coerceIn(0, 255)
                 canvas.drawCircle(x, height - (j * 3.4f + 2.6f) * density, 1.05f * density, paint)
             }
         }
@@ -576,7 +576,7 @@ private class AssistantWave(context: Context) : View(context) {
                     height - age * 28f * density, .9f * density, paint)
             }
         }
-        if (animated) postInvalidateDelayed(33L)
+        if (animated) postInvalidateOnAnimation()
     }
 }
 

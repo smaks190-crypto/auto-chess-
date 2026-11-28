@@ -56,7 +56,7 @@
 
 /* Voice input stays in the existing text composer. */
 .composer{isolation:isolate}
-.composer.dictating{padding-bottom:13px;border-color:#45414e;overflow:hidden}
+.composer.dictating{padding-bottom:44px;border-color:#45414e;overflow:hidden}
 .composer.dictating:after{opacity:0}
 .dictationStatus{font-size:12px;color:var(--accent);padding:0 3px 3px}
 .composer.dictating textarea{min-height:42px;cursor:default}
@@ -65,7 +65,7 @@
 .composer.dictating .round{width:44px;height:44px;min-width:44px}
 #dictationStop{border-radius:50%;color:var(--text);background:#333136;border-color:#48434e}
 #dictationCancel{border-radius:50%;color:var(--muted)}
-#dictationWave{position:absolute;left:0;bottom:0;width:100%;height:28px;pointer-events:none;z-index:0;filter:drop-shadow(0 0 3px #b7a3ff44)}
+#dictationWave{position:absolute;left:0;bottom:0;width:100%;height:42px;pointer-events:none;z-index:0;filter:drop-shadow(0 0 3px #b7a3ff44)}
 .reduced #dictationWave{filter:none}
 @media(prefers-reduced-motion:reduce){#dictationWave{filter:none}}
 
@@ -483,14 +483,14 @@ function drawVoice(){
  ctx.clearRect(0,0,w,h);
  const now=performance.now(),t=reduced?0:now/330;
  const target=voicePhase==='listening'?Math.max(0,Math.min(1,lastVoiceLevel)):0;
- voiceSmooth=reduced?target:voiceSmooth*.82+target*.18;
+ voiceSmooth=reduced?target:voiceSmooth+(target-voiceSmooth)*(target>voiceSmooth?.82:.30);
  const cols=Math.max(24,Math.min(80,Math.floor(r.width/4.5)));
  for(let i=0;i<cols;i++){
   const u=i/(cols-1),env=Math.pow(Math.sin(u*Math.PI),1.7);
-  const count=Math.max(0,Math.min(6,Math.floor(env*(.05+.95*voiceSmooth)*(.72+.28*Math.sin(i*.24+t))*6)));
+  const count=Math.max(0,Math.min(11,Math.floor(env*voiceSmooth*(.78+.22*Math.sin(i*.24+t))*11)));
   ctx.fillStyle='hsl('+((310-u*268+360)%360)+' 64% 72%)';
   for(let j=0;j<=count;j++){
-   ctx.globalAlpha=(.18+.72*voiceSmooth)*(1-j*.075);
+   ctx.globalAlpha=(.24+.76*voiceSmooth)*(1-j*.04);
    ctx.beginPath();ctx.arc((i+.5)*w/cols,h-(2.6+j*3.4)*ratio,1.05*ratio,0,Math.PI*2);ctx.fill()
   }
  }

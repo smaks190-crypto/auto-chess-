@@ -128,7 +128,7 @@ class MainActivity : ComponentActivity() {
             val level = if (s != null && webDictationId != null && s.webDictationSession == webDictationId && s.webDictationActive)
                 s.manualVoiceLevel else 0f
             if (::obsidian.isInitialized) obsidian.send(org.json.JSONObject().put("type", "level").put("value", level.toDouble()))
-            perceptionUi.postDelayed(this, 100)
+            perceptionUi.postDelayed(this, 40)
         }
     }
     private var activePage = 0
