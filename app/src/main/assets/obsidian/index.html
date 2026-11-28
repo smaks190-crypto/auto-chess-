@@ -286,11 +286,26 @@ function commitChoice(){
  choicePending=true;if(!request('choice',{model:S.model,effort:S.effort})){choicePending=false;restoreChoice()}
 }
 function scrollChat(){$('feed').scrollTop=$('feed').scrollHeight}
-function addMsg(role,t,state='complete'){const d=document.createElement('article');d.className='msg '+role;
+function addMsg(role,t,state='complete',id='',kind='other'){const d=document.createElement('article');d.className='msg '+role;
  if(role==='bot'){const who=document.createElement('div');who.className='who';who.innerHTML='<span class="mini-mark">'+icon('logo')+'</span>N.O.X';d.append(who)}
  const p=document.createElement('div');p.className='msgtext';text(p,t);d.append(p);
  if(state==='stopped'||state==='error'){const note=document.createElement('div');note.className='smallNote';text(note,state==='stopped'?'Ответ прерван':'Ошибка · ответ не завершён');d.append(note)}
- if(role==='bot'){const foot=document.createElement('div');foot.className='msgfoot';const b=document.createElement('button');b.className='tiny';b.innerHTML=icon('copy');b.setAttribute('aria-label','Копировать');b.onclick=()=>request('copy',{text:p.textContent.slice(0,16000)});foot.append(b);d.append(foot)}
+ if(role==='bot'||id){
+   const foot=document.createElement('div');foot.className='msgfoot';
+   if(role==='bot'){const b=document.createElement('button');b.className='tiny';b.innerHTML=icon('copy');b.setAttribute('aria-label','Копировать');b.onclick=()=>request('copy',{text:p.textContent.slice(0,16000)});foot.append(b)}
+   if(id&&state==='complete'&&(role==='user'||kind==='chat')){
+     const b=document.createElement('button');b.className='tiny branchAction';
+     b.textContent=role==='user'?'Изменить':'Новый ответ';
+     b.title=role==='user'?'Изменить запрос в новой ветке':'Новый текстовый ответ в отдельной ветке';
+     b.onclick=()=>{
+       if(!nativeState||S.busy||voiceOpen||pendingSend||choicePending)return;
+       if($('prompt').value.trim()){toast('Сначала отправь или очисти черновик');return}
+       if(nativeState.attached){toast('Убери вложение');return}
+       request(role==='user'?'chat_edit':'chat_regenerate',{message:id})
+     };foot.append(b)
+   }
+   if(foot.childElementCount)d.append(foot)
+ }
  $('messages').append(d);return d
 }
 let renderedChatId='',renderedTurns=[];
@@ -301,12 +316,12 @@ function renderChat(st){
  const key=JSON.stringify([st.chatId,turns]);
  if(key!==historyKey){
    const oldHeight=feed.scrollHeight,oldTop=feed.scrollTop;
-   const samePrefix=sameChat&&renderedTurns.length<=turns.length&&renderedTurns.every((t,i)=>t.id===turns[i].id&&t.state===turns[i].state&&t.text===turns[i].text);
+   const samePrefix=sameChat&&renderedTurns.length<=turns.length&&renderedTurns.every((t,i)=>t.id===turns[i].id&&t.state===turns[i].state&&t.kind===turns[i].kind&&t.text===turns[i].text);
    const loadedOlder=sameChat&&renderedTurns.length>0&&turns.length>renderedTurns.length&&turns[turns.length-1].id===renderedTurns[renderedTurns.length-1].id;
    historyKey=key;
    if(partialNode){partialNode.remove();partialNode=null}
    if(!samePrefix)$('messages').replaceChildren();
-   (samePrefix?turns.slice(renderedTurns.length):turns).forEach(t=>addMsg(t.user?'user':'bot',t.text,t.state));
+   (samePrefix?turns.slice(renderedTurns.length):turns).forEach(t=>addMsg(t.user?'user':'bot',t.text,t.state,t.id,t.kind));
    renderedTurns=turns;renderedChatId=st.chatId||'';
    if(loadedOlder)feed.scrollTop=oldTop+feed.scrollHeight-oldHeight;
    else if(!sameChat||nearBottom||(samePrefix&&turns.length>0&&turns[turns.length-1].user))scrollChat();
@@ -316,6 +331,7 @@ function renderChat(st){
  $('chatTitle').hidden=!turns.length;text($('chatTitle'),st.chatTitle||'');
  $('chatOlder').hidden=!(st.chatCount>turns.length);$('chatOlder').disabled=!!st.busy;
  $('newChat').disabled=$('chatHistory').disabled=!!st.busy;
+ qa('.branchAction').forEach(b=>{b.disabled=!!st.busy});
  $('welcome').hidden=!!(turns.length||partial);
  $('thinking').hidden=!st.generating;text($('thinkingLabel'),st.status||'Обработка запроса');
  $('cancel').disabled=!st.generating;

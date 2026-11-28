@@ -3,7 +3,7 @@ package dev.nox.local
 import org.json.JSONObject
 
 /** Validate the complete message, not coercing JSON types. */
-internal data class ObsidianCommand(val op: String, val text: String = "", val model: Int = -1, val effort: Int = -1, val agent: Boolean = false, val enabled: Boolean = false, val voice: Boolean = false) {
+internal data class ObsidianCommand(val op: String, val text: String = "", val model: Int = -1, val effort: Int = -1, val agent: Boolean = false, val enabled: Boolean = false, val voice: Boolean = false, val messageId: Long = 0L) {
     companion object {
         private val plain = setOf("ready", "cancel", "clear", "new_chat", "chat_history", "chat_older", "toggle_vision", "background", "bluetooth", "grants", "system_assistant", "search_settings", "overlay_permission", "accessibility_permission", "model_load", "model_import", "model_catalog", "model_cancel", "benchmark", "benchmark_log", "benchmark_share", "pick_image", "perception", "analyze", "remove_image", "review", "voice_open", "voice_close", "voice_start", "voice_stop")
         private val pages = setOf("chat", "actions", "settings")
@@ -20,6 +20,12 @@ internal data class ObsidianCommand(val op: String, val text: String = "", val m
                         val agent = obj.opt("agent") as? Boolean ?: return null
                         val voice = if ("voice" in keys) obj.opt("voice") as? Boolean ?: return null else false
                         if (text.isEmpty() || text.length > 2000) null else ObsidianCommand(op, text = text, agent = agent, voice = voice)
+                    }
+                    op in setOf("chat_edit", "chat_regenerate") && keys == setOf("op", "message") -> {
+                        val id = (obj.opt("message") as? String)?.takeIf {
+                            it.matches(Regex("[1-9][0-9]{0,18}"))
+                        }?.toLongOrNull() ?: return null
+                        ObsidianCommand(op, messageId = id)
                     }
                     op == "choice" && keys == setOf("op", "model", "effort") -> {
                         val m = obj.opt("model") as? Int ?: return null

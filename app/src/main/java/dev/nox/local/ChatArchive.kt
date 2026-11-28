@@ -8,7 +8,7 @@ import java.util.UUID
 
 /** Local chat storage. All calls are on the service main thread; each mutation is atomic.
  * The keyguard assistant deliberately has no reference to this store. */
-internal class ChatArchive(context: Context) : SQLiteOpenHelper(context, "nox_chats.db", null, 1) {
+internal class ChatArchive(context: Context) : SQLiteOpenHelper(context, "nox_chats.db", null, 2) {
     data class ThreadInfo(val id: String, val title: String, val updated: Long)
     companion object {
         const val NEW_TITLE = "Новый чат"
@@ -16,13 +16,16 @@ internal class ChatArchive(context: Context) : SQLiteOpenHelper(context, "nox_ch
     }
     override fun onConfigure(db: SQLiteDatabase) { db.setForeignKeyConstraintsEnabled(true) }
     override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE chats(id TEXT PRIMARY KEY, title TEXT NOT NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL)")
-        db.execSQL("CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE, is_user INTEGER NOT NULL, text TEXT NOT NULL, state TEXT NOT NULL, created INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE chats(id TEXT PRIMARY KEY, title TEXT NOT NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL, parent_chat_id TEXT, fork_message_id INTEGER)")
+        db.execSQL("CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE, is_user INTEGER NOT NULL, text TEXT NOT NULL, state TEXT NOT NULL, created INTEGER NOT NULL, kind TEXT NOT NULL DEFAULT 'other')")
         db.execSQL("CREATE INDEX messages_chat ON messages(chat_id, id)")
         db.execSQL("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     }
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        error("Unsupported chat database migration $oldVersion → $newVersion")
+        check(oldVersion == 1 && newVersion == 2)
+        db.execSQL("ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'other'")
+        db.execSQL("ALTER TABLE chats ADD COLUMN parent_chat_id TEXT")
+        db.execSQL("ALTER TABLE chats ADD COLUMN fork_message_id INTEGER")
     }
     private fun <T> transaction(block: (SQLiteDatabase) -> T): T {
         val db = writableDatabase
@@ -54,7 +57,7 @@ internal class ChatArchive(context: Context) : SQLiteOpenHelper(context, "nox_ch
         val now = System.currentTimeMillis()
         val row = db.insertOrThrow("messages", null, ContentValues().apply {
             put("chat_id", id); put("is_user", if (turn.user) 1 else 0)
-            put("text", turn.text); put("state", turn.state); put("created", now)
+            put("text", turn.text); put("state", turn.state); put("created", now); put("kind", turn.kind)
         })
         db.update("chats", ContentValues().apply { put("updated", now) }, "id=?", arrayOf(id))
         if (turn.user) {
@@ -83,11 +86,11 @@ internal class ChatArchive(context: Context) : SQLiteOpenHelper(context, "nox_ch
         append(db, id, turn)
     }
     fun messages(id: String, limit: Int): List<NoxService.Turn> =
-        readableDatabase.rawQuery("SELECT id,is_user,text,state FROM messages WHERE chat_id=? ORDER BY id DESC LIMIT ?",
+        readableDatabase.rawQuery("SELECT id,is_user,text,state,kind FROM messages WHERE chat_id=? ORDER BY id DESC LIMIT ?",
             arrayOf(id, limit.toString())).use { cursor ->
             buildList {
                 while (cursor.moveToNext()) add(NoxService.Turn(cursor.getInt(1) == 1, cursor.getString(2),
-                    cursor.getLong(0), cursor.getString(3)))
+                    cursor.getLong(0), cursor.getString(3), cursor.getString(4)))
             }.asReversed()
         }
     fun count(id: String): Int = readableDatabase.rawQuery("SELECT COUNT(*) FROM messages WHERE chat_id=?", arrayOf(id)).use {
@@ -98,6 +101,28 @@ internal class ChatArchive(context: Context) : SQLiteOpenHelper(context, "nox_ch
     }
     fun threads(): List<ThreadInfo> = readableDatabase.rawQuery("SELECT id,title,updated FROM chats ORDER BY updated DESC,created DESC", null).use {
         buildList { while (it.moveToNext()) add(ThreadInfo(it.getString(0), it.getString(1), it.getLong(2))) }
+    }
+    fun branch(source: String, selectedId: Long, replacement: String?): String? = transaction { db ->
+        if (active(db) != source) return@transaction null
+        fun read(where: String, args: Array<String>): BranchMessage? =
+            db.rawQuery("SELECT id,is_user,text,state,kind FROM messages WHERE chat_id=? AND $where",
+                arrayOf(source, *args)).use { c ->
+                if (c.moveToFirst()) BranchMessage(c.getLong(0), c.getInt(1) == 1, c.getString(2),
+                    c.getString(3), c.getString(4)) else null
+            }
+        val selected = read("id=?", arrayOf(selectedId.toString())) ?: return@transaction null
+        val previous = if (!selected.user) read("id<? ORDER BY id DESC LIMIT 1", arrayOf(selectedId.toString())) else null
+        val plan = BranchPolicy.plan(selected, previous, replacement) ?: return@transaction null
+        val next = create(db)
+        // A branch is an independent snapshot; deleting it cannot delete the original.
+        db.execSQL("INSERT INTO messages(chat_id,is_user,text,state,created,kind) SELECT ?,is_user,text,state,created,kind FROM messages WHERE chat_id=? AND id<? ORDER BY id",
+            arrayOf(next, source, plan.fromUser))
+        append(db, next, NoxService.Turn(true, plan.text))
+        db.update("chats", ContentValues().apply {
+            put("parent_chat_id", source); put("fork_message_id", plan.fromUser)
+            put("title", ("Ветка: " + plan.text.replace(Regex("\\s+"), " ")).take(60))
+        }, "id=?", arrayOf(next))
+        next
     }
     fun newChat(): String = transaction { db ->
         val current = checkNotNull(active(db))

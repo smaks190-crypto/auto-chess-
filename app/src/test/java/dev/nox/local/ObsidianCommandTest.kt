@@ -25,6 +25,14 @@ class ObsidianCommandTest {
         assertNull(ObsidianCommand.parse("""{"op":"send","text":"hello","agent":false,"voice":null}"""))
         assertNull(ObsidianCommand.parse("""{"op":"tts"}"""))
     }
+    @Test fun branchCommandsAcceptOnlyExactPositiveMessageIds() {
+        assertEquals(ObsidianCommand("chat_edit",messageId=123), ObsidianCommand.parse("""{"op":"chat_edit","message":"123"}"""))
+        assertEquals(ObsidianCommand("chat_regenerate",messageId=9), ObsidianCommand.parse("""{"op":"chat_regenerate","message":"9"}"""))
+        for (bad in listOf("""{"op":"chat_edit","message":1}""", """{"op":"chat_regenerate","message":"0"}""",
+            """{"op":"chat_edit","message":"-1"}""", """{"op":"chat_edit","message":"9999999999999999999"}""",
+            """{"op":"chat_regenerate","message":"9","agent":true}"""))
+            assertNull(ObsidianCommand.parse(bad))
+    }
     @Test fun rejectsArbitraryCommandsAndExtraFields() {
         for (raw in listOf("""{"op":"shell","command":"id"}""", """{"op":"launch","package":"com.example"}""", """{"op":"ready","url":"https://example.com"}""", """{"op":"send","text":"hi","agent":true,"permission":"always"}""")) assertNull(raw, ObsidianCommand.parse(raw))
     }

@@ -562,7 +562,7 @@ class MainActivity : ComponentActivity() {
         if (c.op == "ready") { webStateKey = ""; webImageKey = ""; renderWeb(); syncTelemetry(); return }
         if (!isVisible || advanced || !DeviceInteraction.unlocked(this)) { ack(c.op, false, "Открой и разблокируй Нокс"); return }
         val s = service
-        if (c.op in setOf("send", "clear", "new_chat", "chat_history", "cancel", "choice", "voice_start", "model_select",
+        if (c.op in setOf("send", "clear", "new_chat", "chat_history", "chat_edit", "chat_regenerate", "cancel", "choice", "voice_start", "model_select",
                 "model_load", "model_import", "model_catalog", "benchmark") ||
             (c.op == "page" && c.text != "chat")) {
             pendingAssistantCommand = null
@@ -699,6 +699,42 @@ class MainActivity : ComponentActivity() {
                 s.newChat()
             }
             "chat_older" -> s.loadOlderMessages()
+            "chat_edit", "chat_regenerate" -> {
+                if (webPage != "chat" || webVoiceOpen || s.attachedImage != null || s.loaded == null) {
+                    ack(c.op, false, "Для ветвления загрузи модель, заверши диктовку и убери вложение")
+                    return
+                }
+                val selected = s.turns.singleOrNull { it.id == c.messageId }
+                if (selected == null) { ack(c.op, false, "Сообщение недоступно"); return }
+                val source = s.chatId
+                val messageId = selected.id
+                val regenerate = c.op == "chat_regenerate"
+                fun branch(replacement: String?) {
+                    if (!s.branchReply(source, messageId, replacement, effort))
+                        ack(c.op, false, "Не удалось создать ветку. Проверь текущий чат и модель.")
+                }
+                if (regenerate) {
+                    if (selected.user || selected.kind != "chat" || selected.state != "complete") {
+                        ack(c.op, false, "Повтор доступен только для текстовых ответов модели")
+                        return
+                    }
+                    branch(null)
+                } else {
+                    if (!selected.user || selected.state != "complete") { ack(c.op, false); return }
+                    val field = EditText(this).apply {
+                        setText(selected.text)
+                        setSelection(text.length)
+                        minLines = 3
+                        maxLines = 8
+                        inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                        filters = arrayOf(android.text.InputFilter.LengthFilter(2000))
+                    }
+                    AlertDialog.Builder(this).setTitle("Изменить запрос в новой ветке")
+                        .setMessage("Исходный чат сохранится. Новый ответ — только текст, без запуска инструментов, приложений или вложений.")
+                        .setView(field).setNegativeButton("Отмена", null)
+                        .setPositiveButton("Создать ветку") { _, _ -> branch(field.text.toString()) }.show()
+                }
+            }
             "chat_history" -> {
                 closeWebDictation()
                 val chats = s.chatThreads()
@@ -811,7 +847,7 @@ class MainActivity : ComponentActivity() {
             .put("chatTitle", s?.chatTitle.orEmpty())
             .put("chatCount", s?.chatMessageCount ?: 0)
             .put("turns", org.json.JSONArray(s?.turns.orEmpty().map {
-                org.json.JSONObject().put("id", it.id.toString()).put("user", it.user).put("text", it.text).put("state", it.state)
+                org.json.JSONObject().put("id", it.id.toString()).put("user", it.user).put("text", it.text).put("state", it.state).put("kind", it.kind)
             }))
             .put("events", org.json.JSONArray(s?.agentJournal.orEmpty()))
         val key = st.toString()

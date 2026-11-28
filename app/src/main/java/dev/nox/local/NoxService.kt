@@ -22,7 +22,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
 class NoxService : Service() {
-    internal data class Turn(val user: Boolean, val text: String, val id: Long = 0L, val state: String = "complete")
+    internal data class Turn(val user: Boolean, val text: String, val id: Long = 0L, val state: String = "complete", val kind: String = "other")
     internal data class Loaded(val index: Int, val gpu: Boolean, val vision: Boolean, val imported: Boolean = false)
     internal inner class LocalBinder : Binder() { val service get() = this@NoxService }
     private val binder = LocalBinder()
@@ -484,6 +484,58 @@ class NoxService : Service() {
             status = "Не удалось загрузить чат. Перезапусти Нокс."
         }
         publish()
+    }
+    /** Editing/regeneration never enters the device or native-tool router. */
+    internal fun branchReply(expectedChat: String, selectedId: Long, replacement: String?, effort: ChatEffort): Boolean {
+        if (!historyReady || busy || destroyed || !unlocked() || chatId != expectedChat || loaded == null) return false
+        if (attachedImage != null || history.none { it.id == selectedId }) return false
+        if (listening) stopListening()
+        if (activeSpeech != null || speaking) stopSpeech()
+        val next = runCatching { chatArchive.branch(expectedChat, selectedId, replacement) }
+            .getOrElse { status = "Не удалось создать ветку."; publish(); return false } ?: return false
+        try {
+            visibleLimit = ChatArchive.PAGE
+            loadChat(next)
+        } catch (_: Exception) {
+            historyReady = false; status = "Ветка сохранена, перезапусти Нокс."; publish(); return false
+        }
+        val request = history.last().takeIf { it.user }?.text ?: return false
+        agentEvents.clear()
+        assistantReply = ""; assistantResultVisible = false
+        partial = ""; elapsedMs = null; decodeStats = null
+        pendingHistoryResponse = true
+        generationCancelled = false
+        generating = true
+        val prefix = "Ответь только текстом. Инструменты отключены. Не утверждай, что выполнены действия, поиск или чтение данных.\n"
+        val prompt = prefix + ConversationContext.build(request,
+            history.dropLast(1).map { ContextTurn(it.user, it.text, it.state == "complete") }, 3500)
+        val budget = effort.budget(request, false)
+        if (!beginTaskForeground()) {
+            generating = false
+            complete("Android не разрешил запуск генерации.", false)
+            publish()
+            return true
+        }
+        runWork("Готовлю новый ответ…", {
+            val started = SystemClock.elapsedRealtime()
+            val deadline = started + 240_000L
+            val stop = { destroyed || generationCancelled || !unlocked() || SystemClock.elapsedRealtime() >= deadline }
+            var lastUpdate = 0L
+            val answer = model.chat(prompt, null, budget > 0, stop, thinkingBudget = budget) { chunk ->
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastUpdate >= 80) {
+                    lastUpdate = now
+                    main.post { if (!destroyed && generating && !generationCancelled) { partial = chunk; publish() } }
+                }
+            }
+            if (stop()) throw java.util.concurrent.CancellationException("Ответ прерван")
+            val stats = model.chatStats()
+            main.post {
+                if (!destroyed && !generationCancelled) { elapsedMs = SystemClock.elapsedRealtime() - started; decodeStats = stats }
+            }
+            answer
+        }, { complete(it.ifBlank { "Модель не вернула текст." }, false, if (it.isBlank()) "other" else "chat") })
+        return true
     }
     internal fun newChat() = changeChat { chatArchive.newChat() }
     internal fun openChat(id: String) = changeChat { chatArchive.open(id) }
@@ -1363,9 +1415,9 @@ class NoxService : Service() {
         if (!appendHistory(Turn(true, text))) return
         pendingHistoryResponse = true
         partial = ""; elapsedMs = null; decodeStats = null
-        fun finishRequest(answer: String, say: Boolean) {
+        fun finishRequest(answer: String, say: Boolean, kind: String = "other") {
             if (inPlace) assistantReply = answer
-            complete(answer, say)
+            complete(answer, say, kind)
         }
         if (image == null) ExtraTools.parse(text)?.let { extra ->
             runExtra(extra, restricted = false, allowed = { unlocked() }) {
@@ -1423,6 +1475,7 @@ class NoxService : Service() {
         }
         val prompt = if (RequestRouter.standaloneChat(text)) text else ConversationContext.build(text, context)
         var lastUpdate = 0L
+        var replyKind = "other"
         generationCancelled = false
         generating = true
         agentRunning = false
@@ -1504,12 +1557,16 @@ class NoxService : Service() {
                 }
                 if (deterministic) executeGoal { error("Verified deterministic goal must not invoke a model") }
                 else model.withAgentPlanner(stop, shortDecisions = goal.arithmetic, block = executeGoal)
-            } else model.chat(if (inPlace) "Ответь на запрос текстом. Не заявляй о выполнении внешних действий или поиске, которых не было.\n" + prompt else prompt, image, thinkingBudget > 0, stop, thinkingBudget = thinkingBudget) { chunk ->
+            } else {
+                val result = model.chat(if (inPlace) "Ответь на запрос текстом. Не заявляй о выполнении внешних действий или поиске, которых не было.\n" + prompt else prompt, image, thinkingBudget > 0, stop, thinkingBudget = thinkingBudget) { chunk ->
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastUpdate >= 80) {
                     lastUpdate = now
                     main.post { if (!destroyed && generating && !generationCancelled) { partial = chunk; publish() } }
                 }
+            }
+                if (image == null && !stop() && result.isNotBlank()) replyKind = "chat"
+                result
             }
             val elapsed = SystemClock.elapsedRealtime() - start
             traceMemory("request_end")
@@ -1519,14 +1576,14 @@ class NoxService : Service() {
             }
             response
         }, {
-            finishRequest(it.ifBlank { "Модель не вернула текст." }, speak && voiceToken == voiceEpoch)
+            finishRequest(it.ifBlank { "Модель не вернула текст." }, speak && voiceToken == voiceEpoch, replyKind)
         })
     }
 
-    private fun complete(text: String, speak: Boolean) {
+    private fun complete(text: String, speak: Boolean, kind: String = "other") {
         pendingHistoryResponse = false
         partial = ""
-        if (!appendHistory(Turn(false, text))) {
+        if (!appendHistory(Turn(false, text, kind = kind))) {
             partial = text
             publish()
             return
