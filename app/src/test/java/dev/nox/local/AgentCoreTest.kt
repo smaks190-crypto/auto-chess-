@@ -175,6 +175,28 @@ class AgentCoreTest {
         assertEquals(listOf("observe", "type"), actions)
     }
 
+    @Test fun ambiguousTelegramOpenWriteOpensOnlyAndClarifiesWithoutModel() {
+        val request = "открой телеграм и напиши андер александр"
+        val goal = GoalState(request)
+        val calls = mutableListOf<String>()
+        var launched = false
+        val core = AgentCore(decide = { error("No model needed") }, execute = { error("Typed executor required") },
+            cancelled = { false }, goal = goal,
+            executeTyped = { action ->
+                calls.add(action.name)
+                if (action.name == "launch") {
+                    assertEquals("org.telegram.messenger.web", action.arg)
+                    goal.launched(action.arg, "Telegram")
+                    launched = true
+                    ToolOutcome.Ok("screen", action.arg)
+                } else ToolOutcome.Ok("Telegram = org.telegram.messenger.web")
+            },
+            fastDecision = { if (launched) AgentDecision.Finish("") else AgentDecision.Tool("launch", "org.telegram.messenger.web") },
+            verifyFinish = { if (launched) goal.finish(GoalObservation(goal.sequence(), "org.telegram.messenger.web", emptyList())) else null })
+        assertTrue(core.run(request, "").contains("Уточни"))
+        assertEquals(listOf("apps", "launch"), calls)
+    }
+
     @Test fun repeatedPreActionRejectionsHaveBoundedFreshObservations() {
         var clicks = 0
         var observes = 0

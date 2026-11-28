@@ -14,6 +14,6 @@ Actual project: Kotlin, Android SDK 36 build, JDK 17 / Gradle 8.13 in CI. Packag
 | Visual observation | PerceptionService.kt, PerceptionBuffer.kt, UiChangeRelay.kt |
 | Tests / CI | app/src/test/java/dev/nox/local/, .github/workflows/android.yml (read-only for agents) |
 
-Model-based ordinary requests are distinct from narrow deterministic, independently verified operations. AndroidAgentTools owns fresh screen snapshots and actual actions; the model does not authorize them. The compact panel is intended not to navigate away from the current app. Exact supported current-chat Telegram drafting uses observe → type → independent verification, no model call. See source for lifecycle and exact predicates.
+Model-based ordinary requests are distinct from narrow deterministic, independently verified operations. AndroidAgentTools owns fresh screen snapshots and actual actions; the model does not authorize them. The compact panel does not open N.O.X. chat automatically. Explicit unlocked device-control commands hand off to the guarded agent after the panel has been hidden; only requested app navigation is allowed. Ordinary chat answers remain in the panel. Exact supported current-chat Telegram drafting uses observe → type → independent verification, no model call. See source for lifecycle and exact predicates.
 
 Older README.md and docs/agent-core.md describe earlier implementations; consult code and PROJECT_STATE before relying on them. Existing docs/adb-runner.md, docs/s24-check-ru.md, docs/obsidian-preview.md contain specialized workflows.

@@ -14,6 +14,13 @@ class AssistantVoiceCommandTest {
         assertFalse(AssistantVoiceCommand.useChat(true, true, true, false, true, false))
     }
 
+    @Test fun compactAgentRequiresActiveRoleAndUnlockedDevice() {
+        assertTrue(AssistantVoiceCommand.canRunAgent(true, true))
+        assertFalse(AssistantVoiceCommand.canRunAgent(false, true))
+        assertFalse(AssistantVoiceCommand.canRunAgent(true, false))
+        assertFalse(AssistantVoiceCommand.canRunAgent(false, false))
+    }
+
     @Test fun missingNativeToolsAreNeverReportedAsExecuted() {
         assertNotNull(AssistantVoiceCommand.dedicatedToolUnavailable("Поставь таймер на минуту"))
         assertNotNull(AssistantVoiceCommand.dedicatedToolUnavailable("Поищи в интернете новости"))

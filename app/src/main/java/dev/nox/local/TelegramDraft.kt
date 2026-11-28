@@ -7,6 +7,9 @@ internal object TelegramDraft {
         "org.telegram.messenger", "org.telegram.messenger.web", "org.thunderdog.challegram")
 
     private const val APP = "(?:телеграм(?:е|м|ме)?|telegram|тг)"
+    fun openWriteNeedsClarification(input: String): Boolean =
+        Regex("^(?:открой|запусти)\\s+(?:телеграмм?|telegram|тг)\\s+и\\s+(?:напиши|отправь)\\s+.+$", RegexOption.IGNORE_CASE)
+            .matches(input.trim()) && SearchNavigation.request(input) == null
     private val suffix = Regex("^(?:напиши|напечатай|введи|write|type|отправь|send)\\s+(.+?)\\s+(?:в\\s+(?:(?:текущем|открытом)\\s+)?чате\\s+$APP|in\\s+(?:the\\s+)?(?:current\\s+|open\\s+)?telegram\\s+chat)[.!?]?$", RegexOption.IGNORE_CASE)
     private val prefix = Regex("^(?:в\\s+(?:(?:текущем|открытом)\\s+)?чате\\s+$APP)[,:]?\\s+(?:напиши|напечатай|введи|отправь)\\s+(.+)$", RegexOption.IGNORE_CASE)
     fun request(input: String): Request? {

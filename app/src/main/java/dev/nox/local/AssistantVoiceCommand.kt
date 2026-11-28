@@ -6,6 +6,11 @@ internal object AssistantVoiceCommand {
                 activeAssistant: Boolean, unlocked: Boolean): Boolean =
         visible && onScreen && (!multiWindow || topResumed) && activeAssistant && unlocked
 
+    /** Explicit compact requests may use the same guarded agent as the main chat.
+     * The active role and unlocked screen remain mandatory throughout execution. */
+    fun canRunAgent(activeAssistant: Boolean, unlocked: Boolean): Boolean =
+        activeAssistant && unlocked
+
     /** Never substitute UI navigation or fabricated results for unavailable native tools. */
     fun dedicatedToolUnavailable(text: String): String? {
         val normalized = text.trim().lowercase(java.util.Locale.ROOT)

@@ -6,6 +6,21 @@ import org.junit.Test
 class TelegramDraftTest {
     private val pkg = "org.telegram.messenger"
     private val composer = GoalNode("", "", "1", hint = "Сообщение", kind = "EditText", enabled = true, editable = true, text = "")
+    @Test fun openAndWriteDoesNotTreatRecipientAsMessage() {
+        val request = "открой телеграм и напиши андер александр"
+        val goal = GoalState(request)
+        assertTrue(goal.telegramOpenWrite)
+        assertTrue(goal.supported)
+        assertFalse(goal.telegramDraftGoal)
+        assertTrue(goal.matchesSearchApp("org.telegram.messenger.web", "Telegram"))
+        assertFalse(goal.matchesSearchApp("other.app", "Other"))
+        goal.launched("org.telegram.messenger.web", "Telegram")
+        val result = goal.finish(GoalObservation(goal.sequence(), "org.telegram.messenger.web", emptyList()))
+        assertNotNull(result)
+        assertTrue(result!!.contains("Уточни"))
+        assertTrue(result.contains("Сообщение не отправлено"))
+        assertFalse(TelegramDraft.openWriteNeedsClarification("открой телеграм и напиши в поиске привет"))
+    }
     @Test fun parsesExactCurrentChatRequest() {
         assertEquals(TelegramDraft.Request("привет", false), TelegramDraft.request("напиши привет в чате тг"))
         assertEquals(TelegramDraft.Request("Привет!", false), TelegramDraft.request("В чате Telegram напиши «Привет!»"))

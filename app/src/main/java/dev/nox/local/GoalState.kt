@@ -18,6 +18,7 @@ internal class GoalState(private val request: String) {
     }
     private val searchRequest = SearchNavigation.request(request)
     private val telegramDraft = TelegramDraft.request(request)
+    val telegramOpenWrite = TelegramDraft.openWriteNeedsClarification(request)
     private val normalized = request.lowercase().let { original ->
         var s = original
         fun wordPattern(word: String) = Regex("(?<![\\p{L}\\p{N}_])" + Regex.escape(word) + "(?![\\p{L}\\p{N}_])")
@@ -45,7 +46,7 @@ internal class GoalState(private val request: String) {
         val ru = "(?:(?:открой|запусти) калькулятор и (?:посчитай|вычисли|рассчитай|сложи)\\s+$expr(?:\\s+(?:кнопками|с помощью кнопок))?|(?:посчитай|вычисли|рассчитай)\\s+$expr\\s+в калькуляторе)"
         Regex("(?:$en|$ru)[.!]?").matches(normalized.trim())
     }
-    private val openTarget = Regex("^(?:открой|запусти|open|launch)\\s+([\\p{L}0-9 ._-]+?)[.!?]?\\s*$", RegexOption.IGNORE_CASE)
+    private val openTarget = if (telegramOpenWrite) "Telegram" else Regex("^(?:открой|запусти|open|launch)\\s+([\\p{L}0-9 ._-]+?)[.!?]?\\s*$", RegexOption.IGNORE_CASE)
         .matchEntire(request.trim())?.groupValues?.get(1)?.trim()
     val searchTarget = searchRequest?.app
     val searchQuery = searchRequest?.query
@@ -55,7 +56,8 @@ internal class GoalState(private val request: String) {
     val telegramDraftGoal: Boolean get() = telegramDraft != null
     val supported: Boolean get() = formula != null || openTarget != null || searchNavigation || telegramDraftGoal
     fun matchesSearchApp(pkg: String, label: String): Boolean =
-        searchTarget?.let { SearchNavigation.matchesApp(it, label, pkg) } ?: true
+        if (telegramOpenWrite) TelegramDraft.isTelegram(pkg)
+        else searchTarget?.let { SearchNavigation.matchesApp(it, label, pkg) } ?: true
     val arithmetic: Boolean get() = formula != null
     fun allowsLaunch(pkg: String) = !arithmetic || pkg == CALC
     private var verifiedEqualsSeq: Long? = null
@@ -204,8 +206,11 @@ internal class GoalState(private val request: String) {
             return "В приложении " + launchName + " подтверждено открытие поиска. Сообщения не отправлял."
         }
         val target = openTarget ?: return null
-        if (o.pkg == launchPkg && (SearchNavigation.matchesApp(target, launchName.orEmpty(), launchPkg.orEmpty()) || (o.pkg == CALC && target.equals("calculator", true))))
+        if (telegramOpenWrite) return if (o.pkg == launchPkg && TelegramDraft.isTelegram(o.pkg))
+            "Telegram открыт. Уточни, кому написать и какой текст сообщения. Сообщение не отправлено." else null
+        if (o.pkg == launchPkg && (SearchNavigation.matchesApp(target, launchName.orEmpty(), launchPkg.orEmpty()) || (o.pkg == CALC && target.equals("calculator", true)))) {
             return "Приложение открыто: " + launchName
+        }
         return null
     }
 }

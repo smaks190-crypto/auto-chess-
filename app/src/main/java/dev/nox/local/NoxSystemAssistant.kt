@@ -40,6 +40,8 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 
 internal object AssistantHandoff {
     const val EXTRA_TICKET = "dev.nox.local.ASSISTANT_TICKET"
@@ -125,6 +127,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
     private var pendingCommand: Pair<String, Long>? = null
     private var modelLoadAttempted = false
     private var requestId: Long? = null
+    private var agentHandoff: CompletableFuture<Boolean>? = null
     private fun dp(value: Int) = (value * ctx.resources.displayMetrics.density + .5f).toInt()
     private fun allowed() = shown && AssistantHandoff.active(ctx) && DeviceInteraction.unlocked(ctx)
 
@@ -317,15 +320,49 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
     }
 
     override fun onHide() {
+        val handoff = agentHandoff
+        agentHandoff = null
         shown = false
         release()
         super.onHide()
+        handoff?.complete(true)
     }
 
     override fun onDestroy() {
+        agentHandoff?.complete(false)
+        agentHandoff = null
         shown = false
         release()
         super.onDestroy()
+    }
+
+    /** Called on the service worker only after routing a real request to AGENT.
+     * Do not observe or launch until Android acknowledges hiding this window. */
+    private fun handoffToAgent(): Boolean {
+        val ready = CompletableFuture<Boolean>()
+        main.post {
+            if (ready.isDone || !allowed() || requestId == null || service?.busy != true || agentHandoff != null) {
+                ready.complete(false)
+            } else {
+                val started = runCatching {
+                    ctx.startService(Intent(ctx, NoxService::class.java).setAction(NoxService.KEEP_ALIVE)) != null
+                }.getOrDefault(false)
+                if (!started) ready.complete(false)
+                else {
+                    agentHandoff = ready
+                    if (runCatching { hide() }.isFailure) {
+                        agentHandoff = null
+                        ready.complete(false)
+                    }
+                }
+            }
+        }
+        return try { ready.get(5, TimeUnit.SECONDS) }
+        catch (_: Exception) {
+            ready.complete(false)
+            main.post { if (agentHandoff === ready) agentHandoff = null }
+            false
+        }
     }
 
     private fun release() {
@@ -413,8 +450,8 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         }
         val s = service ?: return
         if (s.busy) return
-        val telegram = TelegramDraft.request(command)
-        if (s.loaded == null && telegram == null && !modelLoadAttempted && AssistantVoiceCommand.dedicatedToolUnavailable(command) == null) {
+        val deterministic = TelegramDraft.request(command) != null || TelegramDraft.openWriteNeedsClarification(command)
+        if (s.loaded == null && !deterministic && !modelLoadAttempted && AssistantVoiceCommand.dedicatedToolUnavailable(command) == null) {
             modelLoadAttempted = true
             if (s.prepareAssistantModel()) {
                 notice = "Загружаю локальную модель…"
@@ -422,20 +459,11 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
             }
         }
         pendingCommand = null
-        // Keep the finite task alive when the assistant panel releases its binding.
-        // The panel must not cover the underlying Telegram composer during observation.
-        if (telegram != null && !telegram.send) {
-            val started = runCatching {
-                ctx.startService(Intent(ctx, NoxService::class.java).setAction(NoxService.KEEP_ALIVE)) != null
-            }.getOrDefault(false)
-            if (!started) { notice = "Android не разрешил выполнение команды в фоне"; return }
-        }
-        requestId = s.askInPlace(command)
+        requestId = s.askInPlace(command, prepareAgent = ::handoffToAgent)
         if (requestId == null) notice = "Не удалось запустить команду"
         else {
             notice = null
             input?.setText(command)
-            if (telegram != null && !telegram.send && s.busy) main.post { hide() }
         }
     }
 

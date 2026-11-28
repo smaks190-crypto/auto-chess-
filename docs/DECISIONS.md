@@ -2,7 +2,7 @@
 
 - D01: Keep Android work in auto-chess- / chatgpt/nox-agent-core / PR #5; do not rewrite working app or start a new repo.
 - D02: Preserve existing Obsidian UI, local Vosk and LiteRT-LM. Use design references only for UI tasks.
-- D03: System assistant starts listening on explicit invocation; finalized recognized commands may run in place. Preserve current screen; do not open arbitrary apps from compact mode.
+- D03: System assistant starts listening on explicit invocation; finalized recognized commands may run in place. Keep N.O.X. chat closed when invoked outside the app. On unlocked device, explicit agent commands may open requested apps via existing permission/verification gates. Hide the system panel before any screen action; lock or loss of assistant role stops the task.
 - D04: Agent success requires independently verified observed postconditions. Stale node IDs require fresh observe and replanning; no automatic replay of uncertain mutations. Preserve authorization, cancellation, user confirmation and locked-device restrictions.
 - D05: Current-chat Telegram draft: exact text in unambiguous composer, no app launch, no automatic send or overwriting an existing draft. Explicit send not implemented. No real outbound messages in automated tests.
 - D06: Locked-screen goal (issue #6): isolated public answer, public web search and verified timer only; no general device control or private data. Requirements only until implemented and tested.

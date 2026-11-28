@@ -630,7 +630,7 @@ class NoxService : Service() {
     }
 
     internal fun syncOverlay() {
-        if (!AgentCaptionPolicy.overlay(background, agentRunning, unlocked(), Settings.canDrawOverlays(this))) { removeOverlay(); return }
+        if (!AgentCaptionPolicy.overlay(background || (assistantResultVisible && (speaking || activeSpeech != null || SystemClock.uptimeMillis() < captionHoldUntil)), agentRunning, unlocked(), Settings.canDrawOverlays(this))) { removeOverlay(); return }
         if (bubble != null) { syncCaption(); return }
         val wm = requireNotNull(getSystemService(WindowManager::class.java))
         val metrics = wm.currentWindowMetrics
@@ -1065,6 +1065,7 @@ class NoxService : Service() {
 
     internal var assistantRequestId = 0L
         private set
+    private var assistantResultVisible = false
     internal var assistantReply = ""
         private set
 
@@ -1078,7 +1079,7 @@ class NoxService : Service() {
     }
 
     /** System panel is a command surface, not an Activity launcher. */
-    internal fun askInPlace(command: String): Long? {
+    internal fun askInPlace(command: String, prepareAgent: (() -> Boolean)? = null): Long? {
         if (busy || destroyed || !unlocked() || !AssistantHandoff.active(this) ||
             command.isBlank() || command.length > 2000) return null
         assistantReply = ""
@@ -1086,13 +1087,14 @@ class NoxService : Service() {
         val prefs = getSharedPreferences("nox_ui", MODE_PRIVATE)
         val effort = runCatching { ChatEffort.valueOf(prefs.getString("chat_effort", "AUTO") ?: "AUTO") }
             .getOrDefault(ChatEffort.AUTO)
-        ask(command, speak = true, thinkingBudget = effort.budget(command, false), inPlace = true)
+        ask(command, speak = true, thinkingBudget = effort.budget(command, false), inPlace = true, prepareAgent = prepareAgent)
         return id
     }
 
-    internal fun ask(command: String, image: File? = null, speak: Boolean = false, deep: Boolean = false, thinkingBudget: Int = if (deep) 1024 else 0, forceAgent: Boolean = false, inPlace: Boolean = false) {
+    internal fun ask(command: String, image: File? = null, speak: Boolean = false, deep: Boolean = false, thinkingBudget: Int = if (deep) 1024 else 0, forceAgent: Boolean = false, inPlace: Boolean = false, prepareAgent: (() -> Boolean)? = null) {
         val text = command.trim()
         if (text.isEmpty() || busy || destroyed) return
+        assistantResultVisible = false
         if (listening) stopListening()
         if (text.length > 2000) { status = "Команда слишком длинная"; publish(); return }
         val previous = history.takeLast(4).joinToString("\n") { (if (it.user) "Пользователь: " else "Нокс: ") + it.text.take(350) }
@@ -1109,8 +1111,9 @@ class NoxService : Service() {
             return
         }
         val telegram = if (image == null) TelegramDraft.request(text) else null
+        val deterministic = telegram != null || (image == null && TelegramDraft.openWriteNeedsClarification(text))
         val config = loaded
-        if (telegram == null && (config == null || (image != null && !config.vision))) {
+        if (!deterministic && (config == null || (image != null && !config.vision))) {
             finishRequest(if (config == null) "Сначала загрузи модель в настройках." else "Выбранная модель не поддерживает изображения.", speak)
             return
         }
@@ -1132,16 +1135,21 @@ class NoxService : Service() {
             traceMemory("request_start")
             val start = SystemClock.elapsedRealtime()
             val deadline = SystemClock.elapsedRealtime() + 240_000L
-            val stop = { destroyed || generationCancelled || SystemClock.elapsedRealtime() >= deadline }
-            val mode = if (telegram != null || (forceAgent && image == null)) RequestMode.AGENT else RequestRouter.route(text, image != null) { classificationPrompt ->
+            val stop = { destroyed || generationCancelled || SystemClock.elapsedRealtime() >= deadline ||
+                (inPlace && !AssistantVoiceCommand.canRunAgent(AssistantHandoff.active(this), unlocked())) }
+            val mode = if (deterministic || (forceAgent && image == null)) RequestMode.AGENT else RequestRouter.route(text, image != null) { classificationPrompt ->
                 model.classifyRequest(classificationPrompt, stop)
             }
-            val response = if (stop()) "Задача отменена." else if (inPlace && mode == RequestMode.AGENT && telegram == null) {
-                "Эта команда требует управления приложениями. В компактном голосовом режиме я не открываю приложения."
+            val response = if (stop()) "Задача отменена." else if (mode == RequestMode.AGENT &&
+                inPlace && !(prepareAgent?.invoke() ?: MainActivity.isOnScreen)) {
+                "Не удалось передать управление из голосовой панели. Действия не выполнены."
+            } else if (mode == RequestMode.AGENT && stop()) {
+                "Задача отменена."
             } else if (mode == RequestMode.AGENT) {
                 main.post {
                     if (!destroyed && generating && !generationCancelled) {
                         agentRunning = true
+                        assistantResultVisible = inPlace && prepareAgent != null
                         status = "Анализирую задачу…"
                         publish()
                     }
@@ -1152,7 +1160,7 @@ class NoxService : Service() {
                     announceApproved = { label -> announceAgent(label, stop, vetoMs = 0L) },
                     canLaunchDirectly = {
                         MainActivity.isVisible ||
-                            (background && bubble != null && Settings.canDrawOverlays(this))
+                            ((background || agentRunning) && bubble != null && Settings.canDrawOverlays(this))
                     })
                 val executeGoal: ((String) -> AgentDecision) -> String = { decide ->
                 AgentCore(
@@ -1185,7 +1193,7 @@ class NoxService : Service() {
                     } }
                 ).run(text, previous)
                 }
-                if (telegram != null) executeGoal { error("Current-chat Telegram goal must not invoke a model") }
+                if (deterministic) executeGoal { error("Verified Telegram goal must not invoke a model") }
                 else model.withAgentPlanner(stop, shortDecisions = goal.arithmetic, block = executeGoal)
             } else model.chat(if (inPlace) "Ответь на запрос текстом. Не заявляй о выполнении внешних действий или поиске, которых не было.\n" + prompt else prompt, image, thinkingBudget > 0, stop, thinkingBudget = thinkingBudget) { chunk ->
                 val now = SystemClock.elapsedRealtime()
