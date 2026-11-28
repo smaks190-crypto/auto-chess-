@@ -521,7 +521,7 @@ class NoxService : Service() {
             val deadline = started + 240_000L
             val stop = { destroyed || generationCancelled || !unlocked() || SystemClock.elapsedRealtime() >= deadline }
             var lastUpdate = 0L
-            val answer = model.chat(prompt, null, budget > 0, stop, thinkingBudget = budget) { chunk ->
+            val answer = model.chat(prompt, null, budget > 0, stop, thinkingBudget = budget, request = request) { chunk ->
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastUpdate >= 80) {
                     lastUpdate = now
@@ -1383,7 +1383,7 @@ class NoxService : Service() {
             val cancel = { stop() || SystemClock.elapsedRealtime() >= deadline }
             if (RequestRouter.route(text, false) { model.classifyRequest(it, cancel) } == RequestMode.AGENT)
                 "Для управления приложениями разблокируй телефон."
-            else model.chat(prompt, null, false, cancel) {}
+            else model.chat(prompt, null, false, cancel, request = text) {}
         }, { finish(it.ifBlank { "Не удалось получить ответ." }, remember = true) })
         return id
     }
@@ -1558,7 +1558,7 @@ class NoxService : Service() {
                 if (deterministic) executeGoal { error("Verified deterministic goal must not invoke a model") }
                 else model.withAgentPlanner(stop, shortDecisions = goal.arithmetic, block = executeGoal)
             } else {
-                val result = model.chat(if (inPlace) "Ответь на запрос текстом. Не заявляй о выполнении внешних действий или поиске, которых не было.\n" + prompt else prompt, image, thinkingBudget > 0, stop, thinkingBudget = thinkingBudget) { chunk ->
+                val result = model.chat(if (inPlace) "Ответь на запрос текстом. Не заявляй о выполнении внешних действий или поиске, которых не было.\n" + prompt else prompt, image, thinkingBudget > 0, stop, thinkingBudget = thinkingBudget, request = text) { chunk ->
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastUpdate >= 80) {
                     lastUpdate = now
@@ -1848,19 +1848,24 @@ class NoxService : Service() {
             validateModel(index, file)
             model.close()
             val header = "\n=== " + pkg.name + " | " + java.util.Date() + " | " +
-                (if (useGpu) "GPU" else "CPU") + " | vision=" + useVision + " | bytes=" + file.length() + " ===\n"
+                (if (useGpu) "GPU" else "CPU") + " | vision=" + useVision + " | bytes=" + file.length() + " | protocol=chat-v2 cold-per-case ===\n"
             report.appendText(header)
             val summary = StringBuilder(header)
             for ((id, prompt) in prompts) {
-                if (destroyed) break
+                if (destroyed || cancelled) break
                 val row = try {
                     val startLoad = SystemClock.elapsedRealtime()
                     model.load(file, useGpu, useVision)
                     val loadMs = SystemClock.elapsedRealtime() - startLoad
                     val start = SystemClock.elapsedRealtime()
-                    val response = model.analyze(prompt, null)
+                    val budget = ChatEffort.AUTO.budget(prompt, false)
+                    val limit = ChatResponsePolicy.outputBudget(prompt, false, budget)
+                    val response = model.chat(prompt, null, budget > 0, { destroyed || cancelled }, thinkingBudget = budget) {}
+                    val stats = model.chatStats()
+                    val measured = " thinking=$budget outputLimit=$limit tokens=${stats?.tokens ?: "-"}" +
+                        " ttftMs=${stats?.firstTokenMs ?: "-"} tok/s=${stats?.tokensPerSecond ?: "-"}"
                     id + ": load=" + loadMs + "ms, answer=" + (SystemClock.elapsedRealtime() - start) +
-                        "ms, PSS=" + Debug.getPss() + "KiB\n" + prompt + "\n" + response + "\n\n"
+                        "ms, PSS=" + Debug.getPss() + "KiB" + measured + "\n" + prompt + "\n" + response + "\n\n"
                 } catch (e: Exception) { id + ": ERROR " + e.message + "\n" }
                 finally { model.close() }
                 report.appendText(row); summary.append(row)

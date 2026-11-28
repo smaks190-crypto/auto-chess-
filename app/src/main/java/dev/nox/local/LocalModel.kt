@@ -67,10 +67,12 @@ internal class LocalModel : AutoCloseable {
         }
     }
 
-    fun chat(command: String, image: File?, deep: Boolean, cancelled: () -> Boolean, thinkingBudget: Int = if (deep) 1024 else 0, update: (String) -> Unit): String {
-        val prompt = PromptPolicy.build(command) + "\nОтвечай естественно, кратко и по существу. Не перечисляй свои возможности без запроса."
+    fun chat(command: String, image: File?, deep: Boolean, cancelled: () -> Boolean, thinkingBudget: Int = if (deep) 1024 else 0, request: String = command, update: (String) -> Unit): String {
+        val prompt = PromptPolicy.build(command) + "\n" + ChatResponsePolicy.instruction(request) + "\nОтвечай естественно и по существу."
         lastChatStats = null
-        return generate(prompt, image, deep, cancelled, update, thinkingBudget = thinkingBudget, measureChat = true)
+        return generate(prompt, image, deep, cancelled, update,
+            maxOutputTokens = ChatResponsePolicy.outputBudget(request, image != null, thinkingBudget),
+            thinkingBudget = thinkingBudget, measureChat = true)
     }
 
     fun classifyRequest(prompt: String, cancelled: () -> Boolean): String =

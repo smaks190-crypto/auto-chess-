@@ -23,6 +23,7 @@ internal object RequestRouter {
         // Explicit interface actions do not need another model generation.
         if (Regex("^(открой|запусти|нажми|прокрути|найди чат|прочитай экран)\\s+.+$").matches(text) ||
             text == "прочитай экран") return RequestMode.AGENT
+        if (ChatResponsePolicy.directTextRequest(text)) return RequestMode.CHAT
         val prompt = """Классифицируй только текущую просьбу. Верни ровно CHAT или AGENT.
             |CHAT — разговор, вопрос, объяснение, вычисление, написание текста без действий на телефоне.
             |AGENT — пользователь просит фактически управлять телефоном: открыть приложение, найти чат, нажать, ввести или отправить сообщение.

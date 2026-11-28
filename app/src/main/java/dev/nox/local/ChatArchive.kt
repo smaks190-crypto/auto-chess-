@@ -116,7 +116,7 @@ internal class ChatArchive(context: Context) : SQLiteOpenHelper(context, "nox_ch
         val next = create(db)
         // A branch is an independent snapshot; deleting it cannot delete the original.
         db.execSQL("INSERT INTO messages(chat_id,is_user,text,state,created,kind) SELECT ?,is_user,text,state,created,kind FROM messages WHERE chat_id=? AND id<? ORDER BY id",
-            arrayOf(next, source, plan.fromUser))
+            arrayOf<Any>(next, source, plan.fromUser))
         append(db, next, NoxService.Turn(true, plan.text))
         db.update("chats", ContentValues().apply {
             put("parent_chat_id", source); put("fork_message_id", plan.fromUser)
