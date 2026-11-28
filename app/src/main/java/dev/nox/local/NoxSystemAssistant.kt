@@ -116,6 +116,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
     private var service: NoxService? = null
     private var bound = false
     private var shown = false
+    private var restricted = false
     private var inAppTarget: MainActivity? = null
     private var autoStartDeadline = 0L
     private var autoExecuteRecording = false
@@ -129,13 +130,14 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
     private var requestId: Long? = null
     private var agentHandoff: CompletableFuture<Boolean>? = null
     private fun dp(value: Int) = (value * ctx.resources.displayMetrics.density + .5f).toInt()
-    private fun allowed() = shown && AssistantHandoff.active(ctx) && DeviceInteraction.unlocked(ctx)
+    private fun allowed() = shown && AssistantHandoff.active(ctx) &&
+        (if (restricted) DeviceInteraction.lockedPanel(ctx) else DeviceInteraction.unlocked(ctx))
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             if (!shown) return
             service = (binder as? NoxService.LocalBinder)?.service
-            service?.assistantPanelVisibility(true)
+            service?.assistantPanelVisibility(true, restricted)
             if (pendingCommand != null) drainCommand() else maybeAutoStart()
             refresh()
         }
@@ -152,7 +154,8 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         override fun run() {
             if (!shown) return
             if (!allowed()) {
-                cancelRecording(); refresh()
+                cancelRecording()
+                if (restricted) hide() else refresh()
                 return
             }
             maybeAutoStart()
@@ -275,7 +278,8 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
     override fun onPrepareShow(args: Bundle?, showFlags: Int) {
         super.onPrepareShow(args, showFlags)
         inAppTarget = MainActivity.foregroundAssistantTarget()?.takeIf {
-            it.assistantCanStayInChat() && NoxSystemAssistant.wakeCommand?.first.isNullOrBlank()
+            DeviceInteraction.unlocked(ctx) && it.assistantCanStayInChat() &&
+                NoxSystemAssistant.wakeCommand?.first.isNullOrBlank()
         }
         // Disable UI before Android creates or shows the assistant window.
         setUiEnabled(inAppTarget == null)
@@ -283,8 +287,9 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
-        val target = inAppTarget
+        val target = inAppTarget?.takeIf { DeviceInteraction.unlocked(ctx) }
         inAppTarget = null
+        if (target == null) setUiEnabled(true)
         val wake = NoxSystemAssistant.takeWakeCommand()
         if (target != null) {
             target.acceptAssistantInvocation()
@@ -298,12 +303,13 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
             setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
         }
         val newlyShown = !shown
+        if (newlyShown) restricted = DeviceInteraction.lockedPanel(ctx)
         shown = true; notice = null
-        service?.assistantPanelVisibility(true)
+        service?.assistantPanelVisibility(true, restricted)
         if (newlyShown) autoStartDeadline = if (allowed() && wake.isNullOrBlank())
             SystemClock.elapsedRealtime() + AssistantAutoListen.MAX_WAIT_MS else 0L
         if (newlyShown && wake.isNullOrBlank()) android.util.Log.i("NoxVoice", "assistant_panel_shown")
-        if (!wake.isNullOrBlank() && allowed()) {
+        if (!wake.isNullOrBlank() && allowed() && !restricted) {
             autoStartDeadline = 0L
             modelLoadAttempted = false
             pendingCommand = wake to (SystemClock.elapsedRealtime() + 120_000L)
@@ -346,7 +352,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
     private fun handoffToAgent(): Boolean {
         val ready = CompletableFuture<Boolean>()
         main.post {
-            if (ready.isDone || !allowed() || requestId == null || service?.busy != true || agentHandoff != null) {
+            if (ready.isDone || restricted || !allowed() || requestId == null || service?.busy != true || agentHandoff != null) {
                 ready.complete(false)
             } else {
                 val started = runCatching {
@@ -379,6 +385,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         showAnswer("")
         cancelRecording()
         service?.assistantPanelVisibility(false)
+        restricted = false
         wave?.setListening(false, 0f, false)
         panel?.animate()?.cancel()
         if (bound) { bound = false; runCatching { ctx.unbindService(connection) } }
@@ -391,7 +398,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         if (autoStartDeadline == 0L) return
         when (AssistantAutoListen.decide(autoStartDeadline, SystemClock.elapsedRealtime(),
             allowed() && session == null && pendingCommand == null && requestId == null &&
-                input?.text.isNullOrBlank(), service?.canStartWebDictation() == true)) {
+                input?.text.isNullOrBlank(), service?.canStartWebDictation(restricted) == true)) {
             AssistantAutoListen.Decision.WAIT -> Unit
             AssistantAutoListen.Decision.CANCEL -> autoStartDeadline = 0L
             AssistantAutoListen.Decision.START -> {
@@ -418,7 +425,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         input?.clearFocus()
         (ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager)
             ?.hideSoftInputFromWindow(input?.windowToken, 0)
-        session = s.startWebDictation()
+        session = s.startWebDictation(restricted)
         autoExecuteRecording = session != null
         if (session == null) notice = if (s.busy) "Нокс занят" else "Микрофон недоступен"
         refresh()
@@ -464,16 +471,21 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         }
         val s = service ?: return
         if (s.busy) return
-        val deterministic = GoalState(command).requiresNoModel
+        val timer = LockedAssistantPolicy.timerRequested(command) || LockedAssistantPolicy.cancelTimerRequested(command)
+        val deterministic = timer || if (restricted)
+            LockedAssistantPolicy.needsUnlock(command) || LockedAssistantPolicy.publicSearch(command) ||
+                AssistantVoiceCommand.isScreenRequest(command)
+            else GoalState(command).requiresNoModel
         if (s.loaded == null && !deterministic && !modelLoadAttempted && AssistantVoiceCommand.dedicatedToolUnavailable(command) == null) {
             modelLoadAttempted = true
-            if (s.prepareAssistantModel()) {
+            if (s.prepareAssistantModel(restricted)) {
                 notice = "Загружаю локальную модель…"
                 return
             }
         }
         pendingCommand = null
-        requestId = s.askInPlace(command, prepareAgent = ::handoffToAgent)
+        requestId = if (restricted) s.askLockedInPlace(command)
+            else s.askInPlace(command, prepareAgent = ::handoffToAgent)
         if (requestId == null) notice = "Не удалось запустить команду"
         else {
             notice = null
@@ -503,7 +515,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
                 input?.setText(joined(final))
                 session = null
                 s.cancelWebDictation(id)
-                notice = if (final.isEmpty()) s.status else null
+                notice = if (final.isEmpty()) (if (restricted) "Речь не распознана" else s.status) else null
                 if (command != null && allowed() && !s.busy) {
                     submitInPlace(command)
                     return
@@ -513,10 +525,10 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         if (permitted) drainCommand()
         val running = requestId?.let { s != null && s.assistantRequestId == it && s.busy } == true
         requestId?.let { id ->
-            if (s != null && s.assistantRequestId == id) {
-                if (running) showAnswer(s.partial)
+            if (s != null && s.assistantRequestId == id && permitted) {
+                if (running) showAnswer(if (restricted) "" else s.partial)
                 else {
-                    showAnswer(s.assistantReply.ifBlank { s.status })
+                    showAnswer(s.assistantReply.ifBlank { if (restricted) "Ответ не получен." else s.status })
                     requestId = null
                 }
             } else requestId = null
@@ -525,11 +537,12 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         val message = when {
             !permitted -> "Разблокируй телефон"
             recording -> if (s?.status == "Слушаю…") "Слушаю…" else "Подключаю микрофон…"
-            pendingCommand != null -> if (s == null) "Ядро подключается…" else s.status
-            running -> s?.status ?: "Думаю…"
-            autoStartDeadline != 0L -> s?.status ?: "Ядро подключается…"
+            pendingCommand != null -> if (s == null) "Ядро подключается…" else if (restricted) "Подготавливаю запрос…" else s.status
+            running -> if (restricted) "Думаю…" else s?.status ?: "Думаю…"
+            autoStartDeadline != 0L -> if (restricted) "Подключаю микрофон…" else s?.status ?: "Ядро подключается…"
             notice != null -> notice
             s == null -> "Ядро подключается…"
+            restricted -> "Разговор и таймер · экран заблокирован"
             else -> null
         }
         status?.apply {
@@ -558,7 +571,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
                 contentDescription = label
             }
         }
-        chat?.apply { isEnabled = permitted && !recording; alpha = if (isEnabled) 1f else .45f }
+        chat?.apply { isEnabled = permitted && !restricted && !recording; alpha = if (isEnabled) 1f else .45f }
         send?.apply {
             visibility = if (!recording && !input?.text.isNullOrBlank()) View.VISIBLE else View.GONE
             isEnabled = permitted && requestId == null && pendingCommand == null && service?.busy == false
@@ -566,7 +579,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
     }
 
     private fun launch(submit: Boolean, draft: String = "", execute: Boolean = false) {
-        if (!allowed() || session != null) { refresh(); return }
+        if (!allowed() || restricted || session != null || !DeviceInteraction.unlocked(ctx)) { refresh(); return }
         autoStartDeadline = 0L
         val text = if (submit) draft.trim() else input?.text?.toString()?.trim().orEmpty()
         val ticket = if (text.isNotEmpty()) AssistantHandoff.issueDraft(ctx, text, execute) ?: return else null

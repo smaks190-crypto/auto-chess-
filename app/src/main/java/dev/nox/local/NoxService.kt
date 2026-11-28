@@ -136,7 +136,13 @@ class NoxService : Service() {
     private var receiverRegistered = false
     private var listeningMode: VoiceInputMode? = null
     private var wakeDetected = false
-    private var assistantPanelVisible = false
+    @Volatile private var assistantPanelVisible = false
+    @Volatile private var restrictedPanel = false
+    private var restrictedDictation = false
+    private var restrictedRequest = false
+    private val restrictedTurns = mutableListOf<Turn>()
+    private fun restrictedAllowed() = assistantPanelVisible && restrictedPanel && DeviceInteraction.lockedPanel(this)
+    private fun dictationAllowed(restricted: Boolean) = if (restricted) restrictedAllowed() else unlocked()
     private var wakePendingUntil = 0L
     private val wakeHandoffExpiry = Runnable {
         wakePendingUntil = 0L
@@ -147,8 +153,21 @@ class NoxService : Service() {
         publish()
     }
 
-    internal fun assistantPanelVisibility(visible: Boolean) {
+    internal fun assistantPanelVisibility(visible: Boolean, restricted: Boolean = false) {
+        if (!visible && restrictedPanel) {
+            if (restrictedDictation && webDictationActive) cancelWebDictation(webDictationSession)
+            if (restrictedRequest && generating) generationCancelled = true
+            if (restrictedRequest) stopSpeech()
+            assistantReply = ""
+            restrictedTurns.clear()
+            restrictedRequest = false
+        }
         assistantPanelVisible = visible
+        restrictedPanel = visible && restricted
+        if (restrictedPanel) {
+            if (activeSpeech != null || speaking) stopSpeech()
+            if (generating && !restrictedRequest) generationCancelled = true
+        }
         clearWakeHandoff()
         if (visible && waitingForName) stopListening()
         if (!visible) wakeDetected = false
@@ -212,7 +231,8 @@ class NoxService : Service() {
                 if (background) status = lockedStatus()
             } else {
                 if (listeningMode != null &&
-                    !BackgroundVoicePolicy.canCapture(checkNotNull(listeningMode), background, unlocked()))
+                    !(if (restrictedDictation) restrictedAllowed()
+                    else BackgroundVoicePolicy.canCapture(checkNotNull(listeningMode), background, unlocked())))
                     stopListening()
                 if (unlocked()) {
                     if (background && !busy && !listening && !loopBlocked) status = wakeStatus()
@@ -1096,13 +1116,97 @@ class NoxService : Service() {
     internal var assistantReply = ""
         private set
 
-    internal fun prepareAssistantModel(): Boolean {
-        if (busy || loaded != null || !unlocked() || !AssistantHandoff.active(this)) return false
+    internal fun prepareAssistantModel(restricted: Boolean = false): Boolean {
+        if (busy || loaded != null || !dictationAllowed(restricted) || !AssistantHandoff.active(this)) return false
         val prefs = getSharedPreferences("nox_ui", MODE_PRIVATE)
         val index = prefs.getInt("model_index", 0).coerceIn(ModelDownload.catalog.indices)
         if (!modelFile(index).isFile) return false
-        selectModel(index, prefs.getBoolean("gpu", true), prefs.getBoolean("vision", true))
+        if (!restricted) {
+            selectModel(index, prefs.getBoolean("gpu", true), prefs.getBoolean("vision", true))
+        } else {
+            // Only load an existing local model file. No model downloads or imports on keyguard.
+            val pkg = ModelDownload.catalog[index]
+            val file = modelFile(index)
+            val cfg = Loaded(index, prefs.getBoolean("gpu", true) && !pkg.cpuOnly,
+                prefs.getBoolean("vision", true) && pkg.vision, file.name.startsWith(pkg.key + ".imported."))
+            cancelled = false
+            runWork("Загрузка локальной модели…", {
+                check(restrictedAllowed())
+                validateModel(index, file)
+                check(restrictedAllowed())
+                model.load(file, cfg.gpu, cfg.vision)
+                "Локальная модель готова"
+            }, { loaded = cfg; status = it })
+        }
         return true
+    }
+
+    /** Keyguard requests never reach AgentCore, history, attachments or screen capture.
+     * The only executable tool is a validated native countdown. */
+    internal fun askLockedInPlace(command: String): Long? {
+        if (busy || destroyed || !restrictedAllowed() || command.isBlank() || command.length > 2000) return null
+        val text = command.trim()
+        val id = ++assistantRequestId
+        restrictedRequest = true
+        assistantReply = ""
+        partial = ""
+        val stop = { destroyed || generationCancelled || !restrictedAllowed() }
+        fun finish(answer: String, remember: Boolean = false) {
+            if (!restrictedAllowed() || assistantRequestId != id || !restrictedRequest) return
+            assistantReply = answer
+            if (remember) {
+                restrictedTurns.add(Turn(true, text)); restrictedTurns.add(Turn(false, answer))
+                while (restrictedTurns.size > 8) restrictedTurns.removeAt(0)
+            }
+            status = "На связи"
+            speakReply(answer, true, restricted = true)
+        }
+        if (LockedAssistantPolicy.timerRequested(text)) {
+            val seconds = LockedAssistantPolicy.timerSeconds(text)
+            if (seconds == null) {
+                finish("Укажи точное время таймера от одной секунды до одного часа.")
+                return id
+            }
+            generationCancelled = false
+            generating = true
+            val result = NativeTimerService.request(this, seconds) { !stop() && assistantRequestId == id }
+            runWork("Запускаю таймер…", { result.get(6, TimeUnit.SECONDS) }, { finish(it) })
+            return id
+        }
+        if (LockedAssistantPolicy.cancelTimerRequested(text)) {
+            finish(NativeTimerService.cancel())
+            return id
+        }
+        if (LockedAssistantPolicy.publicSearch(text)) {
+            finish("Прямой поиск в интернете пока не подключён. Могу ответить локально, без проверки сети.")
+            return id
+        }
+        if (LockedAssistantPolicy.needsUnlock(text) || AssistantVoiceCommand.isScreenRequest(text)) {
+            finish("Для управления приложениями или чтения личных данных разблокируй телефон.")
+            return id
+        }
+        if (loaded == null) {
+            finish("Локальная модель не готова. Загрузи её в настройках Нокса.")
+            return id
+        }
+        // A fresh conversation contains only turns spoken in this explicit keyguard session.
+        val context = restrictedTurns.takeLast(6).joinToString("\n") {
+            (if (it.user) "Пользователь: " else "Нокс: ") + it.text.take(350)
+        }
+        val prompt = "Ты отвечаешь на экране блокировки. Только общий разговор, без личных данных, " +
+            "управления телефоном и сети. Не выдумывай выполненные действия. Если просят доступ к личным " +
+            "данным или управление приложениями, попроси разблокировать телефон.\n" +
+            context + "\nТекущий запрос: " + text
+        generationCancelled = false
+        generating = true
+        runWork("Думаю…", {
+            val deadline = SystemClock.elapsedRealtime() + 120_000L
+            val cancel = { stop() || SystemClock.elapsedRealtime() >= deadline }
+            if (RequestRouter.route(text, false) { model.classifyRequest(it, cancel) } == RequestMode.AGENT)
+                "Для управления приложениями разблокируй телефон."
+            else model.chat(prompt, null, false, cancel) {}
+        }, { finish(it.ifBlank { "Не удалось получить ответ." }, remember = true) })
+        return id
     }
 
     /** System panel is a command surface, not an Activity launcher. */
@@ -1120,7 +1224,7 @@ class NoxService : Service() {
 
     internal fun ask(command: String, image: File? = null, speak: Boolean = false, deep: Boolean = false, thinkingBudget: Int = if (deep) 1024 else 0, forceAgent: Boolean = false, inPlace: Boolean = false, prepareAgent: (() -> Boolean)? = null) {
         val text = command.trim()
-        if (text.isEmpty() || busy || destroyed) return
+        if (text.isEmpty() || busy || destroyed || !unlocked()) return
         assistantResultVisible = false
         if (listening) stopListening()
         if (text.length > 2000) { status = "Команда слишком длинная"; publish(); return }
@@ -1132,6 +1236,22 @@ class NoxService : Service() {
         fun finishRequest(answer: String, say: Boolean) {
             if (inPlace) assistantReply = answer
             complete(answer, say)
+        }
+        if (LockedAssistantPolicy.cancelTimerRequested(text)) {
+            finishRequest(NativeTimerService.cancel(), speak)
+            return
+        }
+        if (LockedAssistantPolicy.timerRequested(text)) {
+            val seconds = LockedAssistantPolicy.timerSeconds(text)
+            if (seconds == null) {
+                finishRequest("Укажи точное время таймера от одной секунды до одного часа.", speak)
+                return
+            }
+            generationCancelled = false
+            generating = true
+            val result = NativeTimerService.request(this, seconds) { !destroyed && !generationCancelled && unlocked() }
+            runWork("Запускаю таймер…", { result.get(6, TimeUnit.SECONDS) }, { finishRequest(it, speak && voiceToken == voiceEpoch) })
+            return
         }
         if (inPlace) AssistantVoiceCommand.dedicatedToolUnavailable(text)?.let {
             finishRequest(it, speak)
@@ -1266,12 +1386,17 @@ class NoxService : Service() {
         if (history.size > 60) history.subList(0, history.size - 60).clear()
         persistHistory()
         status = "На связи"
-        if (speak && unlocked() && !offlineTts) {
+        speakReply(text, speak)
+    }
+
+    private fun speakReply(text: String, speak: Boolean, restricted: Boolean = false) {
+        val allowed = { if (restricted) restrictedAllowed() else unlocked() }
+        if (speak && allowed() && !offlineTts) {
             val engine = tts
             val voice = runCatching { engine?.voices?.firstOrNull { it.locale.language == "ru" && !it.isNetworkConnectionRequired } }.getOrNull()
             if (voice != null) offlineTts = runCatching { engine?.setVoice(voice) == TextToSpeech.SUCCESS }.getOrDefault(false)
         }
-        if (speak && unlocked() && offlineTts) {
+        if (speak && allowed() && offlineTts) {
             stopSpeech()
             val id = "nox-" + (++speechId)
             activeSpeech = id; spokenText = text; visibleSpeechEnd = 0
@@ -1295,7 +1420,7 @@ class NoxService : Service() {
                     }
                 }, 180_000L)
             }
-        } else if (speak && unlocked()) {
+        } else if (speak && allowed()) {
             status = "Русский офлайн-голос недоступен"
             holdCaption(text)
         }
@@ -1325,19 +1450,19 @@ class NoxService : Service() {
     }
 
     /** A UI-owned dictation session never routes recognized speech as a command. */
-    internal fun canStartWebDictation(): Boolean =
-        !destroyed && !busy && activeSpeech == null && !speaking && unlocked() &&
+    internal fun canStartWebDictation(restricted: Boolean = false): Boolean =
+        !destroyed && !busy && activeSpeech == null && !speaking && dictationAllowed(restricted) &&
             (!listening || waitingForName)
 
-    internal fun startWebDictation(): Long? {
-        if (!canStartWebDictation()) return null
+    internal fun startWebDictation(restricted: Boolean = false): Long? {
+        if (!canStartWebDictation(restricted)) return null
         webDictationSession++
         webDictationResult = ""
         webDictationFinal = false
         clearWakeHandoff()
         wakeDetected = false
         if (waitingForName) stopListening()
-        startVoice(VoiceInputMode.MANUAL, dictation = true)
+        startVoice(VoiceInputMode.MANUAL, dictation = true, restricted = restricted)
         return if (webDictationActive && listening && listeningMode == VoiceInputMode.MANUAL)
             webDictationSession else null
     }
@@ -1345,7 +1470,7 @@ class NoxService : Service() {
     internal fun stopWebDictation(session: Long) {
         if (session != webDictationSession || !webDictationActive) return
         webDictationFinal = false
-        webDictationResult = if (unlocked()) recognizedText.trim().take(2000) else ""
+        webDictationResult = if (dictationAllowed(restrictedDictation)) recognizedText.trim().take(2000) else ""
         stopListening()
         status = if (webDictationResult.isEmpty()) "Речь не распознана" else "Диктовка готова"
         publish()
@@ -1371,12 +1496,14 @@ class NoxService : Service() {
         startVoice(VoiceInputMode.MANUAL)
     }
 
-    private fun startVoice(mode: VoiceInputMode, dictation: Boolean = false) {
+    private fun startVoice(mode: VoiceInputMode, dictation: Boolean = false, restricted: Boolean = false) {
+        fun canCapture() = if (restricted) dictation && mode == VoiceInputMode.MANUAL && restrictedAllowed()
+            else BackgroundVoicePolicy.canCapture(mode, background, unlocked())
         if (destroyed || listening || activeSpeech != null || speaking) return
         if (busy) { status = "Подожди, Нокс занят…"; publish(); return }
         if (mode != VoiceInputMode.MANUAL && !background) return
         main.removeCallbacks(restartVoice)
-        if (!BackgroundVoicePolicy.canCapture(mode, background, unlocked())) {
+        if (!canCapture()) {
             status = "Разблокируй телефон для голосовой команды"; publish(); return
         }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -1386,6 +1513,7 @@ class NoxService : Service() {
         loopBlocked = false
         stopListening()
         webDictationActive = dictation
+        restrictedDictation = restricted
         val token = ++speechId
         try {
             val engine = recognizer ?: SilentRecognizer(applicationContext).also { recognizer = it }
@@ -1402,7 +1530,7 @@ class NoxService : Service() {
                 override fun onReady() {
                     if (token != speechId || !listening) return
                     main.removeCallbacks(recognitionTimeout)
-                    if (!BackgroundVoicePolicy.canCapture(mode, background, unlocked()) ||
+                    if (!canCapture() ||
                         activeSpeech != null || speaking) { stopListening(); publish(); return }
                     status = when (mode) {
                         VoiceInputMode.WAKE -> wakeStatus()
@@ -1425,7 +1553,7 @@ class NoxService : Service() {
                     }
                 }
                 override fun onPartial(text: String) {
-                    if (token == speechId && listening && live && unlocked()) {
+                    if (token == speechId && listening && live && canCapture()) {
                         recognizedText = text
                         publish()
                     }
@@ -1433,7 +1561,7 @@ class NoxService : Service() {
                 override fun onResult(text: String) {
                     if (token != speechId || !listening) return
                     if (dictation) {
-                        webDictationResult = if (webDictationActive && unlocked() && activeSpeech == null && !speaking)
+                        webDictationResult = if (webDictationActive && canCapture() && activeSpeech == null && !speaking)
                             text.trim().take(2000) else ""
                         webDictationFinal = webDictationResult.isNotBlank() && text.trim().length <= 2000
                         stopListening()
@@ -1444,7 +1572,7 @@ class NoxService : Service() {
                     }
                     stopListening()
                     recognitionFailures = 0; retryAt = 0L
-                    if (!BackgroundVoicePolicy.canCapture(mode, background, unlocked()) ||
+                    if (!canCapture() ||
                         activeSpeech != null || speaking) { publish(); return }
                     when (val action = WakeWordPolicy.route(mode, text)) {
                         WakeInput.Ignore -> publish()
@@ -1489,6 +1617,7 @@ class NoxService : Service() {
         microphoneRoute = ""
         listening = false; voiceLevel = 0f; recognizedText = ""
         webDictationActive = false
+        restrictedDictation = false
     }
 
     internal fun benchmark(index: Int, gpu: Boolean, vision: Boolean) {

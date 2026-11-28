@@ -32,6 +32,11 @@
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User initiated local AI assistant task continuing across Android apps with a visible cancellation notification"/>
         </service>
+        <service android:name=".NativeTimerService" android:exported="false"
+            android:foregroundServiceType="specialUse" android:stopWithTask="false">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User initiated local countdown timer with alarm and cancel notification"/>
+        </service>
         <service android:name=".PerceptionService" android:exported="false"
             android:foregroundServiceType="mediaProjection" android:stopWithTask="false"/>
         <service android:name=".NoxNavigationService" android:label="${noxNavigationLabel}"
