@@ -1,26 +1,70 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
     <queries>
+        <package android:name="com.sec.android.daemonapp"/>
+        <intent><action android:name="android.intent.action.SET_TIMER"/><category android:name="android.intent.category.DEFAULT"/></intent>
+        <intent><action android:name="android.intent.action.SHOW_TIMERS"/><category android:name="android.intent.category.DEFAULT"/></intent>
         <intent><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent>
         <intent><action android:name="android.intent.action.TTS_SERVICE"/></intent>
     </queries>
-    <application android:label="N.O.X." android:allowBackup="false" android:theme="@android:style/Theme.Material.NoActionBar" android:supportsRtl="true">
+    <application android:label="${noxAppLabel}" android:icon="@drawable/ic_nox" android:roundIcon="@drawable/ic_nox" android:allowBackup="false" android:theme="@android:style/Theme.Material.NoActionBar" android:supportsRtl="true">
         <uses-native-library android:name="libvndksupport.so" android:required="false"/>
         <uses-native-library android:name="libOpenCL.so" android:required="false"/>
+        <service android:name=".NoxSystemAssistant" android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <intent-filter><action android:name="android.service.voice.VoiceInteractionService"/></intent-filter>
+            <meta-data android:name="android.voice_interaction" android:resource="@xml/nox_system_assistant"/>
+        </service>
+        <service android:name=".NoxAssistantSessionService" android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION"/>
+        <service android:name=".NoxAssistantRecognitionService" android:exported="true">
+            <intent-filter><action android:name="android.speech.RecognitionService"/></intent-filter>
+            <meta-data android:name="android.speech" android:resource="@xml/nox_assistant_recognition"/>
+        </service>
         <service android:name=".NoxService" android:exported="false"
-            android:foregroundServiceType="microphone" android:stopWithTask="false"/>
-        <service android:name=".NoxNavigationService" android:label="Нокс — навигация"
+            android:foregroundServiceType="microphone|specialUse" android:stopWithTask="false">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User initiated local AI assistant task continuing across Android apps with a visible cancellation notification"/>
+        </service>
+        <receiver android:name=".NativeReminderReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED"/>
+            </intent-filter>
+        </receiver>
+        <receiver android:name=".NativeAlarmReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.TIME_SET"/>
+                <action android:name="android.intent.action.TIMEZONE_CHANGED"/>
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED"/>
+            </intent-filter>
+        </receiver>
+        <service android:name=".NativeAlarmRingService" android:exported="false"
+            android:foregroundServiceType="specialUse" android:stopWithTask="false">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User scheduled audible wakeup alarm with a visible stop control"/>
+        </service>
+        <service android:name=".PerceptionService" android:exported="false"
+            android:foregroundServiceType="mediaProjection" android:stopWithTask="false"/>
+        <service android:name=".NoxNavigationService" android:label="${noxNavigationLabel}"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" android:exported="true">
             <intent-filter><action android:name="android.accessibilityservice.AccessibilityService"/></intent-filter>
             <meta-data android:name="android.accessibilityservice" android:resource="@xml/nox_navigation"/>
         </service>
-        <activity android:name=".MainActivity" android:exported="true">
+        <activity android:name=".MainActivity" android:exported="true" android:enableOnBackInvokedCallback="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>

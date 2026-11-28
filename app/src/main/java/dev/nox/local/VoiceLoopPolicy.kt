@@ -11,6 +11,14 @@ internal object VoiceLoopPolicy {
         1, 2, 3, 4, 8, 11, 14 -> (1000L shl (failures - 1).coerceIn(0, 3)).coerceAtMost(8000L)
         else -> null
     }
+    fun isCancelTaskPhrase(input: String): Boolean {
+        val text = input.trim().lowercase(java.util.Locale.ROOT)
+            .replace(Regex("^нокс[ ,!:.]+"), "")
+            .trim().trimEnd('.', '!', '?', ' ')
+        return text in setOf("стоп", "остановись", "останови задачу", "отмени задачу",
+            "не надо", "прекрати", "отмена", "прерви задачу")
+    }
+
     fun isStopPhrase(input: String): Boolean {
         val text = input.trim().lowercase(java.util.Locale.ROOT)
             .replace(Regex("^нокс[ ,!:.]+"), "")

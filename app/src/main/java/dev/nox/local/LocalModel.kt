@@ -3,8 +3,11 @@ package dev.nox.local
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
+import com.google.ai.edge.litertlm.ExperimentalFlags
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.MessageCallback
 import com.google.ai.edge.litertlm.ThinkingConfig
@@ -12,33 +15,52 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.io.File
+import android.os.SystemClock
+import android.util.Log
 
 /** All calls are owned by a single worker thread. No network client. */
+@OptIn(ExperimentalApi::class)
 internal class LocalModel : AutoCloseable {
-    private var engine: Engine? = null
+    internal data class DecodeStats(val tokens: Int, val tokensPerSecond: Double, val firstTokenMs: Long?)
+    private var lastChatStats: DecodeStats? = null
+    fun chatStats(): DecodeStats? = lastChatStats
+    private var lastChatAttempts = 0
+    fun chatAttempts(): Int = lastChatAttempts
+    private data class Recipe(val file: File, val gpu: Boolean, val vision: Boolean)
+    private val resident = ResidentModel<Recipe, Engine>(
+        create = { config ->
+            require(config.file.isFile && config.file.length() > 0) { "Файл модели отсутствует" }
+            val started = SystemClock.elapsedRealtime()
+            ExperimentalFlags.enableBenchmark = true
+            val candidate = Engine(EngineConfig(
+                modelPath = config.file.absolutePath,
+                backend = if (config.gpu) Backend.GPU() else Backend.CPU(),
+                visionBackend = if (config.vision) Backend.GPU() else null
+            ))
+            try {
+                candidate.initialize()
+                Log.i("NoxMemory", "engine_ready elapsedMs=${SystemClock.elapsedRealtime() - started} gpu=${config.gpu} vision=${config.vision}")
+                candidate
+            } catch (error: Throwable) {
+                runCatching { candidate.close() }
+                throw error
+            }
+        },
+        release = { it.close() }
+    )
 
-    fun load(file: File, gpu: Boolean, vision: Boolean = true) {
-        require(file.isFile && file.length() > 0) { "Файл модели отсутствует" }
-        close()
-        val candidate = Engine(EngineConfig(
-            modelPath = file.absolutePath,
-            backend = if (gpu) Backend.GPU() else Backend.CPU(),
-            visionBackend = if (vision) Backend.GPU() else null
-        ))
-        try {
-            candidate.initialize()
-            engine = candidate
-        } catch (error: Throwable) {
-            runCatching { candidate.close() }
-            throw error
-        }
-    }
+    fun load(file: File, gpu: Boolean, vision: Boolean = true) =
+        resident.load(Recipe(file, gpu, vision))
+
+    fun hibernate(): Boolean = resident.hibernate()
+    private fun engine(): Engine = resident.requireResident()
 
     fun analyze(command: String, image: File?): String {
         val prompt = PromptPolicy.build(command)
-        val active = checkNotNull(engine) { "Сначала загрузите модель" }
+        val active = engine()
         return active.createConversation().use { conversation ->
             if (image == null) conversation.sendMessage(prompt).toString()
             else conversation.sendMessage(Contents.of(
@@ -47,10 +69,87 @@ internal class LocalModel : AutoCloseable {
         }
     }
 
-    fun chat(command: String, image: File?, deep: Boolean, cancelled: () -> Boolean, update: (String) -> Unit): String {
-        val prompt = PromptPolicy.build(command) + "\nОтвечай естественно, кратко и по существу. Не перечисляй свои возможности без запроса."
-        val active = checkNotNull(engine) { "Сначала загрузите модель" }
+    fun chat(command: String, image: File?, deep: Boolean, cancelled: () -> Boolean, thinkingBudget: Int = if (deep) 1024 else 0, request: String = command, update: (String) -> Unit): String {
+        val prompt = PromptPolicy.build(command) + "\n" + ChatResponsePolicy.instruction(request) + "\nОтвечай естественно и по существу."
+        lastChatStats = null
+        lastChatAttempts = 0
+        val outputLimit = ChatResponsePolicy.outputBudget(request, image != null, thinkingBudget)
+        val single = image == null && ChatResponsePolicy.singleDraft(request)
+        // For a single draft, publish only the final checked text, rather than showing extra alternatives.
+        val stream: (String) -> Unit = if (single) ({ _ -> }) else update
+        fun attempt(thinking: Int, limit: Int, retry: Boolean): String {
+            lastChatAttempts++
+            lastChatStats = null
+            val input = if (retry) prompt + "\nПредыдущая генерация не дала ответа. Дай итоговый ответ сразу, без анализа." else prompt
+            return generate(input, image, deep && !retry, cancelled, stream,
+                maxOutputTokens = limit, thinkingBudget = thinking, measureChat = true)
+        }
+        val raw = if (image == null) ChatRecovery.run(thinkingBudget, outputLimit,
+            ChatResponsePolicy.outputBudget(request, false, 0).coerceIn(160, 512), cancelled, ::attempt)
+            else attempt(thinkingBudget, outputLimit, false)
+        val result = if (single) ChatResponsePolicy.normalizeDraft(request, raw) else raw
+        if (single && !cancelled()) update(result)
+        return result
+    }
+
+    fun classifyRequest(prompt: String, cancelled: () -> Boolean): String =
+        generate(prompt, null, false, cancelled, {}, maxOutputTokens = 24)
+
+    /** Keep native conversation state only for a single agent task. Chat, routing and images
+     * still use independent conversations. All native calls remain on the existing worker. */
+    fun <R> withAgentPlanner(cancelled: () -> Boolean, shortDecisions: Boolean,
+                             block: ((String) -> AgentDecision) -> R): R {
+        val active = engine()
+        val planner = PlannerSession<Conversation, AgentDecision>(
+            create = {
+                val started = SystemClock.elapsedRealtime()
+                active.createConversation().also {
+                    Log.i("NoxPlan", "session=create elapsedMs=${SystemClock.elapsedRealtime() - started}")
+                }
+            },
+            generate = { conversation, prompt, warm ->
+                val started = SystemClock.elapsedRealtime()
+                val limit = if (shortDecisions) 160 else 512
+                val raw = try {
+                    generateInConversation(conversation, prompt, null, false, cancelled, {},
+                        maxOutputTokens = limit, trace = true)
+                } finally {
+                    Log.i("NoxPlan", "source=MODEL warm=$warm elapsedMs=${SystemClock.elapsedRealtime() - started} promptChars=${prompt.length} outputLimit=$limit")
+                }
+                try {
+                    AgentProtocol.parse(raw)
+                } catch (e: Exception) {
+                    // PlannerSession drops the conversation before the existing JSON-only retry.
+                    throw AgentFormatException(e.message ?: "Неверный JSON ответа модели")
+                }
+            },
+            cancelled = cancelled
+        )
+        return planner.use { block(it::next) }
+    }
+
+    private fun generate(prompt: String, image: File?, deep: Boolean, cancelled: () -> Boolean,
+        update: (String) -> Unit, maxOutputTokens: Int = if (deep) 2048 else 512, thinkingBudget: Int = if (deep) 1024 else 0, measureChat: Boolean = false): String {
+        val active = engine()
         return active.createConversation().use { conversation ->
+            val result = generateInConversation(conversation, prompt, image, deep, cancelled, update, maxOutputTokens, thinkingBudget = thinkingBudget)
+            if (measureChat && !cancelled()) lastChatStats = runCatching {
+                val stats = conversation.getBenchmarkInfo()
+                if (stats.lastDecodeTokenCount > 0 && stats.lastDecodeTokensPerSecond.isFinite() &&
+                    stats.lastDecodeTokensPerSecond > 0.0) DecodeStats(
+                    stats.lastDecodeTokenCount, stats.lastDecodeTokensPerSecond,
+                    stats.timeToFirstTokenInSecond.takeIf { it.isFinite() && it >= 0 }?.let { (it * 1000).toLong() }
+                ) else null
+            }.getOrNull()
+            result
+        }
+    }
+
+    private fun generateInConversation(conversation: Conversation, prompt: String, image: File?,
+        deep: Boolean, cancelled: () -> Boolean, update: (String) -> Unit,
+        maxOutputTokens: Int, trace: Boolean = false, thinkingBudget: Int = if (deep) 1024 else 0): String {
+            val started = SystemClock.elapsedRealtime()
+            val firstChunk = AtomicLong(-1L)
             val done = CountDownLatch(1)
             val output = StringBuilder()
             val failure = AtomicReference<Throwable?>(null)
@@ -59,7 +158,9 @@ internal class LocalModel : AutoCloseable {
                 override fun onMessage(message: Message) {
                     synchronized(output) {
                         if (accepting.get() && !cancelled()) {
-                            output.append(message.toString())
+                            val chunk = message.toString()
+                            if (chunk.isNotEmpty()) firstChunk.compareAndSet(-1L, SystemClock.elapsedRealtime() - started)
+                            output.append(chunk)
                             update(output.toString())
                         }
                     }
@@ -72,11 +173,11 @@ internal class LocalModel : AutoCloseable {
             val contents = if (image == null) Contents.of(Content.Text(prompt))
                 else Contents.of(Content.ImageFile(image.absolutePath), Content.Text(prompt))
             if (cancelled()) throw CancellationException("Генерация отменена")
-            try {
+            return try {
                 conversation.sendMessageAsync(contents, callback,
-                    maxOutputToken = if (deep) 2048 else 512,
-                    thinkingConfig = ThinkingConfig(enableThinking = deep,
-                        thinkingTokenBudget = if (deep) 1024 else 0))
+                    maxOutputToken = maxOutputTokens,
+                    thinkingConfig = ThinkingConfig(enableThinking = thinkingBudget > 0,
+                        thinkingTokenBudget = thinkingBudget))
                 val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(if (deep) 300 else 120)
                 while (!done.await(200, TimeUnit.MILLISECONDS)) {
                     if (cancelled() || System.nanoTime() >= deadline) {
@@ -91,15 +192,16 @@ internal class LocalModel : AutoCloseable {
                 if (cancelled()) throw CancellationException("Генерация отменена")
                 failure.get()?.let { throw it }
                 synchronized(output) { output.toString() }
+            } catch (e: InterruptedException) {
+                accepting.set(false)
+                runCatching { conversation.cancelProcess() }
+                Thread.currentThread().interrupt()
+                throw CancellationException("Генерация прервана")
             } finally {
                 accepting.set(false)
+                if (trace) Log.i("NoxPlan", "firstChunkMs=${firstChunk.get()} totalMs=${SystemClock.elapsedRealtime() - started}")
             }
-        }
     }
 
-    override fun close() {
-        val previous = engine
-        engine = null
-        previous?.close()
-    }
+    override fun close() = resident.close()
 }

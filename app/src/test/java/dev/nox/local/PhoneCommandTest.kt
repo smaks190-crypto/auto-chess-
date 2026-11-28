@@ -27,6 +27,16 @@ class PhoneCommandTest {
         assertNull(PhoneCommands.parse("Не открывай Telegram и не пиши Александру"))
         assertNull(PhoneCommands.parse("Как открыть Telegram и написать сообщение?"))
     }
+    @Test fun bilingualSingleLaunchOnly() {
+        for (phrase in listOf("Open Calculator", "Launch the Calculator", "Start Calculator", "Please open Calculator", "Nox, open Calculator!",
+            "Открой калькулятор", "Запусти калькулятор", "Калькулятор открой", "Открой калькулятор пожалуйста", "Нокс, открой калькулятор")) {
+            val expected = if (phrase.lowercase().any { it in 'а'..'я' }) "калькулятор" else "calculator"
+            assertEquals(phrase, PhoneCommand.Open(expected), PhoneCommands.parse(phrase))
+        }
+        for (bad in listOf("Open Calculator and calculate 2+2", "Open Telegram then send a message", "Don't open Calculator",
+            "How to open Calculator?", "Open Calculator without changing anything"))
+            assertNull(bad, PhoneCommands.parse(bad))
+    }
     @Test fun noAccidentalActions() {
         assertNull(PhoneCommands.parse("Не открывай Telegram"))
         assertNull(PhoneCommands.parse("Как открыть Telegram?"))

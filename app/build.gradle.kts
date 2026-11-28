@@ -45,9 +45,20 @@ android {
         applicationId = "dev.nox.local"
         minSdk = 31
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.3.0-dev"
+        versionCode = 34
+        versionName = "0.4.29-obsidian-loaderfix-dev"
+        manifestPlaceholders["noxAppLabel"] = "N.O.X."
+        manifestPlaceholders["noxNavigationLabel"] = "Нокс — навигация"
         ndk { abiFilters += "arm64-v8a" }
+    }
+    buildTypes {
+        create("dev") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-parallel"
+            manifestPlaceholders["noxAppLabel"] = "N.O.X. Dev"
+            manifestPlaceholders["noxNavigationLabel"] = "Нокс Dev — навигация"
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -57,8 +68,11 @@ android {
 tasks.named("preBuild") { dependsOn(prepareRussianAsr) }
 kotlin { jvmToolchain(17) }
 dependencies {
+    implementation("androidx.activity:activity:1.11.0")
     implementation("net.java.dev.jna:jna:5.18.1@aar")
     implementation("com.alphacephei:vosk-android:0.3.75@aar")
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.18.0")
+    implementation("com.google.mlkit:genai-prompt:1.0.0-beta4")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

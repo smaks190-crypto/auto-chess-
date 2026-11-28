@@ -1,16 +1,24 @@
-# N.O.X. — Android / ChatGPT implementation
+# N.O.X. для Android
 
-Independent implementation for [issue #1](../../issues/1).
+Этот комплект основан на коммите `82d3fd149001e365641dbe33281f8f6eb94f3232` ветки `chatgpt/nox-agent-core`. В нём находятся исходники приложения, тесты и конфигурация сборки. [Требования проекта](https://github.com/smaks190-crypto/auto-chess-/issues/1).
 
-## First vertical slice (experimental)
-- Kotlin Android activity, offline model import, text and imported-image inference through LiteRT-LM.
-- Push-to-talk via Android on-device speech recognition when available; Russian offline TTS when installed.
-- No INTERNET permission, no ADB/root/Termux needed at runtime. No action execution in this slice.
-- Model file: [Gemma 4 E2B IT LiteRT-LM](https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm). Download separately, review license and verify checksum from distributor, then import via Android document picker. Model is not bundled. Allow enough free space for a private copy (~2.6 GB).
-- Select CPU/GPU before importing/loading; image path uses GPU vision backend. Device support must be measured.
+## Голосовое управление
 
-## Build
-JDK 17, Gradle 8.13, Android SDK 36. Run `gradle :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`. CI publishes debug APK on success. Gradle wrapper not yet bundled.
- 
-## Not implemented / not verified
-Live screen capture, autonomous actions, overlay, persistent service, wake word, owner verification, parallel speech, Magic Chess phase logic/strategy, hardware performance, and physical-device tests. Imported-image analysis is not live vision. Native Views are used for the first slice; Compose migration is optional after hardware validation. No claim of complete product or game wins.
+При включённом фоновом прослушивании обращение «Нокс» вызывает подсказку. Чтобы дать команду, разблокируйте устройство, нажмите микрофон и произнесите команду заново. Приложение отбрасывает продолжение фоновой фразы. Отключить постоянное прослушивание можно через интерфейс. Во время выполнения задачи доступна экранная кнопка остановки.
+
+Приложение использует локальное распознавание Vosk и локальный инференс LiteRT-LM. Для запуска инференса нужна совместимая модель; её можно импортировать через интерфейс. Проект также поддерживает загрузку весов и запрашивает разрешение INTERNET. Идентификация говорящего по индивидуальному голосовому профилю остаётся отдельной задачей.
+
+## Сборка
+
+В конфигурации CI используются JDK 17, Gradle 8.13, Android SDK 36 и Build Tools 36.0.0. При первой сборке требуется сеть для зависимостей и русской модели Vosk. Запустите из корня проекта:
+
+```bash
+gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+```
+
+Debug APK после успешной сборки находится в `app/build/outputs/apk/debug/`. Отдельная сборка `assembleDev` использует идентификатор приложения с суффиксом `.dev`.
+
+## Проверки
+
+- [Симулятор покупки в фазе подготовки](docs/game-replay-ru.md) использует фиксированные наблюдения и запускается через JUnit. Он не распознаёт экран игры и не нажимает на него.
+- [Приёмка голосового режима на Samsung S24](docs/s24-check-ru.md) описывает проверку устройства, блокировки и ручного ввода.
