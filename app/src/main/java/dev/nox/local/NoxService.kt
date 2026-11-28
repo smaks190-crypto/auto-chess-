@@ -1142,7 +1142,7 @@ class NoxService : Service() {
     }
 
     /** Keyguard requests never reach AgentCore, history, attachments or screen capture.
-     * The only executable tool is a validated native countdown. */
+     * Only the explicit native command allowlist is executable. */
     internal fun askLockedInPlace(command: String): Long? {
         if (busy || destroyed || !restrictedAllowed() || command.isBlank() || command.length > 2000) return null
         val text = command.trim()
@@ -1160,6 +1160,13 @@ class NoxService : Service() {
             }
             status = "На связи"
             speakReply(answer, true, restricted = true)
+        }
+        NativeCommands.parse(text)?.let { native ->
+            generationCancelled = false
+            generating = true
+            val result = NativeDeviceTools.execute(this, native, unlocked = false) { !stop() && assistantRequestId == id }
+            runWork("Выполняю системную команду…", { result.get(4, TimeUnit.SECONDS) }, { finish(it) })
+            return id
         }
         if (LockedAssistantPolicy.timerRequested(text)) {
             val seconds = LockedAssistantPolicy.timerSeconds(text)
@@ -1236,6 +1243,13 @@ class NoxService : Service() {
         fun finishRequest(answer: String, say: Boolean) {
             if (inPlace) assistantReply = answer
             complete(answer, say)
+        }
+        if (image == null) NativeCommands.parse(text)?.let { native ->
+            generationCancelled = false
+            generating = true
+            val result = NativeDeviceTools.execute(this, native, unlocked = true) { !destroyed && !generationCancelled && unlocked() }
+            runWork("Выполняю системную команду…", { result.get(4, TimeUnit.SECONDS) }, { finishRequest(it, speak && voiceToken == voiceEpoch) })
+            return
         }
         if (LockedAssistantPolicy.cancelTimerRequested(text)) {
             finishRequest(NativeTimerService.cancel(), speak)
