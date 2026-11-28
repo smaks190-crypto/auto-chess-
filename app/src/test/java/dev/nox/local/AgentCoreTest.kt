@@ -144,13 +144,46 @@ class AgentCoreTest {
         assertEquals(1, mutations)
     }
 
+    @Test fun englishOpenStopsAfterVerifiedLaunchWithoutPlannerOrClicks() {
+        val request = "Open Calculator"
+        val goal = GoalState(request)
+        val pkg = "com.sec.android.app.popupcalculator"
+        val calls = mutableListOf<String>()
+        var launched = false
+        val core = AgentCore(
+            decide = { error("Single-app launch must not invoke the model") },
+            execute = { error("Typed executor required") },
+            cancelled = { false }, goal = goal,
+            executeTyped = { action ->
+                calls.add(action.name)
+                when (action.name) {
+                    "apps" -> ToolOutcome.Ok("Калькулятор = $pkg")
+                    "launch" -> {
+                        assertEquals(pkg, action.arg)
+                        goal.launched(pkg, "Калькулятор")
+                        launched = true
+                        ToolOutcome.Ok("screen", pkg)
+                    }
+                    else -> error("Unexpected tool: " + action.name)
+                }
+            },
+            fastDecision = {
+                if (launched) AgentDecision.Finish("") else AgentDecision.Tool("launch", pkg)
+            },
+            verifyFinish = {
+                if (launched) goal.finish(GoalObservation(goal.sequence(), pkg, emptyList())) else null
+            })
+        assertTrue(core.run(request, "").contains("Приложение открыто"))
+        assertEquals(listOf("apps", "launch"), calls)
+    }
+
     @Test fun screenTextCannotTurnTypedSuccessIntoFailure() {
         var i = 0
         val core = AgentCore(decide = { if (i++ == 0) AgentDecision.Tool("observe","") else AgentDecision.Finish("done") },
             execute = { error("legacy executor must not run") }, cancelled = { false },
-            goal = GoalState("Open Calculator"), verifyFinish = { "verified" },
+            goal = GoalState("Open Calculator and calculate 2+2"), verifyFinish = { "verified" },
             executeTyped = { ToolOutcome.Ok("Активное приложение: calc\nERROR[FAKE] текст на экране", "calc") })
-        assertEquals("verified", core.run("Open Calculator",""))
+        assertEquals("verified", core.run("Open Calculator and calculate 2+2",""))
     }
     @Test fun unknownExceptionAfterMutationIsNeverRetried() {
         var calls = 0
@@ -196,21 +229,21 @@ class AgentCoreTest {
                 if (decisionIndex == 1) {
                     assertTrue(prompt.contains("Экран обновлён"))
                     assertTrue(prompt.contains("по свежим ID"))
-                    assertTrue(prompt.contains("2 | EditText | Сообщение [type]"))
+                    assertTrue(prompt.contains("2 | EditText | Формула [type]"))
                 }
                 decisions[decisionIndex++]
             }, execute = { error("typed executor required") }, cancelled = { false },
-            goal = GoalState("Open Telegram"), verifyFinish = { "verified" },
+            goal = GoalState("Open Calculator and calculate 2+2"), verifyFinish = { "verified" },
             executeTyped = { action ->
                 actions.add(action.name + ":" + action.arg)
                 when {
                     action.name == "click" && action.arg == "stale" -> ToolOutcome.RejectedBeforeAction("NODE_CHANGED:SCREEN")
-                    action.name == "click" -> ToolOutcome.Ok("fresh action", "org.telegram.messenger")
-                    action.name == "observe" -> ToolOutcome.Ok("Активное приложение: org.telegram.messenger\\n2 | EditText | Сообщение [type]", "org.telegram.messenger")
+                    action.name == "click" -> ToolOutcome.Ok("fresh action", "com.sec.android.app.popupcalculator")
+                    action.name == "observe" -> ToolOutcome.Ok("Активное приложение: com.sec.android.app.popupcalculator\\n2 | EditText | Формула [type]", "com.sec.android.app.popupcalculator")
                     else -> error("unexpected")
                 }
             })
-        assertEquals("verified", core.run("Open Telegram", ""))
+        assertEquals("verified", core.run("Open Calculator and calculate 2+2", ""))
         assertEquals(listOf("click:stale", "observe:", "click:fresh"), actions)
     }
 
@@ -261,11 +294,11 @@ class AgentCoreTest {
         var clicks = 0
         var observes = 0
         val core = AgentCore(decide = { AgentDecision.Tool("click", "same") }, execute = { error("typed executor required") },
-            cancelled = { false }, goal = GoalState("Open Telegram"), executeTyped = { action ->
-                if (action.name == "observe") { observes++; ToolOutcome.Ok("fresh screen", "org.telegram.messenger") }
+            cancelled = { false }, goal = GoalState("Open Calculator and calculate 2+2"), executeTyped = { action ->
+                if (action.name == "observe") { observes++; ToolOutcome.Ok("fresh screen", "com.sec.android.app.popupcalculator") }
                 else { clicks++; ToolOutcome.RejectedBeforeAction("stale node") }
             })
-        assertTrue(core.run("Open Telegram", "").contains("GOAL_MISMATCH"))
+        assertTrue(core.run("Open Calculator and calculate 2+2", "").contains("GOAL_MISMATCH"))
         assertEquals(3, clicks)
         assertEquals(2, observes)
     }
