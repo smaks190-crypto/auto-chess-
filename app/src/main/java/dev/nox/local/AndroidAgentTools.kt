@@ -309,12 +309,13 @@ internal class AndroidAgentTools(
     fun verifyFinish(): String? {
         if (calcPlan?.complete() == false) return null
         val previous = snapshot ?: return null
-        val current = ui {
-            require(nav().rootInActiveWindow?.packageName?.toString() == previous.pkg) { "Экран изменился" }
-            readScreen()
+        // Final proof is a fresh authorized read, including after a temporary rebind.
+        // No action can be dispatched from this path.
+        val outcome = describeAfter("Проверяю конечный результат.", expectedPackage = previous.pkg) {
+            goal.finish(goalObservation(it)) != null
         }
-        snapshot = current
-        return goal.finish(goalObservation(current))
+        if (outcome !is ToolOutcome.Ok) return null
+        return snapshot?.let { goal.finish(goalObservation(it)) }
     }
 
     private fun observe(): String {
@@ -340,14 +341,15 @@ internal class AndroidAgentTools(
     }
     private fun describeAfter(prefix: String, previous: Screen? = null, fastRead: Boolean = false,
                               changeSignal: UiChangeSignal? = null, changeMarker: Long = 0L,
+                              expectedPackage: String? = previous?.pkg,
                               condition: (Screen) -> Boolean = { true }): ToolOutcome {
         // This runs on the agent worker. Only bounded, read-only captures are posted to main.
         check(Looper.myLooper() != Looper.getMainLooper()) { "Post-action settle must run off main" }
         val started = SystemClock.elapsedRealtime()
-        val deadline = started + 3000L
+        val recovery = ObservationRecovery(SystemClock::elapsedRealtime)
         var reason = "NO_ROOT"
         Log.i("NoxLC", "settle_start pid=${android.os.Process.myPid()} t=$started thread=${Thread.currentThread().name}")
-        fun remaining() = (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+        fun remaining() = recovery.remaining()
         fun waitForRead(ms: Long) { pause(minOf(ms, remaining())) }
         fun read(): Screen? {
             checkActive()
@@ -358,6 +360,10 @@ internal class AndroidAgentTools(
                     val root = screenRoot()
                     if (root == null) {
                         reason = "NO_ROOT"
+                        return@ui null
+                    }
+                    if (expectedPackage != null && root.packageName?.toString() != expectedPackage) {
+                        reason = "PACKAGE_CHANGED"
                         return@ui null
                     }
                     if (previous != null && (root.windowId != previous.window || root.packageName?.toString() != previous.pkg)) {
@@ -373,7 +379,13 @@ internal class AndroidAgentTools(
                 throw e
             } catch (e: AgentToolUnavailable) {
                 reason = NoxNavigationService.connectionCode(context).let { if (it == "BOUND") "SERVICE_UNAVAILABLE" else it }
-                throw e // settleObservation retries only the read, never the mutation.
+                if (reason == "ACCESSIBILITY_DISABLED")
+                    throw AgentDenied("Управление экраном отключено. Действие не повторяю.")
+                if (reason == "SERVICE_RECONNECTING" || reason == "SERVICE_UNAVAILABLE") {
+                    recovery.reconnecting()
+                    Log.i("NoxLC", "settle_reconnect remainingMs=" + remaining())
+                }
+                null // Retry only observation, never dispatch.
             } catch (_: Exception) {
                 reason = "READ_FAILED"
                 null
@@ -419,7 +431,18 @@ internal class AndroidAgentTools(
                 result
             } else {
                 waitForRead(if (fastRead) 100 else 150)
-                settleObservation(5, { waitForRead(if (fastRead) 300 else 650) }, ::read, ::matches)
+                var result: Screen? = null
+                while (remaining() > 0L) {
+                    checkActive()
+                    val observed = read()
+                    if (observed != null && remaining() > 0L && matches(observed)) {
+                        result = observed
+                        break
+                    }
+                    waitForRead(if (reason == "SERVICE_RECONNECTING" || reason == "SERVICE_UNAVAILABLE") 200L
+                        else if (fastRead) 300L else 350L)
+                }
+                result
             }
             checkActive()
             if (screen == null) {
@@ -699,13 +722,16 @@ internal class AndroidAgentTools(
                 else "Android принял действие: " + actionText + ". Проверяй фактический результат."
             describeAfter(prefix,
                 if (goal.arithmetic) before else null, fastRead = plan != null,
-                changeSignal = changeSignal, changeMarker = changeMarker) { after ->
+                changeSignal = changeSignal, changeMarker = changeMarker, expectedPackage = before.pkg) { after ->
                 when {
                     goal.arithmetic -> goal.afterClick(beforeGoal, target.resource, goalObservation(after))
                     goal.searchNavigation && action.name == "type" -> {
                         val observed = goalObservation(after)
-                        goal.searchTyped(beforeGoal, observed) &&
-                            EffectCheck.typed(beforeEffect, mutation, after.effectFrame(observed.seq), targetEffect, action.text)
+                        val field = SearchNavigation.inputField(observed.nodes)
+                        val current = after.nodes.singleOrNull { it.id == field?.id }
+                        goal.searchTyped(beforeGoal, observed) && current != null &&
+                            EffectCheck.searchTyped(beforeEffect, mutation, after.effectFrame(observed.seq),
+                                targetEffect, current.effectNode(), action.text)
                     }
                     goal.telegramDraftGoal && action.name == "type" -> {
                         val observed = goalObservation(after)

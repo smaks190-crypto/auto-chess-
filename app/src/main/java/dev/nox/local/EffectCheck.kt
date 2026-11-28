@@ -37,6 +37,19 @@ internal object EffectCheck {
         target.text == text -> "В поле уже находится этот текст."
         else -> null
     }
+    /** Only used for a semantic search field independently selected by GoalState
+     * on both frames. Results may rebuild the tree; identity is not its old path. */
+    fun searchTyped(before: EffectFrame, mutation: Long, after: EffectFrame,
+                    target: EffectNode, current: EffectNode, text: String): Boolean {
+        if (!fresh(before, mutation, after) || before.window != after.window ||
+            typeRejection(target, text) != null || current.text != text) return false
+        fun uniqueField(frame: EffectFrame, node: EffectNode) =
+            frame.nodes.singleOrNull { it.editable && it.enabled } == node
+        return uniqueField(before, target) && uniqueField(after, current) &&
+            target.resource == current.resource && target.kind == current.kind &&
+            target.hint == current.hint && target.description == current.description &&
+            (target.hint.isNotBlank() || !target.description.isNullOrBlank())
+    }
     fun typed(before: EffectFrame, mutation: Long, after: EffectFrame, target: EffectNode, text: String): Boolean {
         if (!fresh(before, mutation, after) || before.window != after.window || typeRejection(target, text) != null) return false
         if (before.nodes.singleOrNull { it.path == target.path } != target) return false

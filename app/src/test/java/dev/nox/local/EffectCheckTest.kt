@@ -38,6 +38,20 @@ class EffectCheckTest {
         assertFalse(EffectCheck.typed(input, 5, typed.copy(nodes = listOf(field.copy(text = "HELLO"))), field, "hello"))
         assertNotNull(EffectCheck.typeRejection(field.copy(text = "hello"), "hello"))
     }
+    @Test fun uniqueSearchFieldCanMoveWhenResultsAppear() {
+        val input = after.copy(seq = 4)
+        val moved = field.copy(path = listOf(8, 1), text = "hello")
+        val result = input.copy(seq = 6, nodes = listOf(moved))
+        assertFalse(EffectCheck.typed(input, 5, result, field, "hello"))
+        assertTrue(EffectCheck.searchTyped(input, 5, result, field, moved, "hello"))
+        assertFalse(EffectCheck.searchTyped(input, 5, result.copy(pkg = "other"), field, moved, "hello"))
+        assertFalse(EffectCheck.searchTyped(input, 5, result.copy(window = 99), field, moved, "hello"))
+        assertFalse(EffectCheck.searchTyped(input, 5, result.copy(seq = 5), field, moved, "hello"))
+        assertFalse(EffectCheck.searchTyped(input, 5, result.copy(nodes = listOf(moved, moved.copy(path = listOf(9)))), field, moved, "hello"))
+        assertFalse(EffectCheck.searchTyped(input, 5, result.copy(nodes = listOf(moved.copy(resource = "other"))), field, moved.copy(resource = "other"), "hello"))
+        assertFalse(EffectCheck.searchTyped(input, 5, result.copy(nodes = listOf(moved.copy(hint = "Message"))), field, moved.copy(hint = "Message"), "hello"))
+        assertFalse(EffectCheck.searchTyped(input, 5, result.copy(nodes = listOf(moved.copy(text = "wrong"))), field, moved.copy(text = "wrong"), "hello"))
+    }
     @Test fun expectationDoesNotAcceptArbitraryFieldsOrEmptyValues() {
         assertThrows(IllegalArgumentException::class.java) { ExpectedNode("unknown", "x") }
         assertThrows(IllegalArgumentException::class.java) { ExpectedNode("text", "\n") }
