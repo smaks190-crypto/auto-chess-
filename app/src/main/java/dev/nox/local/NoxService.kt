@@ -1141,6 +1141,39 @@ class NoxService : Service() {
         return true
     }
 
+    /** Network requests run on the existing worker, local mutations on main.
+     * The payload never becomes a tool instruction, and no private history is sent. */
+    private fun runExtra(cmd: ExtraCommand, restricted: Boolean, allowed: () -> Boolean, finish: (String) -> Unit) {
+        if (!allowed()) return
+        generationCancelled = false
+        val active = { allowed() && !destroyed && !generationCancelled }
+        if (cmd is ExtraCommand.Search || cmd is ExtraCommand.Weather && cmd.city.isNotBlank()) {
+            generating = true
+            runWork("Получаю данные…", {
+                runCatching {
+                    when (cmd) {
+                        is ExtraCommand.Search -> PublicInformation.search(this, cmd, active)
+                        is ExtraCommand.Weather -> PublicInformation.weather(cmd, active)
+                        else -> error("Unsupported public command")
+                    }
+                }.getOrElse { if (!active()) "Запрос отменён." else "Сетевой источник недоступен или не вернул корректный ответ." }
+            }, { if (active()) finish(it) })
+            return
+        }
+        val answer = runCatching {
+            when (cmd) {
+                is ExtraCommand.Reminder -> NativeReminders.schedule(this, cmd)
+                ExtraCommand.ReminderList -> if (restricted) "Разблокируй телефон для просмотра личных напоминаний." else NativeReminders.list(this)
+                is ExtraCommand.CancelReminder -> if (restricted) "Для отмены напоминания разблокируй телефон." else NativeReminders.cancel(this, cmd.id)
+                ExtraCommand.ReminderInvalid -> "Скажи, например: «напомни через десять минут выключить чайник» или «напомни завтра в 8:30 взять ключи»."
+                ExtraCommand.WeatherApp -> if (restricted) "Назови город для прогноза или разблокируй телефон, чтобы открыть Погоду Samsung." else PublicInformation.openWeather(this)
+                is ExtraCommand.Weather -> if (restricted || cmd.tomorrow) "Назови город для прогноза." else PublicInformation.openWeather(this)
+                is ExtraCommand.Search -> error("Network command must run on worker")
+            }
+        }.getOrElse { "Android не подтвердил выполнение команды." }
+        if (active()) finish(answer)
+    }
+
     /** Keyguard requests never reach AgentCore, history, attachments or screen capture.
      * Only the explicit native command allowlist is executable. */
     internal fun askLockedInPlace(command: String): Long? {
@@ -1160,6 +1193,10 @@ class NoxService : Service() {
             }
             status = "На связи"
             speakReply(answer, true, restricted = true)
+        }
+        ExtraTools.parse(text)?.let { extra ->
+            runExtra(extra, restricted = true, allowed = { restrictedAllowed() && assistantRequestId == id }) { finish(it) }
+            return id
         }
         NativeCommands.parse(text)?.let { native ->
             generationCancelled = false
@@ -1243,6 +1280,12 @@ class NoxService : Service() {
         fun finishRequest(answer: String, say: Boolean) {
             if (inPlace) assistantReply = answer
             complete(answer, say)
+        }
+        if (image == null) ExtraTools.parse(text)?.let { extra ->
+            runExtra(extra, restricted = false, allowed = { unlocked() }) {
+                finishRequest(it, speak && voiceToken == voiceEpoch)
+            }
+            return
         }
         if (image == null) NativeCommands.parse(text)?.let { native ->
             generationCancelled = false

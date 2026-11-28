@@ -173,6 +173,10 @@
  <p class="smallNote">Неизвестные и критические действия требуют подтверждения. Разрешения выдаются в Android и не включаются автоматически.</p>
 </details>
 
+<details class="card settingsGroup"><summary><div class="settingsTitle"><svg><use href="#i-settings"/></svg><div><h3>Интернет-поиск</h3><small>Википедия и Brave Search</small></div></div><svg class="foldArrow"><use href="#i-down"/></svg></summary>
+ <button class="btn full" id="searchSettings">Настроить ключ поиска</button>
+ <p class="smallNote">Без ключа поиск ограничен Википедией. Погода по названному городу — Open-Meteo; команда «открой погоду» открывает приложение Samsung после разблокировки. Геолокация не запрашивается.</p>
+</details>
 <details class="card settingsGroup"><summary><div class="settingsTitle"><svg><use href="#i-settings"/></svg><div><h3>Внешний вид</h3><small>Движение и плавающая кнопка</small></div></div><svg class="foldArrow"><use href="#i-down"/></svg></summary>
  <div class="rowline"><div><strong>Плавающий ассистент</strong><small>Кнопка внутри приложения</small></div><button class="switch" role="switch" aria-label="Плавающий ассистент" id="floatToggle" aria-checked="false"></button></div>
  <div class="rowline"><div><strong>Уменьшить движение</strong><small>Отключить декоративную анимацию</small></div><button class="switch" role="switch" aria-label="Уменьшить движение" id="reduceToggle" aria-checked="false"></button></div>
@@ -323,7 +327,7 @@ toggleSetting('visionToggle','model_vision');toggleSetting('gpuToggle','model_gp
 $('selectedModel').onchange=()=>request('model_select',{model:Number($('selectedModel').value)});
 for(const [id,op] of Object.entries({modelLoad:'model_load',modelImport:'model_import',modelCatalog:'model_catalog',
  modelCancel:'model_cancel',systemAssistant:'system_assistant',overlayPermission:'overlay_permission',
- accessibilityPermission:'accessibility_permission',settingsGrants:'grants',benchmarkStart:'benchmark',
+ accessibilityPermission:'accessibility_permission',settingsGrants:'grants',searchSettings:'search_settings',benchmarkStart:'benchmark',
  benchmarkLog:'benchmark_log',benchmarkShare:'benchmark_share',settingsClear:'clear'}))$(id).onclick=()=>request(op);
 $('bgToggle').onclick=()=>request('background');
 $('ttsToggle').onclick=()=>request('tts');

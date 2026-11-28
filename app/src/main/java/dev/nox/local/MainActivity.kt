@@ -608,11 +608,36 @@ class MainActivity : ComponentActivity() {
             getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("N.O.X", c.text))
             ack(c.op, true, "Скопировано"); return
         }
-        val settingsOps = setOf("system_assistant", "overlay_permission", "accessibility_permission",
+        val settingsOps = setOf("search_settings", "system_assistant", "overlay_permission", "accessibility_permission",
             "model_select", "model_gpu", "model_vision", "model_load", "model_import", "model_catalog",
             "model_cancel", "benchmark", "benchmark_log", "benchmark_share", "reduce_motion", "float_button")
         if (c.op in settingsOps && webPage != "settings") { ack(c.op, false, "Открой настройки"); return }
         when (c.op) {
+            "search_settings" -> {
+                if (!DeviceInteraction.unlocked(this)) { ack(c.op, false, "Разблокируй телефон"); return }
+                val field = EditText(this).apply {
+                    hint = "API-ключ Brave Search"
+                    inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+                    isSingleLine = true
+                    importantForAutofill = android.view.View.IMPORTANT_FOR_AUTOFILL_NO
+                }
+                val dialog = AlertDialog.Builder(this).setTitle("Интернет-поиск")
+                    .setMessage("Без ключа доступен поиск только по Википедии. Ключ Brave Search хранится в Android Keystore; поисковые запросы передаются выбранному сервису.")
+                    .setView(field).setNegativeButton("Отмена", null)
+                    .setNeutralButton("Удалить ключ") { _, _ ->
+                        if (DeviceInteraction.unlocked(this)) { SearchCredential.clear(this); Toast.makeText(this, "Ключ удалён", Toast.LENGTH_SHORT).show() }
+                    }
+                    .setPositiveButton("Сохранить") { _, _ ->
+                        if (DeviceInteraction.unlocked(this)) {
+                            val ok = SearchCredential.write(this, field.text.toString().trim())
+                            field.text.clear()
+                            Toast.makeText(this, if (ok) "Ключ сохранён" else "Не удалось сохранить ключ", Toast.LENGTH_SHORT).show()
+                        }
+                    }.create()
+                dialog.setOnShowListener { dialog.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE) }
+                dialog.show()
+                return
+            }
             "system_assistant" -> { chooseSystemAssistant(); return }
             "overlay_permission" -> { openOverlayPermission(); return }
             "accessibility_permission" -> { openAccessibilityPermission(); return }

@@ -472,7 +472,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         val s = service ?: return
         if (s.busy) return
         val timer = LockedAssistantPolicy.timerRequested(command) || LockedAssistantPolicy.cancelTimerRequested(command)
-        val deterministic = timer || NativeCommands.parse(command) != null || if (restricted)
+        val deterministic = timer || NativeCommands.parse(command) != null || ExtraTools.parse(command) != null || if (restricted)
             LockedAssistantPolicy.needsUnlock(command) || LockedAssistantPolicy.publicSearch(command) ||
                 AssistantVoiceCommand.isScreenRequest(command)
             else GoalState(command).requiresNoModel
