@@ -8,7 +8,10 @@ class ObsidianCommandTest {
         assertEquals(ObsidianCommand("ready"), ObsidianCommand.parse("""{"op":"ready"}"""))
         assertEquals(ObsidianCommand("send", text="hello", agent=true), ObsidianCommand.parse("""{"op":"send","text":" hello ","agent":true}"""))
         assertEquals(ObsidianCommand("choice", model=2, effort=3), ObsidianCommand.parse("""{"op":"choice","model":2,"effort":3}"""))
-        assertEquals("vision", ObsidianCommand.parse("""{"op":"page","page":"vision"}""")?.text)
+        assertNull(ObsidianCommand.parse("""{"op":"page","page":"vision"}"""))
+        assertEquals("settings", ObsidianCommand.parse("""{"op":"page","page":"settings"}""")?.text)
+        for (op in listOf("pick_image", "perception", "review", "analyze", "remove_image"))
+            assertEquals(op, ObsidianCommand.parse("""{"op":"$op"}""")?.op)
     }
     @Test fun rejectsArbitraryCommandsAndExtraFields() {
         for (raw in listOf("""{"op":"shell","command":"id"}""", """{"op":"launch","package":"com.example"}""", """{"op":"ready","url":"https://example.com"}""", """{"op":"send","text":"hi","agent":true,"permission":"always"}""")) assertNull(raw, ObsidianCommand.parse(raw))

@@ -97,7 +97,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var microphoneRouteLabel: TextView
     private lateinit var overlayButton: Button
     private lateinit var details: TextView
-    private lateinit var visionPage: ScrollView
     private lateinit var actionsPage: ScrollView
     private lateinit var actionStatus: TextView
     private lateinit var actionJournal: TextView
@@ -167,7 +166,7 @@ class MainActivity : ComponentActivity() {
     private val perceptionUi = android.os.Handler(android.os.Looper.getMainLooper())
     private val assistantCommandExpiry = Runnable { if (isVisible) drainAssistantCommand() }
     private val perceptionRefresh = object : Runnable {
-        override fun run() { renderPerception(); if (isVisible && webPage == "vision") renderWeb(); perceptionUi.postDelayed(this, 750) }
+        override fun run() { renderPerception(); if (isVisible && webPage == "settings") renderWeb(); perceptionUi.postDelayed(this, 750) }
     }
     private val bg = 0xFF111113.toInt()
     private val surface = 0xFF19191C.toInt()
@@ -307,11 +306,8 @@ class MainActivity : ComponentActivity() {
         chatPage.addView(composer, LinearLayout.LayoutParams(-1, -2))
         root.addView(chatPage, LinearLayout.LayoutParams(-1, 0, 1f))
 
-        visionPage = ScrollView(this).apply { visibility = View.GONE }
         val visionContent = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        visionPage.addView(visionContent)
-        root.addView(visionPage, LinearLayout.LayoutParams(-1, 0, 1f))
-        visionContent.addView(textLabel("Vision", 28f).apply { typeface = Typeface.DEFAULT_BOLD })
+        visionContent.addView(textLabel("Зрение · диагностика", 19f).apply { typeface = Typeface.DEFAULT_BOLD })
         visionContent.addView(textLabel("Контекст, который видит ассистент", 13f, muted))
         visionInfo = textLabel("Изображение не выбрано", 15f).apply { background = panel(surface, 18); setPadding(dp(16),dp(16),dp(16),dp(16)) }
         visionContent.addView(visionInfo, LinearLayout.LayoutParams(-1, -2))
@@ -375,6 +371,7 @@ class MainActivity : ComponentActivity() {
             showPage(0)
         }
         visionContent.addView(textLabel("Выбери приложение для звука и в системном окне Android выбери тот же экран. Захват продолжается вне чата до остановки или блокировки экрана. Аудио не записывается в файл. Последний кадр и распознанная речь хранятся в памяти; для Gemma создаётся временное изображение, которое удаляется после анализа.", 13f, muted))
+        settings.addView(visionContent)
         settings.addView(textLabel("Модель", 19f).apply { typeface = Typeface.DEFAULT_BOLD })
         models = Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, catalog.map { it.name })
@@ -402,12 +399,12 @@ class MainActivity : ComponentActivity() {
         addButton(settings, "Очистить чат") { service?.clearChat() }
         details = textLabel("", 13f, muted); settings.addView(details)
         val nav = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,dp(8),0,0) }
-        listOf("Чат", "Vision", "Действия", "Настройки").forEachIndexed { index, name ->
+        listOf("Чат", "Действия", "Настройки").forEachIndexed { index, name ->
             val item = button(name) { showPage(index) }.apply {
                 textSize = 12f; minWidth = 0; minimumWidth = 0; setPadding(dp(2),0,dp(2),0)
             }
             navButtons.add(item)
-            nav.addView(item, LinearLayout.LayoutParams(0,dp(52),1f).apply { marginEnd = if (index == 3) 0 else dp(4) })
+            nav.addView(item, LinearLayout.LayoutParams(0,dp(52),1f).apply { marginEnd = if (index == 2) 0 else dp(4) })
         }
         nav.visibility = View.GONE
         root.addView(nav, LinearLayout.LayoutParams(-1,-2))
@@ -500,7 +497,7 @@ class MainActivity : ComponentActivity() {
     private fun showPage(page: Int) {
         activePage = page
         updateBackCallback()
-        listOf(chatPage, visionPage, actionsPage, settingsPage).forEachIndexed { i, view -> view.visibility = if (i == page) View.VISIBLE else View.GONE }
+        listOf(chatPage, actionsPage, settingsPage).forEachIndexed { i, view -> view.visibility = if (i == page) View.VISIBLE else View.GONE }
         if (page != 0) {
             input.clearFocus()
             (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager).hideSoftInputFromWindow(input.windowToken, 0)
@@ -686,7 +683,10 @@ class MainActivity : ComponentActivity() {
             "remove_image" -> s.removeImage()
             "perception" -> {
                 if (LivePerception.active) stopService(Intent(this, PerceptionService::class.java))
-                else if (!s.busy) choosePerceptionApp()
+                else if (!s.busy) {
+                    if (s.loaded?.vision != true) { ack(c.op, false, "Запусти модель с анализом изображений"); return }
+                    choosePerceptionApp()
+                }
             }
             "analyze" -> {
                 val image = s.attachedImage ?: return
@@ -708,7 +708,7 @@ class MainActivity : ComponentActivity() {
         val dictationId = webDictationId?.takeIf { s != null && s.webDictationSession == it }
         val dictationActive = dictationId != null && s?.webDictationActive == true
         val image = s?.attachedImage
-        val frame = if (image == null && isVisible && webPage == "vision" && LivePerception.active)
+        val frame = if (image == null && isVisible && webPage == "settings" && LivePerception.active)
             LivePerception.buffer.snapshot(android.os.SystemClock.elapsedRealtime()).frame else null
         val attachedKey = image?.let { it.name + ":" + it.lastModified() + ":" + it.length() }
             ?: frame?.let { "screen:" + LivePerception.epoch + ":" + it.contentHashCode() }.orEmpty()
@@ -747,7 +747,7 @@ class MainActivity : ComponentActivity() {
             .put("attached", image != null)
             .put("imageKey", attachedKey)
             .put("perception", LivePerception.active)
-            .put("perceptionText", if (webPage == "vision" && ::perceptionStatus.isInitialized) perceptionStatus.text.toString() else "")
+            .put("perceptionText", if (webPage == "settings" && ::perceptionStatus.isInitialized) perceptionStatus.text.toString() else "")
             .put("background", s?.background == true)
             .put("tts", tts.isChecked)
             .put("bluetooth", s?.preferBluetooth == true)
@@ -823,7 +823,7 @@ class MainActivity : ComponentActivity() {
         analyzeImage.isEnabled = !busy && attached != null && s?.loaded?.vision == true
         actionStop.isEnabled = s?.generating == true
         actionStatus.text = s?.status ?: "Подключение…"
-        if (activePage == 2) actionJournal.text = s?.agentJournal?.takeIf { it.isNotEmpty() }?.joinToString("\n") ?: "Действий в этом сеансе пока нет"
+        if (activePage == 1) actionJournal.text = s?.agentJournal?.takeIf { it.isNotEmpty() }?.joinToString("\n") ?: "Действий в этом сеансе пока нет"
         effortChip.text = effort.label
         effortChip.contentDescription = "Мышление " + effort.label + ". Модель " + (s?.loaded?.let { catalog[it.index].name } ?: "не загружена") + ". Удерживай для выбора"
         effortSetting.text = "Мышление · " + effort.label
@@ -841,10 +841,10 @@ class MainActivity : ComponentActivity() {
             if (turns.isEmpty() && partial.isEmpty()) {
                 messages.addView(textLabel("С чего начнём?", 30f).apply { typeface = Typeface.DEFAULT_BOLD })
                 messages.addView(textLabel("Локальный ассистент · спроси, покажи или поручи действие.", 14f, muted))
-                addButton(messages, "Посмотреть экран", false) { showPage(1) }
-                addButton(messages, "Журнал действий", false) { showPage(2) }
+                addButton(messages, "Посмотреть экран", false) { if (LivePerception.active) service?.ask("Посмотри на экран") else choosePerceptionApp() }
+                addButton(messages, "Журнал действий", false) { showPage(1) }
                 addButton(messages, "Голосовая команда", false) { voice(false) }
-                addButton(messages, "Настройки модели", false) { showPage(3) }
+                addButton(messages, "Настройки модели", false) { showPage(2) }
             }
             for (turn in turns) addTurn(turn.user, turn.text)
         }

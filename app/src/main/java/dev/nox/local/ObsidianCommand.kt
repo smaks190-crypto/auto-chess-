@@ -6,7 +6,7 @@ import org.json.JSONObject
 internal data class ObsidianCommand(val op: String, val text: String = "", val model: Int = -1, val effort: Int = -1, val agent: Boolean = false, val enabled: Boolean = false) {
     companion object {
         private val plain = setOf("ready", "cancel", "clear", "toggle_vision", "background", "tts", "bluetooth", "grants", "system_assistant", "overlay_permission", "accessibility_permission", "model_load", "model_import", "model_catalog", "model_cancel", "benchmark", "benchmark_log", "benchmark_share", "pick_image", "perception", "analyze", "remove_image", "review", "voice_open", "voice_close", "voice_start", "voice_stop")
-        private val pages = setOf("chat", "vision", "actions", "settings")
+        private val pages = setOf("chat", "actions", "settings")
         fun parse(raw: String): ObsidianCommand? {
             if (raw.length > 20000) return null
             return runCatching {

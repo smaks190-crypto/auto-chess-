@@ -4,6 +4,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AssistantVoiceCommandTest {
+    @Test fun explicitScreenRequestOnly() {
+        for (text in listOf("Нокс, посмотри на экран!", "Что на экране?", "Опиши экран", "Посмотри на экран"))
+            assertTrue(text, AssistantVoiceCommand.isScreenRequest(text))
+        for (text in listOf("Не смотри на экран", "Как посмотреть на экран?", "Посмотри на экран и отправь сообщение", "Что такое экран?"))
+            assertFalse(text, AssistantVoiceCommand.isScreenRequest(text))
+    }
+
     @Test fun routeToChatOnlyForForegroundUnlockedNox() {
         assertTrue(AssistantVoiceCommand.useChat(true, true, true, false, true, true))
         assertTrue(AssistantVoiceCommand.useChat(true, true, true, true, true, true))

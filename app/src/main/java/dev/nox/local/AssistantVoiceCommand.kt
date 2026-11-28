@@ -23,6 +23,14 @@ internal object AssistantVoiceCommand {
         }
     }
 
+    /** Explicit read-only screen question, never a multi-action instruction. */
+    fun isScreenRequest(text: String): Boolean {
+        val normalized = text.trim().lowercase(java.util.Locale.ROOT)
+            .replace(Regex("^(?:нокс|nox)[ ,!:.]+"), "").trim().trimEnd('.', '!', '?', ' ')
+        return normalized in setOf("посмотри на экран", "посмотри экран", "что на экране",
+            "опиши экран", "что ты видишь на экране", "покажи что на экране")
+    }
+
     fun fromResult(armed: Boolean, finalized: Boolean, text: String): String? {
         if (!armed || !finalized || text.length > 2000) return null
         return (WakeWordPolicy.route(VoiceInputMode.MANUAL, text) as? WakeInput.Command)?.text?.takeUnless(VoiceLoopPolicy::isCancelTaskPhrase)
