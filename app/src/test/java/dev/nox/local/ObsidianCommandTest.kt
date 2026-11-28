@@ -43,7 +43,7 @@ class ObsidianCommandTest {
         assertEquals(ObsidianCommand("model_select", model=2), ObsidianCommand.parse("""{"op":"model_select","model":2}"""))
         assertEquals(ObsidianCommand("model_gpu", enabled=true), ObsidianCommand.parse("""{"op":"model_gpu","enabled":true}"""))
         assertEquals(ObsidianCommand("reduce_motion", enabled=false), ObsidianCommand.parse("""{"op":"reduce_motion","enabled":false}"""))
-        for (op in listOf("system_assistant","overlay_permission","accessibility_permission","model_load","model_import","model_catalog","model_cancel","benchmark","benchmark_log","benchmark_share")) {
+        for (op in listOf("system_assistant","overlay_permission","accessibility_permission","model_load","model_import","model_catalog","model_cancel","benchmark","benchmark_log","benchmark_share","nano_probe")) {
             assertEquals(op, ObsidianCommand.parse("""{"op":"$op"}""")?.op)
             assertNull(ObsidianCommand.parse("""{"op":"$op","package":"com.example"}"""))
         }
