@@ -8,18 +8,20 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.AlarmClock
 
-/** Only a preinstalled Clock handler may receive a timer request. No local timer,
+/** Only a trusted Clock handler may receive a timer request. No local timer,
  * arbitrary intent, background countdown or fallback to Accessibility. */
 internal object SystemClockTimerPolicy {
     const val SAMSUNG_CLOCK = "com.sec.android.app.clockpackage"
-    data class Handler(val pkg: String, val activity: String, val system: Boolean)
+    const val SAMSUNG_CLOCK_SIGNER = "34df0e7a9f1cf1892e45c056b4973cd81ccf148a4050d11aea4ac5a65f900a42"
+    data class Handler(val pkg: String, val activity: String, val system: Boolean, val samsungSigned: Boolean = false)
     fun durationAllowed(seconds: Int) = seconds in 1..3600
     fun select(handlers: List<Handler>, manufacturer: String): Handler? {
-        val trusted = handlers.filter { it.system }.distinctBy { it.pkg to it.activity }
-        if (manufacturer.equals("samsung", true)) {
-            return trusted.filter { it.pkg == SAMSUNG_CLOCK }.singleOrNull()
-        }
-        return trusted.singleOrNull()
+        // Samsung Clock may be distributed as a regular Galaxy Store APK.
+        // Exact package alone is insufficient: non-system installs must match its verified signer.
+        val trusted = if (manufacturer.equals("samsung", true)) {
+            handlers.filter { it.pkg == SAMSUNG_CLOCK && (it.system || it.samsungSigned) }
+        } else handlers.filter { it.system }
+        return trusted.distinctBy { it.pkg to it.activity }.singleOrNull()
     }
 }
 
@@ -32,8 +34,13 @@ internal object SystemClockTimer {
                 val activity = info.activityInfo ?: return@mapNotNull null
                 if (!activity.exported || !activity.enabled || !activity.applicationInfo.enabled) return@mapNotNull null
                 val flags = activity.applicationInfo.flags
+                val samsungSigned = activity.packageName == SystemClockTimerPolicy.SAMSUNG_CLOCK &&
+                    context.packageManager.hasSigningCertificate(activity.packageName,
+                        SystemClockTimerPolicy.SAMSUNG_CLOCK_SIGNER.chunked(2).map { it.toInt(16).toByte() }.toByteArray(),
+                        PackageManager.CERT_INPUT_SHA256)
                 SystemClockTimerPolicy.Handler(activity.packageName, activity.name,
-                    flags and (ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0)
+                    flags and (ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0,
+                    samsungSigned)
             }
         return SystemClockTimerPolicy.select(candidates, Build.MANUFACTURER)
             ?.let { ComponentName(it.pkg, it.activity) }
@@ -47,7 +54,7 @@ internal object SystemClockTimer {
         if (!allowed()) return "Запрос таймера отменён."
         return try {
             val target = resolve(context, AlarmClock.ACTION_SET_TIMER)
-                ?: return "Штатное приложение «Часы» не поддерживает запуск таймера."
+                ?: return "Не найден однозначный доверенный обработчик таймера в приложении «Часы»."
             if (!allowed()) return "Запрос таймера отменён."
             context.startActivity(Intent(AlarmClock.ACTION_SET_TIMER)
                 .setComponent(target)

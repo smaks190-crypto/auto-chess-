@@ -15,6 +15,15 @@ class SystemClockTimerPolicyTest {
         assertNull(SystemClockTimerPolicy.select(listOf(samsung, samsung.copy(activity = "Other")), "samsung"))
     }
 
+    @Test fun galaxyStoreClockWithVerifiedSignerWorksWithoutSystemFlag() {
+        val installed = samsung.copy(system = false, samsungSigned = true)
+        assertEquals(installed, SystemClockTimerPolicy.select(listOf(installed, thirdParty), "Samsung"))
+        assertNull(SystemClockTimerPolicy.select(listOf(installed.copy(samsungSigned = false)), "Samsung"))
+        assertNull(SystemClockTimerPolicy.select(listOf(thirdParty.copy(samsungSigned = true)), "Samsung"))
+        assertNull(SystemClockTimerPolicy.select(listOf(installed, installed.copy(activity = "Other")), "Samsung"))
+        assertNull(SystemClockTimerPolicy.select(listOf(installed), "Google"))
+    }
+
     @Test fun otherDevicesRequireUniqueSystemHandler() {
         assertEquals(another, SystemClockTimerPolicy.select(listOf(thirdParty, another), "Google"))
         assertNull(SystemClockTimerPolicy.select(listOf(thirdParty), "Google"))
