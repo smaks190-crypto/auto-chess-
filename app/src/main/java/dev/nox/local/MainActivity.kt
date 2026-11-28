@@ -27,7 +27,13 @@ class MainActivity : ComponentActivity() {
         @Volatile internal var isVisible = false
         // onStart/onStop also cover a visible but paused split-screen Activity.
         @Volatile internal var isOnScreen = false
+        private var foregroundActivity: java.lang.ref.WeakReference<MainActivity>? = null
+        internal fun foregroundAssistantTarget(): MainActivity? = foregroundActivity?.get()?.takeIf {
+            AssistantVoiceCommand.useChat(isVisible, isOnScreen, it.topResumed, it.isInMultiWindowMode,
+                AssistantHandoff.active(it), DeviceInteraction.unlocked(it)) && !it.isFinishing && !it.isDestroyed
+        }
     }
+    private var topResumed = false
     private var service: NoxService? = null
     private var bound = false
     private val catalog = ModelDownload.catalog
@@ -108,6 +114,8 @@ class MainActivity : ComponentActivity() {
     private var webPage = "chat"
     private var webVoiceOpen = false
     private var webDictationId: Long? = null
+    private var assistantDictationId: Long? = null
+    private var pendingInAppAssistantUntil = 0L
     private var pendingAssistantDraft: String? = null
     private var pendingAssistantCommand: Pair<String, Long>? = null
     private var pendingAssistantShowChat = false
@@ -539,6 +547,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun closeWebDictation() {
+        pendingInAppAssistantUntil = 0L
+        assistantDictationId = null
         val id = webDictationId
         webDictationId = null
         webVoiceOpen = false
@@ -554,7 +564,10 @@ class MainActivity : ComponentActivity() {
         val s = service
         if (c.op in setOf("send", "clear", "cancel", "choice", "voice_start", "model_select",
                 "model_load", "model_import", "model_catalog", "benchmark") ||
-            (c.op == "page" && c.text != "chat")) pendingAssistantCommand = null
+            (c.op == "page" && c.text != "chat")) {
+            pendingAssistantCommand = null
+            pendingInAppAssistantUntil = 0L
+        }
         if (c.op == "page") {
             webPage = c.text
             if (webPage != "chat") closeWebDictation()
@@ -587,7 +600,10 @@ class MainActivity : ComponentActivity() {
         }
         if (c.op == "voice_close" || c.op == "voice_stop") {
             if (c.op == "voice_close") closeWebDictation()
-            else webDictationId?.let { s?.stopWebDictation(it) }
+            else {
+                assistantDictationId = null
+                webDictationId?.let { s?.stopWebDictation(it) }
+            }
             renderWeb()
             return
         }
@@ -755,6 +771,7 @@ class MainActivity : ComponentActivity() {
             pendingAssistantDraft = null
             obsidian.send(org.json.JSONObject().put("type", "draft").put("text", draft))
         }
+        if (pendingInAppAssistantUntil != 0L) perceptionUi.post { startInAppAssistantIfReady() }
         if (webImageKey != attachedKey) {
             webImageKey = attachedKey
             runCatching {
@@ -769,6 +786,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun render() {
+        finishInAppAssistantDictation()
         drainAssistantCommand()
         val s = service
         val index = models.selectedItemPosition.coerceIn(catalog.indices)
@@ -925,6 +943,82 @@ class MainActivity : ComponentActivity() {
                 .onFailure { header.text = "Открой настройки Android → Приложения по умолчанию → Цифровой помощник" }
     }
 
+    /** Called in-process only by the active system assistant, not by an exported Intent. */
+    internal fun acceptAssistantInvocation() {
+        if (foregroundAssistantTarget() !== this) return
+        if (::matrix.isInitialized) matrix.dismiss()
+        val s = service
+        val existing = webDictationId
+        if (existing != null && s != null && s.webDictationSession == existing && s.webDictationActive &&
+            webVoiceOpen && webPage == "chat" && !advanced) {
+            // An explicit second invocation may arm the existing capture, but never starts a second one.
+            assistantDictationId = existing
+            return
+        }
+        closeWebDictation()
+        pendingAssistantCommand = null
+        pendingAssistantDraft = null
+        webPage = "chat"
+        pendingAssistantShowChat = true
+        pendingInAppAssistantUntil = android.os.SystemClock.elapsedRealtime() + 5_000L
+        if (advanced) closeAdvanced() else renderWeb()
+        syncTelemetry()
+    }
+
+    private fun startInAppAssistantIfReady() {
+        val deadline = pendingInAppAssistantUntil
+        if (deadline == 0L) return
+        if (android.os.SystemClock.elapsedRealtime() >= deadline || foregroundAssistantTarget() !== this ||
+            advanced || webPage != "chat") {
+            pendingInAppAssistantUntil = 0L
+            return
+        }
+        val s = service ?: return
+        if (!::obsidian.isInitialized || !obsidian.ready) return
+        pendingInAppAssistantUntil = 0L
+        if (s.busy) {
+            Toast.makeText(this, "Нокс занят", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 33)
+            return
+        }
+        webVoiceOpen = true
+        obsidian.send(org.json.JSONObject().put("type", "assistant_listen"))
+        val id = s.startWebDictation()
+        webDictationId = id
+        assistantDictationId = id
+        if (id == null) {
+            closeWebDictation()
+            obsidian.send(org.json.JSONObject().put("type", "assistant_voice_cancel"))
+            Toast.makeText(this, "Микрофон недоступен", Toast.LENGTH_SHORT).show()
+            return
+        }
+        perceptionUi.removeCallbacks(voiceRefresh)
+        perceptionUi.post(voiceRefresh)
+        renderWeb()
+    }
+
+    private fun finishInAppAssistantDictation() {
+        val id = assistantDictationId ?: return
+        val s = service ?: return
+        if (s.webDictationSession != id || webDictationId != id) {
+            assistantDictationId = null
+            return
+        }
+        if (s.webDictationActive) return
+        assistantDictationId = null
+        val command = AssistantVoiceCommand.fromResult(foregroundAssistantTarget() === this,
+            s.webDictationFinal, s.webDictationResult) ?: return
+        // Cancel the UI-owned session before ask(); this restores any pre-existing typed draft.
+        closeWebDictation()
+        if (::obsidian.isInitialized) obsidian.send(org.json.JSONObject().put("type", "assistant_voice_cancel"))
+        pendingAssistantCommand = command to (android.os.SystemClock.elapsedRealtime() + 120_000L)
+        perceptionUi.removeCallbacks(assistantCommandExpiry)
+        perceptionUi.postDelayed(assistantCommandExpiry, 120_000L)
+    }
+
     /** Only an authenticated, one-shot system-panel handoff may submit a voice command. */
     private fun consumeAssistantVoice() {
         if (!isVisible || service == null) return
@@ -1061,9 +1155,15 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
+    override fun onTopResumedActivityChanged(isTopResumedActivity: Boolean) {
+        super.onTopResumedActivityChanged(isTopResumedActivity)
+        topResumed = isTopResumedActivity
+    }
+
     override fun onResume() {
         super.onResume()
         isVisible = true
+        foregroundActivity = java.lang.ref.WeakReference(this)
         syncTelemetry()
         if (webVoiceOpen && !advanced) { perceptionUi.removeCallbacks(voiceRefresh); perceptionUi.post(voiceRefresh) }
         service?.listener = { render() }
@@ -1074,6 +1174,7 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         if (::matrix.isInitialized) matrix.dismiss()
         isVisible = false
+        if (foregroundActivity?.get() === this) foregroundActivity = null
         stopTelemetry()
         closeWebDictation()
         pendingAssistantDraft = null

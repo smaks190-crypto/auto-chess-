@@ -90,6 +90,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
     private var service: NoxService? = null
     private var bound = false
     private var shown = false
+    private var inAppTarget: MainActivity? = null
     private var autoStartPending = false
     private var autoExecuteRecording = false
     private var session: Long? = null
@@ -225,8 +226,22 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         setOnClickListener { click() }
     }
 
+    override fun onPrepareShow(args: Bundle?, showFlags: Int) {
+        super.onPrepareShow(args, showFlags)
+        inAppTarget = MainActivity.foregroundAssistantTarget()
+        // Disable UI before Android creates or shows the assistant window.
+        setUiEnabled(inAppTarget == null)
+    }
+
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
+        val target = inAppTarget
+        inAppTarget = null
+        if (target != null) {
+            target.acceptAssistantInvocation()
+            main.post { hide() }
+            return
+        }
         getWindow().window?.apply {
             setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
@@ -265,6 +280,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
 
     private fun release() {
         main.removeCallbacks(tick)
+        inAppTarget = null
         autoStartPending = false
         cancelRecording()
         wave?.setListening(false, 0f, false)

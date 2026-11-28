@@ -431,12 +431,15 @@ function updateVoiceUI(){
  updateInput();
  if(active)drawVoice();
 }
-function openVoice(){
- if(voiceOpen||S.busy||pendingSend||choicePending||!nativeState)return;
- if(S.tab!=='chat')tab('chat');
+function beginVoiceUi(){
  voiceDraft=$('prompt').value;voicePartial='';voiceSession=null;voicePhase='starting';voiceOpen=true;
  voiceSmooth=lastVoiceLevel=voiceBurst=0;$('prompt').blur();
  updateVoiceUI();
+}
+function openVoice(){
+ if(voiceOpen||S.busy||pendingSend||choicePending||!nativeState)return;
+ if(S.tab!=='chat')tab('chat');
+ beginVoiceUi();
  if(!request('voice_open')||!request('voice_start'))closeVoice(true,false);
 }
 qa('[data-voice]').forEach(b=>b.onclick=openVoice);
@@ -499,7 +502,9 @@ function drawVoice(){
  if(!reduced&&!voiceFrame)voiceFrame=requestAnimationFrame(()=>{voiceFrame=0;drawVoice()});
 }
 function receive(st){
- if(st.type==='assistant_show_chat'){if(voiceOpen)closeVoice(true);tab('chat');return}
+ if(st.type==='assistant_show_chat'){if(voiceOpen)closeVoice(true,false);tab('chat');return}
+ if(st.type==='assistant_listen'){if(voiceOpen)closeVoice(true,false);tab('chat');beginVoiceUi();return}
+ if(st.type==='assistant_voice_cancel'){if(voiceOpen)closeVoice(true,false);return}
  if(st.type==='draft'){
    if(typeof st.text!=='string'||!st.text.trim())return;
    if(voiceOpen)closeVoice(true);
