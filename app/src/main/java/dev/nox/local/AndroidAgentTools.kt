@@ -251,6 +251,53 @@ internal class AndroidAgentTools(
     private fun describeGoal(screen: Screen): String = screen.describe() +
         (goal.hint(goalObservation(screen))?.let { "\n" + it } ?: "")
 
+    /** Opt in only for exact arithmetic goals with an already verified screen and
+     * a complete, bounded resource sequence. Every gesture uses the existing executor. */
+    fun runVerifiedArithmetic(maxSteps: Int): String? {
+        if (!goal.arithmetic || calcPlan != null || maxSteps !in 1..26) return null
+        val first = snapshot ?: return null
+        val observed = goalObservation(first)
+        val keys = goal.approvedSequence(observed) ?: return null
+        if (keys.isEmpty() || keys.size > maxSteps || goal.fastResource(observed) != keys.first()) return null
+        val task = "verified-arithmetic"
+        fun state(screen: Screen): SemanticObservation<ResourceSequence>? {
+            val o = goalObservation(screen)
+            val remaining = if (goal.fastFinish(o)) emptyList() else goal.approvedSequence(o) ?: return null
+            return ResourceSequence.of(remaining).observation(task, screen.pkg, screen.window, o.seq)
+        }
+        val initial = ResourceSequence.of(keys).observation(task, first.pkg, first.window, observed.seq)
+        val started = SystemClock.elapsedRealtime()
+        val result = runVerifiedResources(initial, SystemClock::elapsedRealtime, cancelled,
+            started + 30000L, maxSteps) { previous, resource ->
+            checkActive()
+            val current = snapshot ?: return@runVerifiedResources VerifiedDispatch.Rejected
+            val actual = state(current) ?: return@runVerifiedResources VerifiedDispatch.Rejected
+            if (actual.key.pkg != previous.key.pkg || actual.key.epoch != previous.key.epoch ||
+                actual.key.signature != previous.key.signature)
+                return@runVerifiedResources VerifiedDispatch.Rejected
+            val node = current.nodes.singleOrNull { it.resource == resource }
+                ?: return@runVerifiedResources VerifiedDispatch.Rejected
+            if (!node.enabled || !node.clickable || !node.identity.visible || node.identity.password)
+                return@runVerifiedResources VerifiedDispatch.Rejected
+            when (execute(AgentDecision.Tool("click", node.id))) {
+                is ToolOutcome.Ok -> {
+                    val next = snapshot?.let { state(it) } ?: return@runVerifiedResources VerifiedDispatch.Unknown
+                    if (next.state.remaining != previous.state.remaining.drop(1))
+                        VerifiedDispatch.Unknown else VerifiedDispatch.Observed(next)
+                }
+                is ToolOutcome.RejectedBeforeAction -> VerifiedDispatch.Rejected
+                else -> VerifiedDispatch.Unknown
+            }
+        }
+        Log.i("NoxPlan", "source=VERIFIED_LOOP status=${result.status} confirmed=${result.confirmed} hits=${result.speculativeHits} elapsedMs=${SystemClock.elapsedRealtime() - started}")
+        if (cancelled()) return "Задача отменена."
+        if (result.status == LoopStatus.GOAL_VERIFIED) {
+            return verifyFinish() ?: "Последовательность выполнена, но итог не подтверждён свежим экраном."
+        }
+        calcPlan?.revoke()
+        return "Проверяемый цикл остановлен: ${result.status}. Подтверждено действий: ${result.confirmed}. Повторять действия не буду."
+    }
+
     /** Derive only one next action from the last independently verified snapshot.
      *  The ordinary executor still checks permission, veto, identity and postcondition.
      */

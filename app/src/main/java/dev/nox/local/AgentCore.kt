@@ -85,7 +85,8 @@ internal class AgentCore(
     private val verifyFinish: () -> String? = { null },
     private val executeTyped: ((AgentDecision.Tool) -> ToolOutcome)? = null,
     private val fastDecision: () -> AgentDecision? = { null },
-    private val trace: (String) -> Unit = {}
+    private val trace: (String) -> Unit = {},
+    private val runVerifiedGoal: (Int) -> String? = { null }
 ) {
     fun run(request: String, history: String): String {
         if (goal?.telegramSendRequested == true) return "Автоматическая отправка в Telegram пока не поддерживается. Сообщение не отправлено."
@@ -114,6 +115,15 @@ internal class AgentCore(
         }
         repeat(maxSteps) { step ->
             if (cancelled()) return "Задача отменена."
+            // Exact, independently verified goals may use a bounded local cycle.
+            // Null means not admitted: the ordinary path remains unchanged.
+            if (goal?.arithmetic == true && executeTyped != null && lastOutcome is ToolOutcome.Ok &&
+                !pendingGoalCorrection && maxSteps - step > 1) {
+                val batch = try { runVerifiedGoal(maxSteps - step - 1) }
+                catch (denied: AgentDenied) { return denied.message ?: "Задача остановлена." }
+                catch (_: Exception) { return "Проверяемый цикл прерван; результат неизвестен. Повторять не буду." }
+                if (batch != null) return batch
+            }
             // Only a typed, successful screen outcome can authorize a deterministic next decision.
             // Unknown outcomes stop below, and pre-action rejection requires fresh observation.
             var action: AgentDecision? = when {

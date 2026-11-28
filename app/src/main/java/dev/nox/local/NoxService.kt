@@ -1578,6 +1578,7 @@ class NoxService : Service() {
                     goal = goal,
                     verifyFinish = tools::verifyFinish,
                     fastDecision = tools::fastDecision,
+                    runVerifiedGoal = tools::runVerifiedArithmetic,
                     progress = { step -> main.post {
                         if (!destroyed && generating && !generationCancelled) {
                             if (step.endsWith(" · анализ")) agentActionLabel = null
