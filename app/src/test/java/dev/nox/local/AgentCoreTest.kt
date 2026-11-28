@@ -133,7 +133,11 @@ class AgentCoreTest {
         val actions = mutableListOf<String>()
         val core = AgentCore(
             decide = { prompt ->
-                if (prompt.contains("Экран обновлён")) assertTrue(prompt.contains("свежими ID"))
+                if (decisionIndex == 1) {
+                    assertTrue(prompt.contains("Экран обновлён"))
+                    assertTrue(prompt.contains("по свежим ID"))
+                    assertTrue(prompt.contains("2 | EditText | Сообщение [type]"))
+                }
                 decisions[decisionIndex++]
             }, execute = { error("typed executor required") }, cancelled = { false },
             goal = GoalState("Open Telegram"), verifyFinish = { "verified" },
