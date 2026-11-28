@@ -894,6 +894,10 @@ class NoxService : Service() {
         override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
     }
 
+    // This service-owned WindowManager overlay is constructed directly with a platform
+    // Theme.Material context. It does not use AppCompat inflation or support tinting.
+    // ML Kit brings AppCompat transitively; preserve the existing framework rendering.
+    @android.annotation.SuppressLint("AppCompatCustomView")
     private inner class ConnectedCaption(context: Context, neck: Int) : TextView(context) {
         private val shape = CaptionShape(neck, captionPalette)
         private var fullCaption = ""
