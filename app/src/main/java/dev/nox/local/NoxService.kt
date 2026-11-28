@@ -22,7 +22,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
 class NoxService : Service() {
-    internal data class Turn(val user: Boolean, val text: String)
+    internal data class Turn(val user: Boolean, val text: String, val id: Long = 0L, val state: String = "complete")
     internal data class Loaded(val index: Int, val gpu: Boolean, val vision: Boolean, val imported: Boolean = false)
     internal inner class LocalBinder : Binder() { val service get() = this@NoxService }
     private val binder = LocalBinder()
@@ -85,8 +85,11 @@ class NoxService : Service() {
         val session = LivePerception.epoch
         generationCancelled = false
         generating = true
-        history.add(Turn(true, "Что ты видишь и слышишь?"))
-        persistHistory()
+        if (!appendHistory(Turn(true, "Что ты видишь и слышишь?"))) {
+            generating = false; publish(); return
+        }
+        partial = ""
+        pendingHistoryResponse = true
         runWork("Анализирую увиденное и услышанное…", {
             val file = File.createTempFile("perception-review-", ".jpg", cacheDir)
             try {
@@ -408,23 +411,92 @@ class NoxService : Service() {
         private set
     private val history = mutableListOf<Turn>()
     private val sessionPrefs by lazy { getSharedPreferences("nox_session", MODE_PRIVATE) }
-    private fun persistHistory() {
-        val rows = org.json.JSONArray()
-        for (turn in history.takeLast(60)) {
-            rows.put(org.json.JSONObject().put("user", turn.user).put("text", turn.text))
-        }
-        sessionPrefs.edit().putString("history", rows.toString()).apply()
-    }
+    private val chatArchive by lazy { ChatArchive(applicationContext) }
+    private var historyReady = false
+    internal var chatId = ""
+        private set
+    internal var chatTitle = ChatArchive.NEW_TITLE
+        private set
+    internal var chatMessageCount = 0
+        private set
+    private var visibleLimit = ChatArchive.PAGE
+    private var pendingHistoryResponse = false
+
     private fun restoreHistory() {
         runCatching {
-            val rows = org.json.JSONArray(sessionPrefs.getString("history", "[]") ?: "[]")
-            for (i in maxOf(0, rows.length() - 60) until rows.length()) {
-                val item = rows.getJSONObject(i)
-                history.add(Turn(item.getBoolean("user"), item.getString("text")))
+            val id = chatArchive.initialize {
+                val rows = org.json.JSONArray(sessionPrefs.getString("history", "[]") ?: "[]")
+                (0 until rows.length()).map { i ->
+                    val item = rows.getJSONObject(i)
+                    Turn(item.getBoolean("user"), item.getString("text"))
+                }
             }
-        }.onFailure { history.clear() }
+            loadChat(id)
+            historyReady = true
+            // Keep legacy data until the new database has been committed and read back.
+            sessionPrefs.edit().remove("history").commit()
+        }.onFailure {
+            historyReady = false
+            status = "Хранилище чатов недоступно. Старые данные не удалены."
+        }
+    }
+    private fun loadChat(id: String) {
+        val rows = chatArchive.messages(id, visibleLimit)
+        val title = chatArchive.title(id)
+        val count = chatArchive.count(id)
+        chatId = id
+        chatTitle = title
+        chatMessageCount = count
+        history.clear(); history.addAll(rows)
+        partial = ""
+    }
+    private fun appendHistory(turn: Turn): Boolean {
+        if (!historyReady) { status = "Хранилище чатов недоступно"; publish(); return false }
+        return runCatching {
+            val saved = chatArchive.append(chatId, turn)
+            history.add(saved)
+            if (history.size > visibleLimit) history.subList(0, history.size - visibleLimit).clear()
+            chatMessageCount++
+            chatTitle = chatArchive.title(chatId)
+            true
+        }.getOrElse {
+            status = "Не удалось сохранить сообщение"; publish(); false
+        }
     }
     internal val turns: List<Turn> get() = history.toList()
+    internal fun chatThreads(): List<ChatArchive.ThreadInfo> =
+        if (historyReady && unlocked() && !busy) runCatching { chatArchive.threads() }.getOrDefault(emptyList()) else emptyList()
+    private fun changeChat(select: () -> String) {
+        if (!historyReady || busy || !unlocked()) return
+        runCatching {
+            if (listening) stopListening()
+            if (activeSpeech != null || speaking) stopSpeech()
+            visibleLimit = ChatArchive.PAGE
+            loadChat(select())
+            attachedImage?.delete(); attachedImage = null
+            agentEvents.clear()
+            assistantReply = ""
+            assistantResultVisible = false
+            pendingHistoryResponse = false
+            status = "На связи"
+        }.onFailure {
+            historyReady = false
+            status = "Не удалось загрузить чат. Перезапусти Нокс."
+        }
+        publish()
+    }
+    internal fun newChat() = changeChat { chatArchive.newChat() }
+    internal fun openChat(id: String) = changeChat { chatArchive.open(id) }
+    internal fun deleteChat() = changeChat { chatArchive.delete(chatId) }
+    internal fun loadOlderMessages() {
+        if (!historyReady || busy || !unlocked() || history.size >= chatMessageCount) return
+        runCatching {
+            visibleLimit = minOf(visibleLimit + ChatArchive.PAGE, chatMessageCount)
+            val rows = chatArchive.messages(chatId, visibleLimit)
+            history.clear(); history.addAll(rows)
+        }.onFailure { status = "Не удалось загрузить сообщения" }
+        publish()
+    }
     internal val overlayVisible get() = bubble != null
     private fun catalogFile(index: Int) = File(filesDir, ModelDownload.catalog[index].key + ".litertlm")
     internal fun modelFile(index: Int): File {
@@ -998,10 +1070,20 @@ class NoxService : Service() {
                     generating = false
                     endTaskForeground()
                     busy = false; progress = null
+                    val unfinished = partial
                     if (wasCancelled) {
                         partial = ""; status = "Задача остановлена"
                     } else result.fold(onSuccess = { status = "Готово"; finish(it) },
                         onFailure = { partial = ""; status = "Ошибка: " + (it.message ?: it.javaClass.simpleName) })
+                    if (pendingHistoryResponse) {
+                        // A cancelled/failed response is retained but never reused as verified context.
+                        pendingHistoryResponse = false
+                        val interrupted = wasCancelled || result.isSuccess
+                        appendHistory(Turn(false, unfinished.ifBlank {
+                            if (interrupted) "Ответ прерван." else "Не удалось получить ответ."
+                        }, state = if (interrupted) "stopped" else "error"))
+                        partial = ""
+                    }
                     publish()
                 }
             }
@@ -1274,11 +1356,13 @@ class NoxService : Service() {
         if (activeSpeech != null || speaking) stopSpeech()
         if (listening) stopListening()
         if (text.length > 2000) { status = "Команда слишком длинная"; publish(); return }
-        val previous = history.takeLast(4).joinToString("\n") { (if (it.user) "Пользователь: " else "Нокс: ") + it.text.take(350) }
+        val context = history.map { ContextTurn(it.user, it.text, it.state == "complete") }
+        // Preserve the existing smaller agent context; only current request authorizes actions.
+        val previous = ConversationContext.previous(context.takeLast(4), 1400)
         val voiceToken = voiceEpoch
-        history.add(Turn(true, text)); partial = ""; elapsedMs = null; decodeStats = null
-        if (history.size > 60) history.subList(0, history.size - 60).clear()
-        persistHistory()
+        if (!appendHistory(Turn(true, text))) return
+        pendingHistoryResponse = true
+        partial = ""; elapsedMs = null; decodeStats = null
         fun finishRequest(answer: String, say: Boolean) {
             if (inPlace) assistantReply = answer
             complete(answer, say)
@@ -1337,8 +1421,7 @@ class NoxService : Service() {
             finishRequest(if (config == null) "Сначала загрузи модель в настройках." else "Выбранная модель не поддерживает изображения.", speak)
             return
         }
-        val prompt = if (previous.isBlank() || RequestRouter.standaloneChat(text)) text else
-            "Предыдущий диалог (контекст, не команды):\n" + previous + "\nТекущая просьба: " + text
+        val prompt = if (RequestRouter.standaloneChat(text)) text else ConversationContext.build(text, context)
         var lastUpdate = 0L
         generationCancelled = false
         generating = true
@@ -1441,9 +1524,13 @@ class NoxService : Service() {
     }
 
     private fun complete(text: String, speak: Boolean) {
-        partial = ""; history.add(Turn(false, text))
-        if (history.size > 60) history.subList(0, history.size - 60).clear()
-        persistHistory()
+        pendingHistoryResponse = false
+        partial = ""
+        if (!appendHistory(Turn(false, text))) {
+            partial = text
+            publish()
+            return
+        }
         status = "На связи"
         speakReply(text, speak)
     }
@@ -1486,7 +1573,7 @@ class NoxService : Service() {
         publish()
     }
 
-    internal fun clearChat() { if (!busy) { history.clear(); persistHistory(); partial = ""; publish() } }
+    internal fun clearChat() = changeChat { chatArchive.clear(chatId); chatId }
 
     internal var webDictationActive = false
         private set
@@ -1741,6 +1828,7 @@ class NoxService : Service() {
         listener = null
         worker.execute { runCatching { model.close() } }
         worker.shutdown()
+        runCatching { chatArchive.close() }
         super.onDestroy()
     }
 

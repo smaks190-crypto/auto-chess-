@@ -6,6 +6,10 @@ import org.junit.Test
 class ObsidianCommandTest {
     @Test fun acceptsOnlyExactTypedCommands() {
         assertEquals(ObsidianCommand("ready"), ObsidianCommand.parse("""{"op":"ready"}"""))
+        for (op in listOf("new_chat", "chat_history", "chat_older")) {
+            assertEquals(ObsidianCommand(op), ObsidianCommand.parse("""{"op":"$op"}"""))
+            assertNull(ObsidianCommand.parse("""{"op":"$op","id":"arbitrary"}"""))
+        }
         assertEquals(ObsidianCommand("send", text="hello", agent=true), ObsidianCommand.parse("""{"op":"send","text":" hello ","agent":true}"""))
         assertEquals(ObsidianCommand("choice", model=2, effort=3), ObsidianCommand.parse("""{"op":"choice","model":2,"effort":3}"""))
         assertNull(ObsidianCommand.parse("""{"op":"page","page":"vision"}"""))

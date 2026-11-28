@@ -394,7 +394,12 @@ class MainActivity : ComponentActivity() {
         addButton(settings, "Сравнительный тест") { service?.benchmark(models.selectedItemPosition, gpu.isChecked, vision.isChecked) }
         addButton(settings, "Журнал тестов") { showBenchmarkLog() }
         addButton(settings, "Поделиться журналом") { shareBenchmarkLog() }
-        addButton(settings, "Очистить чат") { service?.clearChat() }
+        addButton(settings, "Новый чат") { service?.newChat() }
+        addButton(settings, "Очистить чат") {
+            AlertDialog.Builder(this).setTitle("Очистить текущий чат?")
+                .setNegativeButton("Отмена", null)
+                .setPositiveButton("Очистить") { _, _ -> service?.clearChat() }.show()
+        }
         details = textLabel("", 13f, muted); settings.addView(details)
         val nav = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,dp(8),0,0) }
         listOf("Чат", "Действия", "Настройки").forEachIndexed { index, name ->
@@ -557,7 +562,7 @@ class MainActivity : ComponentActivity() {
         if (c.op == "ready") { webStateKey = ""; webImageKey = ""; renderWeb(); syncTelemetry(); return }
         if (!isVisible || advanced || !DeviceInteraction.unlocked(this)) { ack(c.op, false, "Открой и разблокируй Нокс"); return }
         val s = service
-        if (c.op in setOf("send", "clear", "cancel", "choice", "voice_start", "model_select",
+        if (c.op in setOf("send", "clear", "new_chat", "chat_history", "cancel", "choice", "voice_start", "model_select",
                 "model_load", "model_import", "model_catalog", "benchmark") ||
             (c.op == "page" && c.text != "chat")) {
             pendingAssistantCommand = null
@@ -689,7 +694,29 @@ class MainActivity : ComponentActivity() {
                 ack(c.op, true)
                 webStateKey = ""
             }
-            "clear" -> AlertDialog.Builder(this).setTitle("Новый чат")
+            "new_chat" -> {
+                closeWebDictation()
+                s.newChat()
+            }
+            "chat_older" -> s.loadOlderMessages()
+            "chat_history" -> {
+                closeWebDictation()
+                val chats = s.chatThreads()
+                if (chats.isEmpty()) { ack(c.op, false, "История недоступна"); return }
+                val labels = chats.map { (if (it.id == s.chatId) "• " else "") + it.title }.toTypedArray()
+                AlertDialog.Builder(this).setTitle("История диалогов")
+                    .setItems(labels) { _, index -> s.openChat(chats[index].id) }
+                    .setPositiveButton("Новый чат") { _, _ -> s.newChat() }
+                    .setNeutralButton("Удалить текущий") { _, _ ->
+                        val target = s.chatId
+                        AlertDialog.Builder(this).setTitle("Удалить текущий диалог?")
+                            .setMessage("Сообщения этого диалога будут удалены. Остальные чаты сохранятся.")
+                            .setNegativeButton("Отмена", null)
+                            .setPositiveButton("Удалить") { _, _ -> if (s.chatId == target) s.deleteChat() }.show()
+                    }
+                    .setNegativeButton("Закрыть", null).show()
+            }
+            "clear" -> AlertDialog.Builder(this).setTitle("Очистить текущий чат")
                 .setMessage("Очистить историю текущего диалога?")
                 .setNegativeButton("Отмена", null)
                 .setPositiveButton("Очистить") { _, _ -> s.clearChat() }.show()
@@ -780,7 +807,12 @@ class MainActivity : ComponentActivity() {
             .put("dictationResult", if (dictationId != null && !dictationActive) s?.webDictationResult.orEmpty() else "")
             .put("elapsedMs", s?.elapsedMs ?: org.json.JSONObject.NULL)
             .put("partial", s?.partial.orEmpty())
-            .put("turns", org.json.JSONArray(s?.turns.orEmpty().map { org.json.JSONObject().put("user", it.user).put("text", it.text) }))
+            .put("chatId", s?.chatId.orEmpty())
+            .put("chatTitle", s?.chatTitle.orEmpty())
+            .put("chatCount", s?.chatMessageCount ?: 0)
+            .put("turns", org.json.JSONArray(s?.turns.orEmpty().map {
+                org.json.JSONObject().put("id", it.id.toString()).put("user", it.user).put("text", it.text).put("state", it.state)
+            }))
             .put("events", org.json.JSONArray(s?.agentJournal.orEmpty()))
         val key = st.toString()
         if (key != webStateKey) { webStateKey = key; obsidian.send(st) }
