@@ -1348,12 +1348,12 @@ class NoxService : Service() {
             }
             generationCancelled = false
             generating = true
-            val result = NativeTimerService.request(this, seconds) { !stop() && assistantRequestId == id }
-            runWork("Запускаю таймер…", { result.get(6, TimeUnit.SECONDS) }, { finish(it) })
+            val result = SystemClockTimer.request(this, seconds) { !stop() && assistantRequestId == id }
+            runWork("Передаю таймер приложению «Часы»…", { result }, { finish(it) })
             return id
         }
         if (LockedAssistantPolicy.cancelTimerRequested(text)) {
-            finish(NativeTimerService.cancel())
+            finish("Для остановки активного таймера в приложении «Часы» разблокируй телефон. Таймер не изменён.")
             return id
         }
         if (LockedAssistantPolicy.publicSearch(text)) {
@@ -1433,7 +1433,7 @@ class NoxService : Service() {
             return
         }
         if (LockedAssistantPolicy.cancelTimerRequested(text)) {
-            finishRequest(NativeTimerService.cancel(), speak)
+            finishRequest(SystemClockTimer.showTimers(this) { !destroyed && unlocked() }, speak)
             return
         }
         if (LockedAssistantPolicy.timerRequested(text)) {
@@ -1444,8 +1444,8 @@ class NoxService : Service() {
             }
             generationCancelled = false
             generating = true
-            val result = NativeTimerService.request(this, seconds) { !destroyed && !generationCancelled && unlocked() }
-            runWork("Запускаю таймер…", { result.get(6, TimeUnit.SECONDS) }, { finishRequest(it, speak && voiceToken == voiceEpoch) })
+            val result = SystemClockTimer.request(this, seconds) { !destroyed && !generationCancelled && unlocked() }
+            runWork("Передаю таймер приложению «Часы»…", { result }, { finishRequest(it, speak && voiceToken == voiceEpoch) })
             return
         }
         if (inPlace) AssistantVoiceCommand.dedicatedToolUnavailable(text)?.let {

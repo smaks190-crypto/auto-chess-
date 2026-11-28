@@ -1,149 +1,79 @@
 package dev.nox.local
 
-import android.app.*
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
-import android.media.AudioAttributes
-import android.media.Ringtone
-import android.media.RingtoneManager
-import android.os.*
-import java.util.concurrent.CompletableFuture
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.AlarmClock
 
-/** One finite, user-requested local timer. It never launches another app or unlocks Android. */
-class NativeTimerService : Service() {
-    private val main = Handler(Looper.getMainLooper())
-    private var wake: PowerManager.WakeLock? = null
-    private var ringtone: Ringtone? = null
-    private var deadline = 0L
-    private val fire = Runnable { ring() }
-    private val silence = Runnable { finishTimer() }
+/** Only a preinstalled Clock handler may receive a timer request. No local timer,
+ * arbitrary intent, background countdown or fallback to Accessibility. */
+internal object SystemClockTimerPolicy {
+    const val SAMSUNG_CLOCK = "com.sec.android.app.clockpackage"
+    data class Handler(val pkg: String, val activity: String, val system: Boolean)
+    fun durationAllowed(seconds: Int) = seconds in 1..3600
+    fun select(handlers: List<Handler>, manufacturer: String): Handler? {
+        val trusted = handlers.filter { it.system }.distinctBy { it.pkg to it.activity }
+        if (manufacturer.equals("samsung", true)) {
+            return trusted.filter { it.pkg == SAMSUNG_CLOCK }.singleOrNull()
+        }
+        return trusted.singleOrNull()
+    }
+}
 
-    override fun onBind(intent: Intent?): IBinder? = null
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == CANCEL) {
-            finishTimer()
-            return START_NOT_STICKY
-        }
-        val ticket = pending
-        if (ticket == null || intent?.getLongExtra("ticket", -1L) != ticket.id) {
-            if (deadline == 0L) stopSelf(startId)
-            return START_NOT_STICKY
-        }
-        pending = null
-        if (!ticket.allowed() || SystemClock.elapsedRealtime() >= ticket.expires || deadline != 0L) {
-            ticket.reply.complete("Таймер не установлен: запрос отменён или уже идёт отсчёт.")
-            if (deadline == 0L) stopSelf(startId)
-            return START_NOT_STICKY
-        }
-        try {
-            val pm = requireNotNull(getSystemService(PowerManager::class.java))
-            val nm = requireNotNull(getSystemService(NotificationManager::class.java))
-            nm.createNotificationChannel(NotificationChannel(CHANNEL, "Таймер Нокса", NotificationManager.IMPORTANCE_LOW))
-            deadline = SystemClock.elapsedRealtime() + ticket.seconds * 1000L
-            val cancel = PendingIntent.getService(this, 0, Intent(this, NativeTimerService::class.java).setAction(CANCEL),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-            val notification = Notification.Builder(this, CHANNEL)
-                .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-                .setContentTitle("Таймер Нокса")
-                .setContentText("Идёт отсчёт")
-                .setVisibility(Notification.VISIBILITY_PUBLIC)
-                .setOngoing(true).setOnlyAlertOnce(true)
-                .setWhen(System.currentTimeMillis() + ticket.seconds * 1000L)
-                .setShowWhen(true).setUsesChronometer(true).setChronometerCountDown(true)
-                .addAction(Notification.Action.Builder(null, "Отменить", cancel).build()).build()
-            startForeground(ID, notification, if (Build.VERSION.SDK_INT >= 34)
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0)
-            wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:timer").apply {
-                setReferenceCounted(false)
-                acquire(ticket.seconds * 1000L + 30_000L)
+internal object SystemClockTimer {
+    @Suppress("DEPRECATION")
+    private fun resolve(context: Context, action: String): ComponentName? {
+        val query = Intent(action).addCategory(Intent.CATEGORY_DEFAULT)
+        val candidates = context.packageManager.queryIntentActivities(query, PackageManager.MATCH_DEFAULT_ONLY)
+            .mapNotNull { info ->
+                val activity = info.activityInfo ?: return@mapNotNull null
+                if (!activity.exported || !activity.enabled || !activity.applicationInfo.enabled) return@mapNotNull null
+                val flags = activity.applicationInfo.flags
+                SystemClockTimerPolicy.Handler(activity.packageName, activity.name,
+                    flags and (ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0)
             }
-            // A bounded partial wake lock keeps Handler time advancing with display off.
-            check(main.postDelayed(fire, (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(0L)))
-            current = this
-            android.util.Log.i("NoxTimer", "started seconds=" + ticket.seconds)
-            ticket.reply.complete("Таймер Нокса запущен на " + ticket.seconds + " сек.")
+        return SystemClockTimerPolicy.select(candidates, Build.MANUFACTURER)
+            ?.let { ComponentName(it.pkg, it.activity) }
+    }
+
+    /** Caller has already validated explicit user intent and current session.
+     * Android Clock owns the countdown, notifications, sound and persistence.
+     * startActivity is dispatch, not proof that the timer is running. */
+    fun request(context: Context, seconds: Int, allowed: () -> Boolean): String {
+        if (!SystemClockTimerPolicy.durationAllowed(seconds)) return "Укажи время таймера от одной секунды до одного часа."
+        if (!allowed()) return "Запрос таймера отменён."
+        return try {
+            val target = resolve(context, AlarmClock.ACTION_SET_TIMER)
+                ?: return "Штатное приложение «Часы» не поддерживает запуск таймера."
+            if (!allowed()) return "Запрос таймера отменён."
+            context.startActivity(Intent(AlarmClock.ACTION_SET_TIMER)
+                .setComponent(target)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                .putExtra(AlarmClock.EXTRA_LENGTH, seconds)
+                .putExtra(AlarmClock.EXTRA_SKIP_UI, true))
+            android.util.Log.i("NoxClock", "timer_dispatched seconds=" + seconds)
+            "Передал приложению «Часы» запрос на запуск таймера на $seconds сек. Начало отсчёта не подтверждено."
         } catch (_: Exception) {
-            finishTimer()
-            ticket.reply.complete("Не удалось запустить таймер. Таймер не установлен.")
+            "Не удалось передать таймер приложению «Часы». Если экран заблокирован, разблокируй телефон и повтори."
         }
-        return START_NOT_STICKY
     }
 
-    private fun ring() {
-        if (deadline == 0L) return
-        val left = deadline - SystemClock.elapsedRealtime()
-        if (left > 0L) { main.postDelayed(fire, left); return }
-        android.util.Log.i("NoxTimer", "elapsed")
-        ringtone = runCatching {
-            RingtoneManager.getRingtone(this, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM))
-                ?.apply {
-                    audioAttributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
-                    play()
-                }
-        }.getOrNull()
-        main.postDelayed(silence, 15_000L)
-    }
-
-    private fun finishTimer() {
-        cleanup()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
-    }
-
-    private fun cleanup() {
-        main.removeCallbacks(fire); main.removeCallbacks(silence)
-        ringtone?.let { runCatching { it.stop() } }; ringtone = null
-        wake?.let { if (it.isHeld) runCatching { it.release() } }; wake = null
-        deadline = 0L
-        if (current === this) current = null
-    }
-
-    override fun onDestroy() { cleanup(); super.onDestroy() }
-
-    companion object {
-        private const val ID = 112
-        private const val CHANNEL = "nox_timer"
-        private const val CANCEL = "dev.nox.local.CANCEL_TIMER"
-        private data class Ticket(val id: Long, val seconds: Int, val expires: Long,
-                                  val allowed: () -> Boolean, val reply: CompletableFuture<String>)
-        private var next = 0L
-        private var pending: Ticket? = null
-        private var current: NativeTimerService? = null
-
-        /** Main-thread only, one timer, no arbitrary Intent arguments. */
-        internal fun request(context: Context, seconds: Int, allowed: () -> Boolean): CompletableFuture<String> {
-            val answer = CompletableFuture<String>()
-            if (seconds !in 1..3600 || !allowed() || pending != null || current != null) {
-                answer.complete("Таймер не установлен. Допустим один таймер от 1 секунды до 1 часа.")
-                return answer
-            }
-            val ticket = Ticket(++next, seconds, SystemClock.elapsedRealtime() + 5000L, allowed, answer)
-            pending = ticket
-            try {
-                context.startForegroundService(Intent(context, NativeTimerService::class.java).putExtra("ticket", ticket.id))
-                Handler(Looper.getMainLooper()).postDelayed({
-                    if (pending === ticket) {
-                        pending = null
-                        answer.complete("Android не подтвердил запуск таймера.")
-                    }
-                }, 5000L)
-            } catch (_: Exception) {
-                pending = null
-                answer.complete("Android не разрешил запуск таймера.")
-            }
-            return answer
-        }
-
-        internal fun cancel(): String {
-            pending?.reply?.complete("Таймер отменён.")
-            val hadPending = pending != null
-            pending = null
-            val service = current
-            service?.finishTimer()
-            return if (service != null || hadPending) "Таймер отменён." else "Активного таймера нет."
+    /** No portable identifier for a running external timer. SHOW_TIMERS never
+     * dismisses unrelated or expired timers; the user chooses which one to stop. */
+    fun showTimers(context: Context, allowed: () -> Boolean): String {
+        if (!allowed()) return "Запрос отменён."
+        return try {
+            val target = resolve(context, AlarmClock.ACTION_SHOW_TIMERS)
+                ?: return "Открой приложение «Часы» и останови нужный таймер. Таймер не изменён."
+            if (!allowed()) return "Запрос отменён."
+            context.startActivity(Intent(AlarmClock.ACTION_SHOW_TIMERS).setComponent(target)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            "Передал запрос на открытие списка таймеров. Выбери нужный для остановки. Таймер не отменён."
+        } catch (_: Exception) {
+            "Не удалось открыть таймеры. Таймер не изменён."
         }
     }
 }

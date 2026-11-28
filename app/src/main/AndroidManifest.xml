@@ -2,6 +2,7 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
@@ -13,6 +14,8 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
     <queries>
         <package android:name="com.sec.android.daemonapp"/>
+        <intent><action android:name="android.intent.action.SET_TIMER"/><category android:name="android.intent.category.DEFAULT"/></intent>
+        <intent><action android:name="android.intent.action.SHOW_TIMERS"/><category android:name="android.intent.category.DEFAULT"/></intent>
         <intent><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent>
         <intent><action android:name="android.intent.action.TTS_SERVICE"/></intent>
     </queries>
@@ -53,11 +56,6 @@
             android:foregroundServiceType="specialUse" android:stopWithTask="false">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User scheduled audible wakeup alarm with a visible stop control"/>
-        </service>
-        <service android:name=".NativeTimerService" android:exported="false"
-            android:foregroundServiceType="specialUse" android:stopWithTask="false">
-            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="User initiated local countdown timer with alarm and cancel notification"/>
         </service>
         <service android:name=".PerceptionService" android:exported="false"
             android:foregroundServiceType="mediaProjection" android:stopWithTask="false"/>
