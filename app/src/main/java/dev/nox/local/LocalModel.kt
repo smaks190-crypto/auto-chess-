@@ -27,6 +27,8 @@ internal class LocalModel : AutoCloseable {
     internal data class DecodeStats(val tokens: Int, val tokensPerSecond: Double, val firstTokenMs: Long?)
     private var lastChatStats: DecodeStats? = null
     fun chatStats(): DecodeStats? = lastChatStats
+    private var lastChatAttempts = 0
+    fun chatAttempts(): Int = lastChatAttempts
     private data class Recipe(val file: File, val gpu: Boolean, val vision: Boolean)
     private val resident = ResidentModel<Recipe, Engine>(
         create = { config ->
@@ -70,9 +72,24 @@ internal class LocalModel : AutoCloseable {
     fun chat(command: String, image: File?, deep: Boolean, cancelled: () -> Boolean, thinkingBudget: Int = if (deep) 1024 else 0, request: String = command, update: (String) -> Unit): String {
         val prompt = PromptPolicy.build(command) + "\n" + ChatResponsePolicy.instruction(request) + "\nОтвечай естественно и по существу."
         lastChatStats = null
-        return generate(prompt, image, deep, cancelled, update,
-            maxOutputTokens = ChatResponsePolicy.outputBudget(request, image != null, thinkingBudget),
-            thinkingBudget = thinkingBudget, measureChat = true)
+        lastChatAttempts = 0
+        val outputLimit = ChatResponsePolicy.outputBudget(request, image != null, thinkingBudget)
+        val single = image == null && ChatResponsePolicy.singleDraft(request)
+        // For a single draft, publish only the final checked text, rather than showing extra alternatives.
+        val stream: (String) -> Unit = if (single) ({ _ -> }) else update
+        fun attempt(thinking: Int, limit: Int, retry: Boolean): String {
+            lastChatAttempts++
+            lastChatStats = null
+            val input = if (retry) prompt + "\nПредыдущая генерация не дала ответа. Дай итоговый ответ сразу, без анализа." else prompt
+            return generate(input, image, deep && !retry, cancelled, stream,
+                maxOutputTokens = limit, thinkingBudget = thinking, measureChat = true)
+        }
+        val raw = if (image == null) ChatRecovery.run(thinkingBudget, outputLimit,
+            ChatResponsePolicy.outputBudget(request, false, 0).coerceIn(160, 512), cancelled, ::attempt)
+            else attempt(thinkingBudget, outputLimit, false)
+        val result = if (single) ChatResponsePolicy.normalizeDraft(request, raw) else raw
+        if (single && !cancelled()) update(result)
+        return result
     }
 
     fun classifyRequest(prompt: String, cancelled: () -> Boolean): String =

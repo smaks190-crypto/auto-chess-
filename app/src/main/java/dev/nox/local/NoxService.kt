@@ -1848,7 +1848,7 @@ class NoxService : Service() {
             validateModel(index, file)
             model.close()
             val header = "\n=== " + pkg.name + " | " + java.util.Date() + " | " +
-                (if (useGpu) "GPU" else "CPU") + " | vision=" + useVision + " | bytes=" + file.length() + " | protocol=chat-v2 cold-per-case ===\n"
+                (if (useGpu) "GPU" else "CPU") + " | vision=" + useVision + " | bytes=" + file.length() + " | protocol=chat-v3 cold-per-case ===\n"
             report.appendText(header)
             val summary = StringBuilder(header)
             for ((id, prompt) in prompts) {
@@ -1862,8 +1862,8 @@ class NoxService : Service() {
                     val limit = ChatResponsePolicy.outputBudget(prompt, false, budget)
                     val response = model.chat(prompt, null, budget > 0, { destroyed || cancelled }, thinkingBudget = budget) {}
                     val stats = model.chatStats()
-                    val measured = " thinking=$budget outputLimit=$limit tokens=${stats?.tokens ?: "-"}" +
-                        " ttftMs=${stats?.firstTokenMs ?: "-"} tok/s=${stats?.tokensPerSecond ?: "-"}"
+                    val measured = " thinking=$budget outputLimit=$limit attempts=${model.chatAttempts()} lastAttemptTokens=${stats?.tokens ?: "-"}" +
+                        " lastAttemptTtftMs=${stats?.firstTokenMs ?: "-"} lastAttemptTok/s=${stats?.tokensPerSecond ?: "-"}"
                     id + ": load=" + loadMs + "ms, answer=" + (SystemClock.elapsedRealtime() - start) +
                         "ms, PSS=" + Debug.getPss() + "KiB" + measured + "\n" + prompt + "\n" + response + "\n\n"
                 } catch (e: Exception) { id + ": ERROR " + e.message + "\n" }
