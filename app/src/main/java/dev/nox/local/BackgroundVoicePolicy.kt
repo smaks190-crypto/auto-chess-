@@ -8,6 +8,11 @@ internal object BackgroundVoicePolicy {
         return if (unlocked) VoiceInputMode.WAKE else VoiceInputMode.LOCKED_WAKE
     }
 
+    // The standby recognizer must not reacquire the microphone while Android is
+    // showing the assistant or while a successful wake is awaiting its session.
+    fun wakeHandoffBlocksStandby(panelVisible: Boolean, now: Long, pendingUntil: Long): Boolean =
+        panelVisible || now < pendingUntil
+
     fun canCapture(mode: VoiceInputMode, enabled: Boolean, unlocked: Boolean): Boolean =
         if (mode == VoiceInputMode.LOCKED_WAKE) enabled && !unlocked
         else unlocked && (enabled || mode == VoiceInputMode.MANUAL)

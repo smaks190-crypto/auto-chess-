@@ -136,6 +136,36 @@ class NoxService : Service() {
     private var receiverRegistered = false
     private var listeningMode: VoiceInputMode? = null
     private var wakeDetected = false
+    private var assistantPanelVisible = false
+    private var wakePendingUntil = 0L
+    private val wakeHandoffExpiry = Runnable {
+        wakePendingUntil = 0L
+        if (!assistantPanelVisible && !busy && !listening) {
+            wakeDetected = false
+            if (background) status = wakeStatus()
+        }
+        publish()
+    }
+
+    internal fun assistantPanelVisibility(visible: Boolean) {
+        assistantPanelVisible = visible
+        clearWakeHandoff()
+        if (visible && waitingForName) stopListening()
+        if (!visible) wakeDetected = false
+        publish()
+    }
+
+    private fun clearWakeHandoff() {
+        wakePendingUntil = 0L
+        main.removeCallbacks(wakeHandoffExpiry)
+    }
+
+    private fun reserveWakeHandoff() {
+        wakePendingUntil = SystemClock.elapsedRealtime() + 6000L
+        main.removeCallbacks(restartVoice)
+        main.removeCallbacks(wakeHandoffExpiry)
+        main.postDelayed(wakeHandoffExpiry, 6000L)
+    }
     private var standbyWakeLock: PowerManager.WakeLock? = null
     internal val preferBluetooth: Boolean get() = sessionPrefs.getBoolean("prefer_bluetooth_mic", false)
     internal var microphoneRoute = ""
@@ -172,6 +202,7 @@ class NoxService : Service() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == Intent.ACTION_SCREEN_OFF) {
                 if (generating) generationCancelled = true
+                clearWakeHandoff()
                 voiceEpoch++
                 webDictationResult = ""
                 webDictationFinal = false
@@ -192,13 +223,13 @@ class NoxService : Service() {
     }
     private fun unlocked(): Boolean = DeviceInteraction.unlocked(this)
 
-    private fun autoVoiceMode(): VoiceInputMode? = if (destroyed) null else BackgroundVoicePolicy.autoMode(
+    private fun autoVoiceMode(): VoiceInputMode? = if (destroyed || BackgroundVoicePolicy.wakeHandoffBlocksStandby(assistantPanelVisible, SystemClock.elapsedRealtime(), wakePendingUntil)) null else BackgroundVoicePolicy.autoMode(
         background, busy, listening,
         activeSpeech != null || speaking, unlocked(), loopBlocked)
     private fun canAutoListen(): Boolean = autoVoiceMode() != null
 
-    private fun wakeStatus(): String = if (wakeDetected)
-        "Нажми микрофон и произнеси команду" else "Жду имя «Нокс»"
+    private fun wakeStatus(): String = if (wakeDetected && wakePendingUntil > SystemClock.elapsedRealtime())
+        "Открываю голосовую панель…" else "Жду имя «Нокс»"
 
     private fun lockedStatus(): String = if (wakeDetected)
         "Нокс услышал имя · разблокируй телефон и нажми микрофон" else "Жду имя «Нокс» · экран заблокирован"
@@ -578,6 +609,7 @@ class NoxService : Service() {
         stopListening()
         stopSpeech()
         background = false
+        clearWakeHandoff()
         sessionPrefs.edit().putBoolean("background_voice_active", false).commit()
         wakeDetected = false
         releaseStandbyPower()
@@ -1284,6 +1316,7 @@ class NoxService : Service() {
         webDictationSession++
         webDictationResult = ""
         webDictationFinal = false
+        clearWakeHandoff()
         wakeDetected = false
         if (waitingForName) stopListening()
         startVoice(VoiceInputMode.MANUAL, dictation = true)
@@ -1405,8 +1438,15 @@ class NoxService : Service() {
                         }
                         WakeInput.ManualRequired -> {
                             wakeDetected = true
+                            reserveWakeHandoff()
                             val opened = NoxSystemAssistant.openFromWake(text)
-                            status = if (opened) "Системный ассистент" else wakeStatus()
+                            if (!opened) {
+                                clearWakeHandoff()
+                                wakeDetected = false
+                            }
+                            android.util.Log.i("NoxVoice", "wake_panel_requested=$opened")
+                            status = if (opened) "Открываю голосовую панель…" else
+                                "Не удалось открыть ассистента · проверь системную роль"
                             publish()
                         }
                         is WakeInput.Command -> if (!busy) ask(action.text, speak = true) else publish()
@@ -1482,6 +1522,7 @@ class NoxService : Service() {
     override fun onDestroy() {
         runCatching { WallpaperManager.getInstance(this).removeOnColorsChangedListener(wallpaperColorsListener) }
         destroyed = true; cancelled = true
+        clearWakeHandoff()
         releaseStandbyPower()
         main.removeCallbacks(restartVoice)
         main.removeCallbacks(releaseIdle)

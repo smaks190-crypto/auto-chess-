@@ -9,6 +9,13 @@ class BackgroundVoicePolicyTest {
         blocked: Boolean = false) =
         BackgroundVoicePolicy.autoMode(enabled, busy, listening, speech, unlocked, blocked)
 
+    @Test fun wakeHandoffSuspendsStandbyUntilPanelClosesOrRequestExpires() {
+        assertTrue(BackgroundVoicePolicy.wakeHandoffBlocksStandby(false, 1000, 7000))
+        assertTrue(BackgroundVoicePolicy.wakeHandoffBlocksStandby(true, 8000, 0))
+        assertFalse(BackgroundVoicePolicy.wakeHandoffBlocksStandby(false, 7000, 7000))
+        assertFalse(BackgroundVoicePolicy.wakeHandoffBlocksStandby(false, 8000, 0))
+    }
+
     @Test fun standbyContinuesWhileLockedOnlyWhenOptedIn() {
         assertEquals(VoiceInputMode.LOCKED_WAKE, mode(unlocked = false))
         assertEquals(VoiceInputMode.WAKE, mode())

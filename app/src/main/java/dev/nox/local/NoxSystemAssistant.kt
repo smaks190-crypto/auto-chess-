@@ -135,6 +135,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             if (!shown) return
             service = (binder as? NoxService.LocalBinder)?.service
+            service?.assistantPanelVisibility(true)
             if (pendingCommand != null) drainCommand() else maybeAutoStart()
             refresh()
         }
@@ -297,7 +298,9 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         }
         val newlyShown = !shown
         shown = true; notice = null
+        service?.assistantPanelVisibility(true)
         if (newlyShown) autoStartPending = allowed() && wake.isNullOrBlank()
+        if (newlyShown && wake.isNullOrBlank()) android.util.Log.i("NoxVoice", "assistant_panel_shown")
         if (!wake.isNullOrBlank() && allowed()) {
             autoStartPending = false
             modelLoadAttempted = false
@@ -373,6 +376,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         requestId = null
         showAnswer("")
         cancelRecording()
+        service?.assistantPanelVisibility(false)
         wave?.setListening(false, 0f, false)
         panel?.animate()?.cancel()
         if (bound) { bound = false; runCatching { ctx.unbindService(connection) } }
