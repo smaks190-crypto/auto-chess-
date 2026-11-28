@@ -32,7 +32,7 @@ internal object NativeCommands {
     private val weekdays = mapOf("понедельникам" to DayOfWeek.MONDAY, "вторникам" to DayOfWeek.TUESDAY,
         "средам" to DayOfWeek.WEDNESDAY, "четвергам" to DayOfWeek.THURSDAY, "пятницам" to DayOfWeek.FRIDAY,
         "субботам" to DayOfWeek.SATURDAY, "воскресеньям" to DayOfWeek.SUNDAY)
-    private val prefix = Regex("^(?:поставь|установи|заведи|включи)\\s+будильник(?:\\s+|$)|^буди меня(?:\\s+|$)")
+    private val prefix = Regex("^(?:поставь|установи|заведи|включи)\\s+будильник(?:\\s+|$)|^(?:буди|разбуди) меня(?:\\s+|$)")
     private val pattern = Regex("^(?:(завтра|каждый день|ежедневно|по будням|по выходным|по [а-яё]+(?:,\\s*[а-яё]+)*)\\s+)?(?:на|в)\\s+(.+)$")
     fun parse(input: String): NativeCommand? {
         val text = normalize(input)
@@ -42,8 +42,8 @@ internal object NativeCommands {
             "сколько заряда", "сколько процентов заряда", "уровень заряда", "заряд батареи", "сколько заряда телефона", "какой заряд батареи" -> return NativeCommand.Battery
             "который час", "сколько времени", "какое сейчас время", "сколько сейчас времени", "время" -> return NativeCommand.Time
             "какая сегодня дата", "какое сегодня число", "какой сегодня день", "дата" -> return NativeCommand.Date
-            "громче", "увеличь громкость" -> return NativeCommand.Volume(1)
-            "тише", "уменьши громкость" -> return NativeCommand.Volume(-1)
+            "громче", "сделай громче", "увеличь громкость" -> return NativeCommand.Volume(1)
+            "тише", "сделай тише", "уменьши громкость" -> return NativeCommand.Volume(-1)
             "включи фонарик", "включи фонарь" -> return NativeCommand.Torch(true)
             "выключи фонарик", "выключи фонарь" -> return NativeCommand.Torch(false)
             "поставь музыку на паузу", "пауза музыки", "останови музыку" -> return NativeCommand.Media("pause")

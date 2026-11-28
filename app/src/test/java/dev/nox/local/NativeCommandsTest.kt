@@ -6,6 +6,8 @@ import java.time.*
 
 class NativeCommandsTest {
     @Test fun exactAlarmAndRepeat() {
+        assertEquals(NativeCommand.Alarm(7,30,emptySet(),true), NativeCommands.parse("Разбуди меня завтра в 7:30"))
+        assertEquals(NativeCommand.Volume(-1), NativeCommands.parse("Сделай тише"))
         assertEquals(NativeCommand.Alarm(7, 0, emptySet(), true), NativeCommands.parse("Нокс, поставь будильник завтра на семь утра"))
         assertEquals(NativeCommand.Alarm(7, 0, DayOfWeek.values().take(5).toSet(), false),
             NativeCommands.parse("буди меня по будням в семь утра"))
