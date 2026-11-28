@@ -943,6 +943,8 @@ class MainActivity : ComponentActivity() {
                 .onFailure { header.text = "Открой настройки Android → Приложения по умолчанию → Цифровой помощник" }
     }
 
+    internal fun assistantCanStayInChat(): Boolean = !advanced && webPage == "chat"
+
     /** Called in-process only by the active system assistant, not by an exported Intent. */
     internal fun acceptAssistantInvocation() {
         if (foregroundAssistantTarget() !== this) return
@@ -1060,7 +1062,7 @@ class MainActivity : ComponentActivity() {
         // Clear before ask(), which can synchronously publish another render.
         perceptionUi.removeCallbacks(assistantCommandExpiry)
         pendingAssistantCommand = null
-        s.ask(command, speak = true, thinkingBudget = effort.budget(command, false))
+        s.askInPlace(command)
     }
 
     override fun onNewIntent(intent: Intent) {

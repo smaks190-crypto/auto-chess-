@@ -14,6 +14,13 @@ class AssistantVoiceCommandTest {
         assertFalse(AssistantVoiceCommand.useChat(true, true, true, false, true, false))
     }
 
+    @Test fun missingNativeToolsAreNeverReportedAsExecuted() {
+        assertNotNull(AssistantVoiceCommand.dedicatedToolUnavailable("Поставь таймер на минуту"))
+        assertNotNull(AssistantVoiceCommand.dedicatedToolUnavailable("Поищи в интернете новости"))
+        assertNull(AssistantVoiceCommand.dedicatedToolUnavailable("Что такое таймер?"))
+        assertNull(AssistantVoiceCommand.dedicatedToolUnavailable("Расскажи анекдот"))
+    }
+
     @Test fun onlyFinalArmedSystemVoiceRunsCommand() {
         assertEquals("открой калькулятор", AssistantVoiceCommand.fromResult(true, true, "Нокс, открой калькулятор"))
         assertNull(AssistantVoiceCommand.fromResult(true, false, "открой"))

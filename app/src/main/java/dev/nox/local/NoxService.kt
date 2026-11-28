@@ -517,9 +517,9 @@ class NoxService : Service() {
 
     /** Protect a user-initiated, finite request while another app is foreground.
      * No microphone permission or recording is enabled by this promotion. */
-    private fun beginTaskForeground(): Boolean {
+    private fun beginTaskForeground(inPlace: Boolean = false): Boolean {
         if (background || taskForeground) return true
-        if (!MainActivity.isOnScreen || !unlocked()) return false
+        if (!unlocked() || (!MainActivity.isOnScreen && !(inPlace && AssistantHandoff.active(this)))) return false
         return try {
             val type = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
             startForeground(ID, notification(), type)
@@ -1063,7 +1063,34 @@ class NoxService : Service() {
         if (!busy) { attachedImage?.delete(); attachedImage = null; publish() }
     }
 
-    internal fun ask(command: String, image: File? = null, speak: Boolean = false, deep: Boolean = false, thinkingBudget: Int = if (deep) 1024 else 0, forceAgent: Boolean = false) {
+    internal var assistantRequestId = 0L
+        private set
+    internal var assistantReply = ""
+        private set
+
+    internal fun prepareAssistantModel(): Boolean {
+        if (busy || loaded != null || !unlocked() || !AssistantHandoff.active(this)) return false
+        val prefs = getSharedPreferences("nox_ui", MODE_PRIVATE)
+        val index = prefs.getInt("model_index", 0).coerceIn(ModelDownload.catalog.indices)
+        if (!modelFile(index).isFile) return false
+        selectModel(index, prefs.getBoolean("gpu", true), prefs.getBoolean("vision", true))
+        return true
+    }
+
+    /** System panel is a command surface, not an Activity launcher. */
+    internal fun askInPlace(command: String): Long? {
+        if (busy || destroyed || !unlocked() || !AssistantHandoff.active(this) ||
+            command.isBlank() || command.length > 2000) return null
+        assistantReply = ""
+        val id = ++assistantRequestId
+        val prefs = getSharedPreferences("nox_ui", MODE_PRIVATE)
+        val effort = runCatching { ChatEffort.valueOf(prefs.getString("chat_effort", "AUTO") ?: "AUTO") }
+            .getOrDefault(ChatEffort.AUTO)
+        ask(command, speak = true, thinkingBudget = effort.budget(command, false), inPlace = true)
+        return id
+    }
+
+    internal fun ask(command: String, image: File? = null, speak: Boolean = false, deep: Boolean = false, thinkingBudget: Int = if (deep) 1024 else 0, forceAgent: Boolean = false, inPlace: Boolean = false) {
         val text = command.trim()
         if (text.isEmpty() || busy || destroyed) return
         if (listening) stopListening()
@@ -1073,9 +1100,17 @@ class NoxService : Service() {
         history.add(Turn(true, text)); partial = ""; elapsedMs = null; decodeStats = null
         if (history.size > 60) history.subList(0, history.size - 60).clear()
         persistHistory()
+        fun finishRequest(answer: String, say: Boolean) {
+            if (inPlace) assistantReply = answer
+            complete(answer, say)
+        }
+        if (inPlace) AssistantVoiceCommand.dedicatedToolUnavailable(text)?.let {
+            finishRequest(it, speak)
+            return
+        }
         val config = loaded
         if (config == null || (image != null && !config.vision)) {
-            complete(if (config == null) "Сначала загрузи модель в настройках." else "Выбранная модель не поддерживает изображения.", speak)
+            finishRequest(if (config == null) "Сначала загрузи модель в настройках." else "Выбранная модель не поддерживает изображения.", speak)
             return
         }
         val prompt = if (previous.isBlank() || RequestRouter.standaloneChat(text)) text else
@@ -1085,9 +1120,10 @@ class NoxService : Service() {
         generating = true
         agentRunning = false
         agentActionLabel = null
-        if (!beginTaskForeground()) {
+        if (!beginTaskForeground(inPlace)) {
             generating = false
-            complete("Android не разрешил продолжение задачи в фоне. Открой чат Нокса и повтори запрос.", false)
+            finishRequest(if (inPlace) "Android не разрешил выполнить запрос в этой панели." else
+                "Android не разрешил продолжение задачи в фоне. Открой чат Нокса и повтори запрос.", false)
             publish()
             return
         }
@@ -1099,7 +1135,9 @@ class NoxService : Service() {
             val mode = if (forceAgent && image == null) RequestMode.AGENT else RequestRouter.route(text, image != null) { classificationPrompt ->
                 model.classifyRequest(classificationPrompt, stop)
             }
-            val response = if (stop()) "Задача отменена." else if (mode == RequestMode.AGENT) {
+            val response = if (stop()) "Задача отменена." else if (inPlace && mode == RequestMode.AGENT) {
+                "Эта команда требует управления приложениями. В компактном голосовом режиме я не открываю приложения."
+            } else if (mode == RequestMode.AGENT) {
                 main.post {
                     if (!destroyed && generating && !generationCancelled) {
                         agentRunning = true
@@ -1146,7 +1184,7 @@ class NoxService : Service() {
                     } }
                 ).run(text, previous)
                 }
-            } else model.chat(prompt, image, thinkingBudget > 0, stop, thinkingBudget = thinkingBudget) { chunk ->
+            } else model.chat(if (inPlace) "Ответь на запрос текстом. Не заявляй о выполнении внешних действий или поиске, которых не было.\n" + prompt else prompt, image, thinkingBudget > 0, stop, thinkingBudget = thinkingBudget) { chunk ->
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastUpdate >= 80) {
                     lastUpdate = now
@@ -1161,7 +1199,7 @@ class NoxService : Service() {
             }
             response
         }, {
-            complete(it.ifBlank { "Модель не вернула текст." }, speak && voiceToken == voiceEpoch)
+            finishRequest(it.ifBlank { "Модель не вернула текст." }, speak && voiceToken == voiceEpoch)
         })
     }
 
@@ -1356,7 +1394,8 @@ class NoxService : Service() {
                         }
                         WakeInput.ManualRequired -> {
                             wakeDetected = true
-                            status = wakeStatus()
+                            val opened = NoxSystemAssistant.openFromWake(text)
+                            status = if (opened) "Системный ассистент" else wakeStatus()
                             publish()
                         }
                         is WakeInput.Command -> if (!busy) ask(action.text, speak = true) else publish()
