@@ -20,6 +20,20 @@ class NativeCommandsTest {
         assertNull(NativeCommands.parse("включи фонарик и отправь сообщение"))
         assertEquals(NativeCommand.Torch(true), NativeCommands.parse("Нокс, включи фонарик"))
     }
+    @Test fun bilingualNativeAliases() {
+        for (phrase in listOf("What is my phone battery level?", "Battery level", "Check battery", "How much battery is left?", "Show battery level please",
+            "Сколько заряда у моего телефона?", "Сколько заряда", "Уровень заряда", "Какой заряд телефона?", "Пожалуйста, сколько заряда телефона")) {
+            assertEquals(phrase, NativeCommand.Battery, NativeCommands.parse(phrase))
+        }
+        assertEquals(NativeCommand.Time, NativeCommands.parse("What time is it?"))
+        assertEquals(NativeCommand.Date, NativeCommands.parse("What is today's date?"))
+        assertEquals(NativeCommand.Alarm(7,30,emptySet(),true), NativeCommands.parse("Set an alarm tomorrow at 7:30 am"))
+        assertEquals(NativeCommand.Alarm(19,0,emptySet(),false), NativeCommands.parse("Set alarm at 7 pm"))
+        assertEquals(NativeCommand.Stopwatch("start"), NativeCommands.parse("Start the stopwatch"))
+        assertEquals(NativeCommand.Stopwatch("stop"), NativeCommands.parse("Stop stopwatch"))
+        for (phrase in listOf("Don't start stopwatch", "Check battery and send it", "How to set alarm at 7", "Set alarm at 7 and open Telegram"))
+            assertNull(NativeCommands.parse(phrase))
+    }
     @Test fun nextAlarmUsesLocalDateAndFutureOnly() {
         val now = ZonedDateTime.of(2026,11,28,12,20,0,0,ZoneId.of("Europe/Moscow"))
         assertEquals(now.toLocalDate().plusDays(1), NativeCommands.nextAlarm(NativeCommand.Alarm(7,0,emptySet(),false),now).toLocalDate())

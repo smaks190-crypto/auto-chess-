@@ -35,13 +35,27 @@ internal object NativeCommands {
     private val prefix = Regex("^(?:поставь|установи|заведи|включи)\\s+будильник(?:\\s+|$)|^(?:буди|разбуди) меня(?:\\s+|$)")
     private val pattern = Regex("^(?:(завтра|каждый день|ежедневно|по будням|по выходным|по [а-яё]+(?:,\\s*[а-яё]+)*)\\s+)?(?:на|в)\\s+(.+)$")
     fun parse(input: String): NativeCommand? {
-        val text = normalize(input)
+        val text = normalize(input).replace(Regex("\\s+"), " ")
+            .replace(Regex("^(?:please|пожалуйста)[, ]+"), "")
+            .replace(Regex("[, ]+(?:please|пожалуйста)$"), "")
+        val englishAlarm = Regex("^(?:set (?:an? )?alarm|wake me up)\\s+(?:(tomorrow)\\s+)?at\\s+(\\d{1,2})(?::([0-5]\\d))?(?:\\s*(am|pm))?(?:\\s+(tomorrow))?$").matchEntire(text)
+        if (englishAlarm != null) {
+            var hour = englishAlarm.groupValues[2].toInt()
+            val minute = englishAlarm.groupValues[3].toIntOrNull() ?: 0
+            val period = englishAlarm.groupValues[4]
+            if (period.isNotEmpty()) {
+                if (hour !in 1..12) return NativeCommand.AlarmInvalid
+                hour = hour % 12 + if (period == "pm") 12 else 0
+            }
+            if (hour !in 0..23) return NativeCommand.AlarmInvalid
+            return NativeCommand.Alarm(hour, minute, emptySet(), englishAlarm.groupValues[1].isNotEmpty() || englishAlarm.groupValues[5].isNotEmpty())
+        }
         when (text) {
-            "отмени будильник нокса", "выключи будильник нокса", "отмени будильник", "выключи будильник" -> return NativeCommand.CancelAlarm
+            "отмени будильник нокса", "выключи будильник нокса", "отмени будильник", "выключи будильник", "cancel nox alarm", "cancel the alarm", "cancel alarm" -> return NativeCommand.CancelAlarm
             "разрешение будильника", "настрой разрешение будильника" -> return NativeCommand.AlarmPermission
-            "сколько заряда", "сколько процентов заряда", "уровень заряда", "заряд батареи", "сколько заряда телефона", "какой заряд батареи" -> return NativeCommand.Battery
-            "который час", "сколько времени", "какое сейчас время", "сколько сейчас времени", "время" -> return NativeCommand.Time
-            "какая сегодня дата", "какое сегодня число", "какой сегодня день", "дата" -> return NativeCommand.Date
+            "сколько заряда", "сколько процентов заряда", "уровень заряда", "заряд батареи", "сколько заряда телефона", "какой заряд батареи", "сколько заряда у моего телефона", "сколько процентов батареи", "какой заряд телефона", "what is my phone battery level", "what is my battery level", "battery level", "how much battery is left", "how much battery do i have left", "check battery", "check battery level", "show battery level" -> return NativeCommand.Battery
+            "который час", "сколько времени", "какое сейчас время", "сколько сейчас времени", "время", "what time is it", "what is the time", "current time", "tell me the time" -> return NativeCommand.Time
+            "какая сегодня дата", "какое сегодня число", "какой сегодня день", "дата", "what is today's date", "what is the date today", "what day is it", "today's date" -> return NativeCommand.Date
             "громче", "сделай громче", "увеличь громкость" -> return NativeCommand.Volume(1)
             "тише", "сделай тише", "уменьши громкость" -> return NativeCommand.Volume(-1)
             "включи фонарик", "включи фонарь" -> return NativeCommand.Torch(true)
@@ -50,10 +64,10 @@ internal object NativeCommands {
             "продолжи музыку", "возобнови музыку" -> return NativeCommand.Media("play")
             "следующий трек", "следующая песня" -> return NativeCommand.Media("next")
             "предыдущий трек", "предыдущая песня" -> return NativeCommand.Media("previous")
-            "запусти секундомер", "включи секундомер", "старт секундомера" -> return NativeCommand.Stopwatch("start")
-            "останови секундомер", "поставь секундомер на паузу" -> return NativeCommand.Stopwatch("stop")
-            "сбрось секундомер" -> return NativeCommand.Stopwatch("reset")
-            "сколько на секундомере", "покажи секундомер" -> return NativeCommand.Stopwatch("read")
+            "запусти секундомер", "включи секундомер", "старт секундомера", "start stopwatch", "start the stopwatch" -> return NativeCommand.Stopwatch("start")
+            "останови секундомер", "поставь секундомер на паузу", "stop stopwatch", "stop the stopwatch", "pause stopwatch" -> return NativeCommand.Stopwatch("stop")
+            "сбрось секундомер", "reset stopwatch", "reset the stopwatch" -> return NativeCommand.Stopwatch("reset")
+            "сколько на секундомере", "покажи секундомер", "read stopwatch", "show stopwatch", "show the stopwatch" -> return NativeCommand.Stopwatch("read")
         }
         val start = prefix.find(text) ?: return null
         val body = text.substring(start.range.last + 1).trim()

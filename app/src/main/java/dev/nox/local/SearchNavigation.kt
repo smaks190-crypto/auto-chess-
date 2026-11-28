@@ -45,7 +45,8 @@ internal object SearchNavigation {
         val t = norm(target)
         val l = norm(label)
         return t == l || t == norm(pkg) ||
-            (t in setOf("telegram", "телеграм", "тг") && l in setOf("telegram", "телеграм"))
+            (t in setOf("telegram", "телеграм", "тг") && l in setOf("telegram", "телеграм")) ||
+            (t in setOf("calculator", "калькулятор") && l in setOf("calculator", "калькулятор"))
     }
     fun state(nodes: List<GoalNode>): State {
         val searchFields = nodes.count { field(it, names) }

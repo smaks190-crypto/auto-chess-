@@ -21,6 +21,19 @@ class LockedAssistantPolicyTest {
         assertFalse(LockedAssistantPolicy.cancelTimerRequested("отмени таймер и открой Telegram"))
         assertFalse(LockedAssistantPolicy.needsUnlock("расскажи анекдот"))
     }
+    @Test fun englishTimersUseSameBoundedService() {
+        for (phrase in listOf("Set a timer for 1 minute", "Start the timer for one minute", "Create timer for 60 seconds",
+            "Set a timer for a minute please", "Please start a timer for 1 min", "Nox, set timer for sixty seconds")) {
+            assertTrue(phrase, LockedAssistantPolicy.timerRequested(phrase))
+            assertEquals(phrase, 60, LockedAssistantPolicy.timerSeconds(phrase))
+        }
+        assertEquals(90, LockedAssistantPolicy.timerSeconds("Set timer for 1 minute 30 seconds"))
+        assertTrue(LockedAssistantPolicy.cancelTimerRequested("Cancel the timer"))
+        assertTrue(LockedAssistantPolicy.needsUnlock("Open Calculator"))
+        for (bad in listOf("Don't set a timer for 1 minute", "Set timer for 2 hours", "Set timer for 0 seconds",
+            "Set a timer for 1 minute and open Telegram", "Set timer for 1 min 2 mins"))
+            assertNull(bad, LockedAssistantPolicy.timerSeconds(bad))
+    }
     @Test fun exactBoundedTimerDuration() {
         assertEquals(60, LockedAssistantPolicy.timerSeconds("Нокс, поставь таймер на минуту"))
         assertEquals(300, LockedAssistantPolicy.timerSeconds("поставь таймер на пять минут"))

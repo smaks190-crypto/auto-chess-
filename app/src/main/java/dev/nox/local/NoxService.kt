@@ -558,13 +558,13 @@ class NoxService : Service() {
             !name.contains('/') && !name.contains('\\')) File(filesDir, name) else catalogFile(index)
     }
 
-    private fun validateModel(index: Int, file: File) {
+    private fun validateModel(index: Int, file: File, stop: () -> Boolean = { cancelled || destroyed }) {
         val pkg = ModelDownload.catalog[index]
         val imported = file.name.startsWith(pkg.key + ".imported.")
         val expected = if (imported) file.name.removePrefix(pkg.key + ".imported.").removeSuffix(".litertlm") else pkg.sha256
         val size = if (imported) file.length() else pkg.size
         check(expected.matches(Regex("[a-f0-9]{64}")) && size > 0 &&
-            ModelStorage.matches(file, size, expected) { cancelled || destroyed }) {
+            ModelStorage.matches(file, size, expected, stop)) {
             "Файл модели не прошёл проверку. Он сохранён; импортируй заново или скачай проверенную копию."
         }
     }
@@ -1468,9 +1468,18 @@ class NoxService : Service() {
         }
         val goal = GoalState(text)
         val deterministic = !screenRequest && image == null && goal.requiresNoModel
-        val config = loaded
+        // Load only an existing selected local file. No implicit downloads/imports.
+        val lazyConfig = if (!deterministic && loaded == null) {
+            val prefs = getSharedPreferences("nox_ui", MODE_PRIVATE)
+            val index = prefs.getInt("model_index", 0).coerceIn(ModelDownload.catalog.indices)
+            val pkg = ModelDownload.catalog[index]
+            val file = modelFile(index)
+            if (file.isFile) Loaded(index, prefs.getBoolean("gpu", true) && !pkg.cpuOnly,
+                prefs.getBoolean("vision", true) && pkg.vision, file.name.startsWith(pkg.key + ".imported.")) else null
+        } else null
+        val config = loaded ?: lazyConfig
         if (!deterministic && (config == null || (image != null && !config.vision))) {
-            finishRequest(if (config == null) "Сначала загрузи модель в настройках." else "Выбранная модель не поддерживает изображения.", speak)
+            finishRequest(if (config == null) "Локальный файл модели не найден. Выбери модель в настройках." else "Выбранная модель не поддерживает изображения.", speak)
             return
         }
         val prompt = if (RequestRouter.standaloneChat(text)) text else ConversationContext.build(text, context)
@@ -1494,6 +1503,24 @@ class NoxService : Service() {
             val stop = { destroyed || generationCancelled || SystemClock.elapsedRealtime() >= deadline ||
                 (inPlace && !AssistantVoiceCommand.canRunAgent(AssistantHandoff.active(this), unlocked())) ||
                 (screenRequest && (!unlocked() || !LivePerception.active || LivePerception.epoch != captureEpoch)) }
+            if (lazyConfig != null) {
+                val loadAllowed = { !stop() && unlocked() }
+                check(loadAllowed()) { "Загрузка модели отменена." }
+                main.post { if (!destroyed && !generationCancelled) { status = "Загружаю локальную модель…"; publish() } }
+                try {
+                    val file = modelFile(lazyConfig.index)
+                    validateModel(lazyConfig.index, file) { !loadAllowed() }
+                    check(loadAllowed()) { "Загрузка модели отменена." }
+                    model.load(file, lazyConfig.gpu, lazyConfig.vision)
+                    check(loadAllowed()) { "Загрузка модели отменена." }
+                    main.post {
+                        if (!destroyed) { loaded = lazyConfig; publish() }
+                    }
+                } catch (e: Exception) {
+                    model.close()
+                    throw e
+                }
+            }
             val mode = if (screenRequest) RequestMode.CHAT else if (deterministic || (forceAgent && image == null)) RequestMode.AGENT else RequestRouter.route(text, image != null) { classificationPrompt ->
                 model.classifyRequest(classificationPrompt, stop)
             }

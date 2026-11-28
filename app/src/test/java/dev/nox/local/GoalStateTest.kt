@@ -4,6 +4,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class GoalStateTest {
+    @Test fun englishLaunchUsesVerifiedNoModelGoal() {
+        val goal = GoalState("Open Calculator")
+        val pkg = "com.sec.android.app.popupcalculator"
+        assertTrue(goal.requiresNoModel)
+        assertEquals(pkg, goal.directOpenPackage(mapOf(pkg to "Калькулятор")))
+        assertNull(goal.directOpenPackage(mapOf(pkg to "Калькулятор", "other.app" to "Calculator")))
+        goal.launched(pkg, "Калькулятор")
+        assertNull(goal.finish(GoalObservation(goal.sequence(), "other.app", emptyList())))
+        assertNotNull(goal.finish(GoalObservation(goal.sequence(), pkg, emptyList())))
+        assertNull(GoalState("Open Calculator and calculate 2+2").directOpenTarget)
+    }
     @Test fun directOpenRequiresExactUniqueAppAndNoFollowUp() {
         val goal = GoalState("Нокс, открой калькулятор")
         assertEquals("калькулятор", goal.directOpenTarget)
