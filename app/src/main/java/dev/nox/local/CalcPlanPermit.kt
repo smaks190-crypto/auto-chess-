@@ -1,6 +1,6 @@
 package dev.nox.local
 
-/** Ephemeral, single-task approval. No persistent grant or model-generated scope. */
+/** Ephemeral scope derived from an exact user arithmetic request. No persistent grant or model-generated scope. */
 internal class CalcPlanPermit(
     private val pkg: String,
     private val window: Int,

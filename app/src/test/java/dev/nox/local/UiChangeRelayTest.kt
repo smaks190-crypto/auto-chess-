@@ -20,6 +20,16 @@ class UiChangeRelayTest {
         r.end(s)
     }
 
+    @Test fun packageScopedSubscriptionHandlesWindowTransitions() {
+        val r = UiChangeRelay()
+        val s = requireNotNull(r.begin("app", null))
+        r.publish("other", 7)
+        assertEquals(0L, s.mark())
+        r.publish("app", 7)
+        r.publish("app", 8)
+        assertEquals(2L, s.mark())
+        r.end(s)
+    }
     @Test fun eventBeforeWaitIsNotLost() {
         val r = UiChangeRelay()
         val s = requireNotNull(r.begin("calc", 7))

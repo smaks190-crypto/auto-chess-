@@ -52,6 +52,16 @@ class EffectCheckTest {
         assertFalse(EffectCheck.searchTyped(input, 5, result.copy(nodes = listOf(moved.copy(hint = "Message"))), field, moved.copy(hint = "Message"), "hello"))
         assertFalse(EffectCheck.searchTyped(input, 5, result.copy(nodes = listOf(moved.copy(text = "wrong"))), field, moved.copy(text = "wrong"), "hello"))
     }
+    @Test fun searchMismatchReportsOnlyStructuralReason() {
+        val input = after.copy(seq = 4)
+        val moved = field.copy(path = listOf(9), text = "hello")
+        val frame = input.copy(seq = 6, nodes = listOf(moved))
+        assertNull(EffectCheck.searchMismatch(input, 5, frame, field, moved, "hello"))
+        assertEquals("TEXT_MISMATCH", EffectCheck.searchMismatch(input, 5, frame, field, moved, "other"))
+        val changed = moved.copy(description = "different")
+        assertEquals("SEMANTIC_IDENTITY", EffectCheck.searchMismatch(input, 5, frame.copy(nodes = listOf(changed)), field, changed, "hello"))
+        assertEquals("AMBIGUOUS_FIELD", EffectCheck.searchMismatch(input, 5, frame.copy(nodes = listOf(moved, moved.copy(path = listOf(10)))), field, moved, "hello"))
+    }
     @Test fun expectationDoesNotAcceptArbitraryFieldsOrEmptyValues() {
         assertThrows(IllegalArgumentException::class.java) { ExpectedNode("unknown", "x") }
         assertThrows(IllegalArgumentException::class.java) { ExpectedNode("text", "\n") }

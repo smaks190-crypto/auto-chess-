@@ -41,14 +41,21 @@ internal object EffectCheck {
      * on both frames. Results may rebuild the tree; identity is not its old path. */
     fun searchTyped(before: EffectFrame, mutation: Long, after: EffectFrame,
                     target: EffectNode, current: EffectNode, text: String): Boolean {
-        if (!fresh(before, mutation, after) || before.window != after.window ||
-            typeRejection(target, text) != null || current.text != text) return false
+        return searchMismatch(before, mutation, after, target, current, text) == null
+    }
+    fun searchMismatch(before: EffectFrame, mutation: Long, after: EffectFrame,
+                       target: EffectNode, current: EffectNode, text: String): String? {
+        if (!fresh(before, mutation, after)) return "STALE_OR_PACKAGE"
+        if (before.window != after.window) return "WINDOW"
+        if (current.text != text) return "TEXT_MISMATCH"
+        if (typeRejection(target, text) != null) return "INVALID_INPUT"
         fun uniqueField(frame: EffectFrame, node: EffectNode) =
             frame.nodes.singleOrNull { it.editable && it.enabled } == node
-        return uniqueField(before, target) && uniqueField(after, current) &&
-            target.resource == current.resource && target.kind == current.kind &&
-            target.hint == current.hint && target.description == current.description &&
-            (target.hint.isNotBlank() || !target.description.isNullOrBlank())
+        if (!uniqueField(before, target) || !uniqueField(after, current)) return "AMBIGUOUS_FIELD"
+        if (target.resource != current.resource || target.kind != current.kind ||
+            target.hint != current.hint || target.description != current.description ||
+            (target.hint.isBlank() && target.description.isNullOrBlank())) return "SEMANTIC_IDENTITY"
+        return null
     }
     fun typed(before: EffectFrame, mutation: Long, after: EffectFrame, target: EffectNode, text: String): Boolean {
         if (!fresh(before, mutation, after) || before.window != after.window || typeRejection(target, text) != null) return false

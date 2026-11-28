@@ -6,7 +6,7 @@ import java.util.concurrent.TimeUnit
 /** Events are hints only: no text, node handles, or screen content is retained. */
 internal class UiChangeRelay {
     private val active = AtomicReference<UiChangeSignal?>(null)
-    fun begin(pkg: String, window: Int): UiChangeSignal? {
+    fun begin(pkg: String, window: Int?): UiChangeSignal? {
         val signal = UiChangeSignal(pkg, window)
         return if (active.compareAndSet(null, signal)) signal else null
     }
@@ -17,13 +17,13 @@ internal class UiChangeRelay {
     }
 }
 
-internal class UiChangeSignal(private val pkg: String, private val window: Int) {
+internal class UiChangeSignal(private val pkg: String, private val window: Int?) {
     private val lock = java.lang.Object()
     private var sequence = 0L
     private var closed = false
     fun mark(): Long = synchronized(lock) { sequence }
     fun publish(pkg: String?, window: Int) {
-        if (this.pkg != pkg || this.window != window) return
+        if (this.pkg != pkg || (this.window != null && this.window != window)) return
         synchronized(lock) {
             if (!closed) { sequence++; lock.notifyAll() }
         }

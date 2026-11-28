@@ -44,8 +44,7 @@ internal class AndroidAgentTools(
     private val cancelled: () -> Boolean,
     announce: (String) -> Unit,
     private val canLaunchDirectly: () -> Boolean = { false },
-    private val goal: GoalState = GoalState(""),
-    private val announceApproved: (String) -> Unit = announce
+    private val goal: GoalState = GoalState("")
 ) {
     private val actionGate = AgentActionGate(cancelled, announce)
     private val main = Handler(Looper.getMainLooper())
@@ -339,7 +338,7 @@ internal class AndroidAgentTools(
         snapshot = screen
         return describeGoal(screen)
     }
-    private fun describeAfter(prefix: String, previous: Screen? = null, fastRead: Boolean = false,
+    private fun describeAfter(prefix: String, previous: Screen? = null,
                               changeSignal: UiChangeSignal? = null, changeMarker: Long = 0L,
                               expectedPackage: String? = previous?.pkg,
                               condition: (Screen) -> Boolean = { true }): ToolOutcome {
@@ -398,52 +397,36 @@ internal class AndroidAgentTools(
                 reason = "EXPECT_NOT_MET"
                 return false
             }
-            val screen = if (fastRead && changeSignal != null) {
-                var marker = changeMarker
-                var first = true
-                var result: Screen? = null
-                var eventWakes = 0
-                var fallbackWakes = 0
-                var reads = 0
-                while (remaining() > 0L) {
-                    checkActive()
-                    // Bound read rate under event storms; use fallback even if Android emits no event.
-                    if (!first) waitForRead(40L)
+            var marker = changeMarker
+            var screen: Screen? = null
+            var reads = 0
+            var eventWakes = 0
+            var fallbackWakes = 0
+            while (remaining() > 0L) {
+                checkActive()
+                reads++
+                val observed = read()
+                if (observed != null && remaining() > 0L && matches(observed)) {
+                    screen = observed
+                    break
+                }
+                if (remaining() == 0L) break
+                val wait = minOf(if (reason.startsWith("SERVICE_")) 200L else 120L, remaining())
+                if (changeSignal == null) waitForRead(wait)
+                else {
                     val next = try {
-                        changeSignal.awaitAfter(marker, minOf(if (first) 100L else 200L, remaining()), ::checkActive)
+                        changeSignal.awaitAfter(marker, wait, ::checkActive)
                     } catch (_: InterruptedException) {
                         Thread.currentThread().interrupt()
                         throw AgentDenied("Ожидание изменения экрана прервано.")
                     }
                     if (next != marker) eventWakes++ else fallbackWakes++
                     marker = next
-                    first = false
-                    if (remaining() == 0L) break
-                    reads++
-                    val observed = try { read() } catch (_: AgentToolUnavailable) { null }
-                    // The event is never proof of success. Only the fresh postcondition is.
-                    if (observed != null && remaining() > 0L && matches(observed)) {
-                        result = observed
-                        break
-                    }
                 }
-                Log.i("NoxCapture", "settle_event wakes=$eventWakes fallback=$fallbackWakes reads=$reads verified=${result != null}")
-                result
-            } else {
-                waitForRead(if (fastRead) 100 else 150)
-                var result: Screen? = null
-                while (remaining() > 0L) {
-                    checkActive()
-                    val observed = read()
-                    if (observed != null && remaining() > 0L && matches(observed)) {
-                        result = observed
-                        break
-                    }
-                    waitForRead(if (reason == "SERVICE_RECONNECTING" || reason == "SERVICE_UNAVAILABLE") 200L
-                        else if (fastRead) 300L else 350L)
-                }
-                result
+                // Rate limit unsuccessful reads under event storms, not actions.
+                if (remaining() > 0L && changeSignal != null) waitForRead(25L)
             }
+            Log.i("NoxCapture", "settle_event wakes=$eventWakes fallback=$fallbackWakes reads=$reads verified=" + (screen != null))
             checkActive()
             if (screen == null) {
                 snapshot = null
@@ -626,24 +609,14 @@ internal class AndroidAgentTools(
         val narration = if (action.name == "type") AgentNarration.type(target.hint.ifBlank { target.label }, target.resource, action.text)
             else AgentNarration.click(target.label, target.resource)
         val safeSearch = goal.safeSearchAction(beforeGoal, action.name, target.id, action.text)
-        val safe = safeSearch || AgentPermissionPolicy.safeAction(before.pkg, action.name, target.label, target.resource, target.kind)
+        val safe = safeSearch || (goal.arithmetic &&
+            AgentPermissionPolicy.safeAction(before.pkg, action.name, target.label, target.resource, target.kind))
         if (calcPlan == null && safe) {
             val sequence = goal.approvedSequence(beforeGoal)
             if (sequence != null && sequence.firstOrNull() == target.resource) {
-                val keys = sequence.joinToString(" ") { resource ->
-                    when (val key = resource.substringAfterLast('_')) {
-                        "add" -> "+"
-                        "sub" -> "−"
-                        "equal" -> "="
-                        else -> key.removePrefix("0")
-                    }
-                }
-                actionGate.before("План калькулятора: " + keys)
-                if (choose("Калькулятор · выполнить только эти клавиши по порядку:\n" + keys +
-                        "\nПосле каждой клавиши проверю экран. При отклонении остановлюсь.",
-                        listOf("Выполнить план", "Отмена")) != 0) throw AgentDenied()
+                // An exact arithmetic request already authorizes these allowlisted keys.
+                // Keep the per-key scoped permit, deadline, cancellation and proof.
                 checkActive()
-                pause(250) // allow the approval overlay to disappear before verifying the screen
                 calcPlan = CalcPlanPermit(before.pkg, before.window, sequence,
                     SystemClock.elapsedRealtime() + 30000L, SystemClock::elapsedRealtime)
             }
@@ -655,41 +628,47 @@ internal class AndroidAgentTools(
                 throw AgentDenied("Разрешённый план изменился или истёк. Задача остановлена.")
             }
             checkActive()
-            announceApproved(narration)
-            checkActive()
-        } else {
             actionGate.before(narration)
-            // Generic clicks without a predicted node still require explicit action approval.
-            // Only the existing calculator allowlist can omit it.
-            if (!safe || (generic && action.name == "click" && action.expect == null))
+        } else {
+            // The model cannot decide that an unknown action is safe.
+            actionGate.before(narration, requiresConfirmation = !safe) {
                 confirmed(appLabel(before.pkg) + " · " + before.pkg + "\n" + actionText)
-            pause(250)
+            }
         }
         snapshot = null
         // Subscribe before dispatch; marker captured immediately before the single mutation.
-        val changeSignal = if (plan != null) NoxNavigationService.uiChanges.begin(before.pkg, before.window) else null
+        val changeSignal = NoxNavigationService.uiChanges.begin(before.pkg, if (goal.arithmetic) before.window else null)
         var changeMarker = 0L
         try {
         val accepted = try {
             ui {
                 require(permissions.allowed(before.pkg)) { "Разрешение отозвано" }
                 val current = readScreen()
-                if (current != before) {
-                    // Permit only benign unrelated changes during an exact, read-only search
-                    // step. The same app/window, same target identity/path and semantic
-                    // search state must all still match; general mutations retain full guard.
-                    val currentTarget = current.nodes.singleOrNull { it.path == target.path }
-                    if (!safeSearch || current.pkg != before.pkg || current.window != before.window ||
-                        currentTarget == null || currentTarget.identity != target.identity ||
-                        !goal.safeSearchAction(goalObservation(current), action.name, currentTarget.id, action.text))
-                        throw NodeChanged("SCREEN")
+                val dispatchTarget = if (current == before) target else {
+                    if (!safeSearch) throw NodeChanged("SCREEN")
+                    if (current.pkg != before.pkg || current.window != before.window)
+                        throw NodeChanged("WINDOW")
+                    val observed = goalObservation(current)
+                    val semanticId = if (action.name == "type") goal.searchInput(observed)
+                        else goal.searchNext(observed)
+                    val candidate = current.nodes.singleOrNull { it.id == semanticId }
+                        ?: throw NodeChanged("SEARCH_NOT_UNIQUE")
+                    if (!goal.safeSearchAction(observed, action.name, candidate.id, action.text))
+                        throw NodeChanged("SEARCH_STATE")
+                    target.identity.searchRelocationMismatch(candidate.identity)?.let { throw NodeChanged(it) }
+                    if (target.hint != candidate.hint) throw NodeChanged("SEARCH_HINT")
+                    Log.i("NoxCapture", "search_relocated pathChanged=" + (candidate.path != target.path) +
+                        " boundsChanged=" + (candidate.bounds != target.bounds))
+                    candidate
                 }
-                val node = resolveNode(before, target)
-                withVerifiedNode(target.identity, identity(node)) {
+                val node = resolveNode(current, dispatchTarget)
+                // Strict identity check immediately before dispatch against the fresh selection.
+                withVerifiedNode(dispatchTarget.identity, identity(node)) {
                     checkActive()
                     require(permissions.allowed(before.pkg)) { "Разрешение отозвано" }
                     checkUiBudget()
                     activeUiBudget?.stage = "DISPATCH"
+                    changeMarker = changeSignal?.mark() ?: 0L
                     if (action.name == "type") {
                         if (!node.isEditable) throw NodeChanged("CAPABILITY")
                         node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply {
@@ -699,7 +678,6 @@ internal class AndroidAgentTools(
                         if (!node.isClickable) throw NodeChanged("CAPABILITY")
                         if (plan != null && !plan.dispatch(before.pkg, before.window, target.resource))
                             throw AgentDenied("Разрешённый план истёк или изменился. Действие не выполнено.")
-                        changeMarker = changeSignal?.mark() ?: 0L
                         node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     }
                 }
@@ -721,7 +699,7 @@ internal class AndroidAgentTools(
                 "Android принял нажатие: " + actionText + ". Наблюдается изменение интерфейса, не доказательство выполнения цели."
                 else "Android принял действие: " + actionText + ". Проверяй фактический результат."
             describeAfter(prefix,
-                if (goal.arithmetic) before else null, fastRead = plan != null,
+                if (goal.arithmetic) before else null,
                 changeSignal = changeSignal, changeMarker = changeMarker, expectedPackage = before.pkg) { after ->
                 when {
                     goal.arithmetic -> goal.afterClick(beforeGoal, target.resource, goalObservation(after))
@@ -729,9 +707,15 @@ internal class AndroidAgentTools(
                         val observed = goalObservation(after)
                         val field = SearchNavigation.inputField(observed.nodes)
                         val current = after.nodes.singleOrNull { it.id == field?.id }
-                        goal.searchTyped(beforeGoal, observed) && current != null &&
-                            EffectCheck.searchTyped(beforeEffect, mutation, after.effectFrame(observed.seq),
+                        val semantic = goal.searchTyped(beforeGoal, observed)
+                        val mismatch = if (current == null) "NO_UNIQUE_SEARCH_FIELD"
+                            else if (!semantic) "GOAL_MISMATCH"
+                            else EffectCheck.searchMismatch(beforeEffect, mutation, after.effectFrame(observed.seq),
                                 targetEffect, current.effectNode(), action.text)
+                        Log.i("NoxCapture", "search_verify reason=" + (mismatch ?: "VERIFIED") +
+                            " nodesBefore=" + before.nodes.size + " nodesAfter=" + after.nodes.size +
+                            " pathChanged=" + (current?.path != target.path))
+                        mismatch == null
                     }
                     goal.telegramDraftGoal && action.name == "type" -> {
                         val observed = goalObservation(after)
@@ -832,26 +816,13 @@ internal class AndroidAgentTools(
                 } catch (e: android.content.ActivityNotFoundException) {
                     return ToolOutcome.Failed("ERROR[APP_NOT_FOUND] Не удалось найти экран запуска для «" + label + "».")
                 }
-                if (NoxNavigationService.current == null) {
-                    return ToolOutcome.Unverified(
-                        "Отправил Android команду открыть «" + label + "», но проверить результат без " +
-                        "службы специальных возможностей не могу.")
+                val outcome = describeAfter("Запуск подтверждён: " + action.arg,
+                    expectedPackage = action.arg) { it.pkg == action.arg }
+                if (outcome is ToolOutcome.Ok) {
+                    expectedLaunch = null
+                    return outcome
                 }
-                repeat(6) {
-                    pause(500)
-                    val observed = runCatching { ui {
-                        require(nav().rootInActiveWindow?.packageName?.toString() == action.arg) { "Переход ещё не подтверждён" }
-                        readScreen()
-                    } }.getOrNull()
-                    if (observed?.pkg == action.arg) {
-                        expectedLaunch = null
-                        snapshot = observed
-                        return ToolOutcome.Ok("Запуск подтверждён: " + action.arg + "\n" + describeGoal(observed), observed.pkg)
-                    }
-                }
-                snapshot = null
-                // Accessibility is connected, but Android may still be switching windows.
-                // AgentCore performs bounded read-only observations; no clicks until verified.
+                // A failed observation is not permission to repeat startActivity.
                 return ToolOutcome.LaunchRecheck(
                     "Android получил запрос на запуск «" + label + "», но экран ещё не подтвердил переход.")
             }

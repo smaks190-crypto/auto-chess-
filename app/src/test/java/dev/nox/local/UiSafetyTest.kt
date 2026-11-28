@@ -4,6 +4,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class UiSafetyTest {
+    @Test fun searchRelocationOnlyIgnoresGeometry() {
+        val node = NodeIdentity("app", "search", "EditText", "", "Search", "[0,0][100,40]",
+            true, true, false, false, true, false)
+        val moved = node.copy(bounds = "[0,20][100,60]")
+        assertEquals("BOUNDS", node.mismatch(moved))
+        assertNull(node.searchRelocationMismatch(moved))
+        assertEquals("LABEL", node.searchRelocationMismatch(moved.copy(text = "typed elsewhere")))
+        assertEquals("RESID", node.searchRelocationMismatch(moved.copy(resource = "message")))
+        assertEquals("PASSWORD", node.searchRelocationMismatch(moved.copy(password = true)))
+        assertEquals("HIDDEN", node.searchRelocationMismatch(moved.copy(visible = false)))
+        assertEquals("CAPABILITY", node.searchRelocationMismatch(moved.copy(editable = false)))
+    }
+
     private val expected = NodeIdentity("calc", "id/btn_3", "Button", "3", null,
         "[0,0][10,10]", true, true, false, true, false, false)
 

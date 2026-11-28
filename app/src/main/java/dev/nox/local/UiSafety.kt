@@ -39,6 +39,11 @@ internal data class NodeIdentity(
     val enabled: Boolean, val visible: Boolean, val password: Boolean,
     val clickable: Boolean, val editable: Boolean, val scrollable: Boolean
 ) {
+    // Use only after a unique semantic search control was selected in the same app/window.
+    // A layout change may move it, but text, class, resource and capabilities must still match.
+    fun searchRelocationMismatch(actual: NodeIdentity): String? =
+        mismatch(actual.copy(bounds = bounds))
+
     fun mismatch(actual: NodeIdentity): String? = when {
         pkg != actual.pkg -> "PKG"
         resource != actual.resource -> "RESID"

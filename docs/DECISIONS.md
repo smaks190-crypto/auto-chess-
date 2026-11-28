@@ -8,3 +8,5 @@
 - D06: Locked-screen goal (issue #6): isolated public answer, public web search and verified timer only; no general device control or private data. Requirements only until implemented and tested.
 - D07: Build via Android CI. Dev APK artifact is locally re-signed with persistent existing key; disposable CI debug APK is not an update. Preserve app data and verify signature/package. Distinguish CI from physical tests.
 - D08: Agent memory is versioned Markdown, not full transcript injection. Use existing local repo plus scoped GitHub MCP reads and branch-only submit; never expose credentials. Use one coherent task session, then concise handoff. Cache accounting from Tokenn must be verified, never assumed.
+
+- D-next: User explicitly rejected artificial action delays. Publish visible stop state and check cancellation immediately; no fixed veto timer. Known safe exact search and calculator keys require no additional action approval; unknown/consequential actions still need explicit approval and per-app grants remain. Events wake read-only verification; fallback polls and deadlines are not action delays. Never replay uncertain mutations.

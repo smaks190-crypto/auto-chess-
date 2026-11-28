@@ -909,7 +909,7 @@ class NoxService : Service() {
     }
 
     /** Show resolved action before mutation; no TTS or microphone dependency. */
-    private fun announceAgent(label: String, cancelled: () -> Boolean, vetoMs: Long = 3000L) {
+    private fun announceAgent(label: String, cancelled: () -> Boolean) {
         val visible = CompletableFuture<Boolean>()
         main.post {
             if (destroyed || cancelled() || !unlocked() || !agentRunning) {
@@ -932,13 +932,8 @@ class NoxService : Service() {
                 break
             } catch (_: TimeoutException) {}
         }
-        val vetoDeadline = SystemClock.elapsedRealtime() + vetoMs
-        while (SystemClock.elapsedRealtime() < vetoDeadline) {
-            if (cancelled() || !unlocked()) throw AgentDenied()
-            Thread.sleep(100L)
-        }
         if (cancelled() || !unlocked()) throw AgentDenied()
-        // The UI can move to the background during the veto window.
+        // Verify that the stop surface is still present, without a veto timer.
         val stillVisible = CompletableFuture<Boolean>()
         main.post {
             stillVisible.complete(!destroyed && !cancelled() && unlocked() &&
@@ -1210,7 +1205,6 @@ class NoxService : Service() {
                 }
                 val tools = AndroidAgentTools(applicationContext, stop, goal = goal,
                     announce = { label -> announceAgent(label, stop) },
-                    announceApproved = { label -> announceAgent(label, stop, vetoMs = 0L) },
                     canLaunchDirectly = {
                         MainActivity.isVisible ||
                             ((background || agentRunning) && bubble != null && Settings.canDrawOverlays(this))
