@@ -72,6 +72,7 @@ dependencies {
     implementation("net.java.dev.jna:jna:5.18.1@aar")
     implementation("com.alphacephei:vosk-android:0.3.75@aar")
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.18.0")
+    implementation("com.google.mlkit:genai-prompt:1.0.0-beta4")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }

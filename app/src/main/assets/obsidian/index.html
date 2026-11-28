@@ -185,6 +185,7 @@
 <details class="card settingsGroup" id="visionDiagnostics"><summary><div class="settingsTitle"><svg><use href="#i-eye"/></svg><div><h3>Зрение и захват экрана</h3><small>Расширенная диагностика</small></div></div><svg class="foldArrow"><use href="#i-down"/></svg></summary><div class="viewfinder" id="viewfinder"><div class="placeholder" id="visionEmpty"><svg><use href="#i-eye"/></svg><p>Источник не выбран.<br>Добавь изображение для предпросмотра.</p></div><img id="preview" alt="Выбранное изображение" hidden><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i></div><div class="sourceRow"><button class="btn primary" id="chooseImage"><svg><use href="#i-image"/></svg>Изображение</button><button class="btn" id="screenCapture"><svg><use href="#i-screen"/></svg>Экран</button></div><div class="card"><div class="cardhead"><h3>Состояние источника</h3><span class="tag" id="visionState">НЕТ ДАННЫХ</span></div><div class="rowline"><strong>Размер изображения</strong><span id="imageDims">—</span></div><div class="rowline"><strong>Модель анализа</strong><span id="visionModel">—</span></div><div class="rowline"><strong>Захват экрана Android</strong><span id="captureState">Выключен</span></div><button class="btn full" id="analyze" disabled style="margin-top:13px"><svg><use href="#i-eye"/></svg>Анализировать</button><button class="btn full" id="removeImage" hidden style="margin-top:8px">Убрать изображение</button><div id="perceptionText" class="evidence" hidden></div><button class="btn full" id="reviewScreen" hidden style="margin-top:8px">Обсудить увиденное и услышанное</button></div><div class="note">Изображения и захват обрабатываются локально. Захват экрана и звука выбранного приложения начинается только после разрешения Android; остановить его можно из чата или уведомления.</div></details>
 <details class="card settingsGroup"><summary><div class="settingsTitle"><svg><use href="#i-act"/></svg><div><h3>Диагностика</h3><small>Сравнительный тест и журнал</small></div></div><svg class="foldArrow"><use href="#i-down"/></svg></summary>
  <button class="btn full" id="benchmarkStart">Сравнительный тест модели</button>
+ <button class="btn full" id="nanoProbe">Проверить Gemini Nano (AICore)</button>
  <div class="settingsPair"><button class="btn" id="benchmarkLog">Журнал тестов</button><button class="btn" id="benchmarkShare">Поделиться</button></div>
  <button class="btn full" id="settingsClear">Очистить чат</button>
  <p class="smallNote">Тест запускается после подтверждения. Журнал остаётся локальным, пока ты сам не выберешь способ отправки.</p>
@@ -365,7 +366,7 @@ $('selectedModel').onchange=()=>request('model_select',{model:Number($('selected
 for(const [id,op] of Object.entries({modelLoad:'model_load',modelImport:'model_import',modelCatalog:'model_catalog',
  modelCancel:'model_cancel',systemAssistant:'system_assistant',overlayPermission:'overlay_permission',
  accessibilityPermission:'accessibility_permission',settingsGrants:'grants',searchSettings:'search_settings',benchmarkStart:'benchmark',
- benchmarkLog:'benchmark_log',benchmarkShare:'benchmark_share',settingsClear:'clear'}))$(id).onclick=()=>request(op);
+ benchmarkLog:'benchmark_log',benchmarkShare:'benchmark_share',nanoProbe:'nano_probe',settingsClear:'clear'}))$(id).onclick=()=>request(op);
 $('bgToggle').onclick=()=>request('background');
 $('btToggle').onclick=()=>request('bluetooth');
 toggleSetting('floatToggle','float_button');
@@ -418,7 +419,7 @@ function renderSettings(st){
  const name=MODELS[selected]||'модель';
  const size=validMetric(st.modelSizeBytes)?' · '+(st.modelSizeBytes/1e9).toFixed(2)+' ГБ':'';
  text($('modelLoad'),st.modelAvailable?'Запустить '+name:'Скачать и запустить'+size);
- for(const id of ['modelLoad','modelImport','modelCatalog','benchmarkStart'])$(id).disabled=busy;
+ for(const id of ['modelLoad','modelImport','modelCatalog','benchmarkStart','nanoProbe'])$(id).disabled=busy;
  const dl=validMetric(st.downloadProgress);
  $('modelProgressRow').hidden=!dl;
  if(dl){$('modelProgress').value=Math.min(100,Math.max(0,st.downloadProgress));text($('modelProgressText'),'Загрузка '+Math.round(st.downloadProgress)+'%')}

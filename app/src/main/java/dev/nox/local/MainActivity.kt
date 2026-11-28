@@ -19,6 +19,11 @@ import android.view.Gravity
 import android.view.View
 import android.widget.*
 import java.util.Locale
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 
 /** Chat is a view of the session; the foreground service owns the model and microphone. */
 class MainActivity : ComponentActivity() {
@@ -33,6 +38,7 @@ class MainActivity : ComponentActivity() {
                 AssistantHandoff.active(it), DeviceInteraction.unlocked(it)) && !it.isFinishing && !it.isDestroyed
         }
     }
+    private var nanoProbeJob: Job? = null
     private var topResumed = false
     private var service: NoxService? = null
     private var bound = false
@@ -392,6 +398,7 @@ class MainActivity : ComponentActivity() {
         addButton(settings, "Выбрать проверенную каталожную модель") { chooseCatalogModel() }
         settings.addView(textLabel("Диагностика", 19f).apply { typeface = Typeface.DEFAULT_BOLD })
         addButton(settings, "Сравнительный тест") { service?.benchmark(models.selectedItemPosition, gpu.isChecked, vision.isChecked) }
+        addButton(settings, "Проверить Gemini Nano (AICore)") { showNanoProbe() }
         addButton(settings, "Журнал тестов") { showBenchmarkLog() }
         addButton(settings, "Поделиться журналом") { shareBenchmarkLog() }
         addButton(settings, "Новый чат") { service?.newChat() }
@@ -613,7 +620,7 @@ class MainActivity : ComponentActivity() {
         }
         val settingsOps = setOf("search_settings", "system_assistant", "overlay_permission", "accessibility_permission",
             "model_select", "model_gpu", "model_vision", "model_load", "model_import", "model_catalog",
-            "model_cancel", "benchmark", "benchmark_log", "benchmark_share", "reduce_motion", "float_button")
+            "model_cancel", "benchmark", "benchmark_log", "benchmark_share", "nano_probe", "reduce_motion", "float_button")
         if (c.op in settingsOps && webPage != "settings") { ack(c.op, false, "Открой настройки"); return }
         when (c.op) {
             "search_settings" -> {
@@ -644,6 +651,7 @@ class MainActivity : ComponentActivity() {
             "system_assistant" -> { chooseSystemAssistant(); return }
             "overlay_permission" -> { openOverlayPermission(); return }
             "accessibility_permission" -> { openAccessibilityPermission(); return }
+            "nano_probe" -> { showNanoProbe(); return }
             "benchmark_log" -> { showBenchmarkLog(); return }
             "benchmark_share" -> { shareBenchmarkLog(); return }
             "reduce_motion", "float_button" -> {
@@ -989,6 +997,23 @@ class MainActivity : ComponentActivity() {
             }.show()
     }
 
+    private fun showNanoProbe() {
+        if (!isVisible || !DeviceInteraction.unlocked(this) || service?.busy != false || nanoProbeJob?.isActive == true) return
+        val dialog = AlertDialog.Builder(this).setTitle("Gemini Nano · AICore")
+            .setMessage("Проверяю доступность системной модели. Загрузка моделей не выполняется.")
+            .setNegativeButton("Закрыть", null).create()
+        dialog.setOnDismissListener { nanoProbeJob?.cancel() }
+        dialog.show()
+        nanoProbeJob = CoroutineScope(Dispatchers.Default).launch {
+            val result = NanoProbe.run { isActive && isVisible }
+            if (isActive) runOnUiThread {
+                if (isVisible && !isDestroyed && dialog.isShowing) {
+                    dialog.setMessage(result)
+                }
+            }
+        }
+    }
+
     private fun showBenchmarkLog() {
         val file = service?.reportFile
         AlertDialog.Builder(this).setTitle("Журнал")
@@ -1261,6 +1286,7 @@ class MainActivity : ComponentActivity() {
         consumeAssistantVoice()
     }
     override fun onPause() {
+        nanoProbeJob?.cancel()
         if (::matrix.isInitialized) matrix.dismiss()
         isVisible = false
         if (foregroundActivity?.get() === this) foregroundActivity = null
@@ -1276,6 +1302,7 @@ class MainActivity : ComponentActivity() {
         super.onPause()
     }
     override fun onDestroy() {
+        nanoProbeJob?.cancel()
         stopTelemetry()
         telemetryWorker.shutdownNow()
         closeWebDictation()
