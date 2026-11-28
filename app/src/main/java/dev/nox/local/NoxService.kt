@@ -1176,9 +1176,10 @@ class NoxService : Service() {
 
     /** Keyguard requests never reach AgentCore, history, attachments or screen capture.
      * Only the explicit native command allowlist is executable. */
-    internal fun askLockedInPlace(command: String): Long? {
+    internal fun askLockedInPlace(command: String, speak: Boolean = false): Long? {
         if (busy || destroyed || !restrictedAllowed() || command.isBlank() || command.length > 2000) return null
         val text = command.trim()
+        if (activeSpeech != null || speaking) stopSpeech()
         val id = ++assistantRequestId
         restrictedRequest = true
         assistantReply = ""
@@ -1192,7 +1193,7 @@ class NoxService : Service() {
                 while (restrictedTurns.size > 8) restrictedTurns.removeAt(0)
             }
             status = "На связи"
-            speakReply(answer, true, restricted = true)
+            speakReply(answer, speak, restricted = true)
         }
         ExtraTools.parse(text)?.let { extra ->
             runExtra(extra, restricted = true, allowed = { restrictedAllowed() && assistantRequestId == id }) { finish(it) }
@@ -1254,7 +1255,7 @@ class NoxService : Service() {
     }
 
     /** System panel is a command surface, not an Activity launcher. */
-    internal fun askInPlace(command: String, prepareAgent: (() -> Boolean)? = null): Long? {
+    internal fun askInPlace(command: String, speak: Boolean = false, prepareAgent: (() -> Boolean)? = null): Long? {
         if (busy || destroyed || !unlocked() || !AssistantHandoff.active(this) ||
             command.isBlank() || command.length > 2000) return null
         assistantReply = ""
@@ -1262,7 +1263,7 @@ class NoxService : Service() {
         val prefs = getSharedPreferences("nox_ui", MODE_PRIVATE)
         val effort = runCatching { ChatEffort.valueOf(prefs.getString("chat_effort", "AUTO") ?: "AUTO") }
             .getOrDefault(ChatEffort.AUTO)
-        ask(command, speak = true, thinkingBudget = effort.budget(command, false), inPlace = true, prepareAgent = prepareAgent)
+        ask(command, speak = speak, thinkingBudget = effort.budget(command, false), inPlace = true, prepareAgent = prepareAgent)
         return id
     }
 
@@ -1270,6 +1271,7 @@ class NoxService : Service() {
         val text = command.trim()
         if (text.isEmpty() || busy || destroyed || !unlocked()) return
         assistantResultVisible = false
+        if (activeSpeech != null || speaking) stopSpeech()
         if (listening) stopListening()
         if (text.length > 2000) { status = "Команда слишком длинная"; publish(); return }
         val previous = history.takeLast(4).joinToString("\n") { (if (it.user) "Пользователь: " else "Нокс: ") + it.text.take(350) }

@@ -86,7 +86,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var models: Spinner
     private lateinit var gpu: Switch
     private lateinit var vision: Switch
-    private lateinit var tts: Switch
     private lateinit var modelButton: Button
     private lateinit var cancel: Button
     private lateinit var stopGeneration: Button
@@ -283,7 +282,7 @@ class MainActivity : ComponentActivity() {
             val s = service ?: return@button
             val command = input.text.toString()
             if (command.isNotBlank() && !s.busy) {
-                s.ask(command, s.attachedImage, tts.isChecked, thinkingBudget = effort.budget(command, s.attachedImage != null))
+                s.ask(command, s.attachedImage, speak = false, thinkingBudget = effort.budget(command, s.attachedImage != null))
                 input.text.clear()
             }
         }.apply {
@@ -317,7 +316,7 @@ class MainActivity : ComponentActivity() {
             val image = s.attachedImage ?: return@addButton
             if (s.loaded?.vision != true || s.busy) return@addButton
             val query = "Опиши, что видно на изображении."
-            s.ask(query, image, tts.isChecked, thinkingBudget = effort.budget(query, true))
+            s.ask(query, image, speak = false, thinkingBudget = effort.budget(query, true))
             showPage(0)
         }
         addButton(visionContent, "Убрать изображение") { service?.removeImage() }
@@ -380,9 +379,8 @@ class MainActivity : ComponentActivity() {
         settings.addView(models, LinearLayout.LayoutParams(-1, dp(52))); workControls.add(models)
         gpu = Switch(this).apply { text = "GPU для языка"; setTextColor(ink); isChecked = prefs.getBoolean("gpu", true) }
         vision = Switch(this).apply { text = "Анализ изображений"; setTextColor(ink); isChecked = prefs.getBoolean("vision", true) }
-        tts = Switch(this).apply { text = "Озвучивать текстовые ответы"; setTextColor(ink); isChecked = false }
         effortSetting = button("Мышление · " + effort.label) {}
-        settings.addView(gpu); settings.addView(vision); settings.addView(tts)
+        settings.addView(gpu); settings.addView(vision)
         settings.addView(effortSetting, LinearLayout.LayoutParams(-1, dp(48))); workControls.add(effortSetting)
         settings.addView(textLabel("Авто: 0 токенов для короткого текста, 256 для длинного запроса или изображения. Быстро: 0, Стандарт: 256, Глубоко: 1024. Планировщик агента работает отдельно.", 12f, muted))
         workControls.add(gpu); workControls.add(vision)
@@ -682,7 +680,7 @@ class MainActivity : ComponentActivity() {
                 }.show()
             "send" -> {
                 if (c.agent && s.attachedImage != null) { ack(c.op, false, "Убери изображение для управления телефоном"); return }
-                s.ask(c.text, s.attachedImage, tts.isChecked, thinkingBudget = effort.budget(c.text, s.attachedImage != null), forceAgent = c.agent)
+                s.ask(c.text, s.attachedImage, speak = c.voice, thinkingBudget = effort.budget(c.text, s.attachedImage != null), forceAgent = c.agent)
                 ack(c.op, true)
             }
             "choice" -> {
@@ -702,7 +700,6 @@ class MainActivity : ComponentActivity() {
                 selectModel()
             }
             "background" -> toggleBackgroundVoice()
-            "tts" -> tts.isChecked = !tts.isChecked
             "bluetooth" -> s.toggleBluetoothInput()
             "pick_image" -> pick(11, "image/*")
             "remove_image" -> s.removeImage()
@@ -717,7 +714,7 @@ class MainActivity : ComponentActivity() {
                 val image = s.attachedImage ?: return
                 if (s.loaded?.vision != true) { ack(c.op, false, "Модель не поддерживает изображения"); return }
                 val q = "Опиши, что видно на изображении."
-                s.ask(q, image, tts.isChecked, thinkingBudget = effort.budget(q, true))
+                s.ask(q, image, speak = false, thinkingBudget = effort.budget(q, true))
             }
             "review" -> s.reviewPerception()
         }
@@ -774,7 +771,6 @@ class MainActivity : ComponentActivity() {
             .put("perception", LivePerception.active)
             .put("perceptionText", if (webPage == "settings" && ::perceptionStatus.isInitialized) perceptionStatus.text.toString() else "")
             .put("background", s?.background == true)
-            .put("tts", tts.isChecked)
             .put("bluetooth", s?.preferBluetooth == true)
             .put("micRoute", s?.microphoneRoute.orEmpty())
             .put("manualListening", s?.listening == true && !s.waitingForName)
@@ -1085,7 +1081,7 @@ class MainActivity : ComponentActivity() {
         // Clear before ask(), which can synchronously publish another render.
         perceptionUi.removeCallbacks(assistantCommandExpiry)
         pendingAssistantCommand = null
-        s.askInPlace(command)
+        s.askInPlace(command, speak = true)
     }
 
     override fun onNewIntent(intent: Intent) {

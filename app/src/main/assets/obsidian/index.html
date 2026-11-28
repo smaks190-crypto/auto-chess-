@@ -156,7 +156,7 @@
 
 <details class="card settingsGroup"><summary><div class="settingsTitle"><svg><use href="#i-mic"/></svg><div><h3>Голос и звук</h3><small>Диктовка, фоновый голос и Bluetooth</small></div></div><svg class="foldArrow"><use href="#i-down"/></svg></summary>
  <div class="rowline"><div><strong>Фоновый голос</strong><small>Программный детектор имени «Нокс» · микрофон в фоне</small></div><button class="switch" role="switch" id="bgToggle" aria-label="Фоновый голос" aria-checked="false"></button></div>
- <div class="rowline"><div><strong>Озвучивать ответы</strong><small>Локальный синтез речи</small></div><button class="switch" role="switch" id="ttsToggle" aria-label="Озвучивать ответы" aria-checked="false"></button></div>
+ <p class="smallNote">Голосовой запрос — голосовой ответ и текст. Текстовый запрос — только текст.</p>
  <div class="rowline"><div><strong>Bluetooth-микрофон</strong><small id="micRoute">Вход выбирает Android</small></div><button class="switch" role="switch" id="btToggle" aria-label="Bluetooth-микрофон" aria-checked="false"></button></div>
  <p class="smallNote">Включай только если нужен голосовой вызов: программный детектор использует микрофон в фоне. На разблокированном телефоне «Нокс» открывает голосовую панель и запускает диктовку. Ожидание имени приостанавливается, пока панель открыта. Аппаратный детектор пока недоступен.</p>
 </details>
@@ -306,9 +306,10 @@ function updateInput(){
  $('send').disabled=!nativeState||S.busy||!!pendingSend||choicePending||voiceOpen||!$('prompt').value.trim();
  $('prompt').style.height='auto';$('prompt').style.height=Math.min(100,$('prompt').scrollHeight)+'px';positionFloat()
 }
-$('prompt').addEventListener('input',updateInput);
+let dictatedDraft=null;
+$('prompt').addEventListener('input',()=>{dictatedDraft=null;updateInput()});
 $('prompt').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&matchMedia('(pointer:fine)').matches){e.preventDefault();send()}});
-function send(v){const t=(v??$('prompt').value).trim();if(!t||S.busy||pendingSend||choicePending||voiceOpen)return;if(t.length>2000){toast('Команда слишком длинная');return}pendingSend=t;if(request('send',{text:t,agent:S.agent})){tab('chat');updateInput()}else pendingSend=null}
+function send(v){const t=(v??$('prompt').value).trim();if(!t||S.busy||pendingSend||choicePending||voiceOpen)return;if(t.length>2000){toast('Команда слишком длинная');return}pendingSend=t;if(request('send',{text:t,agent:S.agent,voice:v==null&&dictatedDraft===t})){tab('chat');updateInput()}else pendingSend=null}
 $('send').onclick=()=>send();$('cancel').onclick=()=>request('cancel');
 $('newChat').onclick=()=>{if(voiceOpen)closeVoice(true);request('clear')};
 qa('[data-prompt]').forEach(b=>b.onclick=()=>{if(b.dataset.agent)mode(true);send(b.dataset.prompt)});
@@ -330,7 +331,6 @@ for(const [id,op] of Object.entries({modelLoad:'model_load',modelImport:'model_i
  accessibilityPermission:'accessibility_permission',settingsGrants:'grants',searchSettings:'search_settings',benchmarkStart:'benchmark',
  benchmarkLog:'benchmark_log',benchmarkShare:'benchmark_share',settingsClear:'clear'}))$(id).onclick=()=>request(op);
 $('bgToggle').onclick=()=>request('background');
-$('ttsToggle').onclick=()=>request('tts');
 $('btToggle').onclick=()=>request('bluetooth');
 toggleSetting('floatToggle','float_button');
 toggleSetting('reduceToggle','reduce_motion');
@@ -453,7 +453,7 @@ function closeVoice(cancelled=true,notify=true){
  if(!voiceOpen)return;
  voiceOpen=false;voicePhase='idle';voiceSession=null;
  cancelAnimationFrame(voiceFrame);voiceFrame=0;lastVoiceLevel=voiceSmooth=voiceBurst=0;
- if(cancelled)$('prompt').value=voiceDraft;
+ if(cancelled){$('prompt').value=voiceDraft;dictatedDraft=null}
  if(notify)request('voice_close');
  updateVoiceUI();
 }
@@ -476,6 +476,7 @@ function receiveVoice(st){
   updateVoiceUI();return;
  }
  $('prompt').value=joinedVoice(st.dictationResult||'');
+ dictatedDraft=st.dictationResult?$('prompt').value.trim():null;
  if(!st.dictationResult&&st.status)toast(st.status);
  closeVoice(false);
 }
@@ -514,12 +515,12 @@ function receive(st){
  if(st.type==='draft'){
    if(typeof st.text!=='string'||!st.text.trim())return;
    if(voiceOpen)closeVoice(true);
-   tab('chat');const old=$('prompt').value.trimEnd();$('prompt').value=[old,st.text.trim()].filter(Boolean).join('\n');
+   dictatedDraft=null;tab('chat');const old=$('prompt').value.trimEnd();$('prompt').value=[old,st.text.trim()].filter(Boolean).join('\n');
    updateInput();return
  }
  if(st.type==='ack'){
    if((st.op==='voice_start'||st.op==='voice_open')&&!st.ok&&voiceOpen)closeVoice(true);
-   if(st.op==='send'){if(st.ok&&$('prompt').value.trim()===pendingSend)$('prompt').value='';pendingSend=null}
+   if(st.op==='send'){if(st.ok&&$('prompt').value.trim()===pendingSend){$('prompt').value='';dictatedDraft=null}pendingSend=null}
    if(st.op==='choice'){choicePending=false;if(!st.ok)restoreChoice()}
    if(st.message)toast(st.message);updateInput();return
  }
@@ -536,7 +537,7 @@ function receive(st){
  text($('kernelStatus'),st.status||'Локальное ядро');$('kernelDot').classList.toggle('green',!!st.connected&&!st.busy);text($('connectionTag'),st.connected?'LOCAL':'OFFLINE');
  text($('loadedModel'),st.modelName);text($('modelDetails'),st.modelDetails);
  renderSettings(st);
- sw('bgToggle',st.background);sw('ttsToggle',st.tts);sw('btToggle',st.bluetooth);text($('micRoute'),st.micRoute||'Вход выбирает Android');
+ sw('bgToggle',st.background);sw('btToggle',st.bluetooth);text($('micRoute'),st.micRoute||'Вход выбирает Android');
  receiveVoice(st);
  $('dictationMic').disabled=S.busy||!!pendingSend||choicePending;
  $('stopTask').disabled=!st.generating;

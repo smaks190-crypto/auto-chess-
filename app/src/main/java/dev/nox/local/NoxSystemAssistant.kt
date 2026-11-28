@@ -125,7 +125,9 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
     private var lastPartial = ""
     private var notice: String? = null
     private var answer: TextView? = null
-    private var pendingCommand: Pair<String, Long>? = null
+    private data class PendingRequest(val text: String, val deadline: Long, val speak: Boolean)
+    private var pendingCommand: PendingRequest? = null
+    private var dictatedDraft: String? = null
     private var modelLoadAttempted = false
     private var requestId: Long? = null
     private var agentHandoff: CompletableFuture<Boolean>? = null
@@ -226,7 +228,10 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
             filters = arrayOf(InputFilter.LengthFilter(2000))
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { updateButtons() }
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    if (dictatedDraft != s?.toString()?.trim()) dictatedDraft = null
+                    updateButtons()
+                }
                 override fun afterTextChanged(s: Editable?) = Unit
             })
         }.also { content.addView(it, LinearLayout.LayoutParams(-1, -2)) }
@@ -241,7 +246,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
             .also { controls.addView(it, LinearLayout.LayoutParams(dp(48), dp(48))) }
         send = control(R.drawable.ic_nox_send, "Отправить команду") {
             val text = input?.text?.toString()?.trim().orEmpty()
-            if (session == null && text.isNotEmpty()) submitInPlace(text)
+            if (session == null && text.isNotEmpty()) submitInPlace(text, speak = text == dictatedDraft)
         }.also { controls.addView(it, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(5) }) }
         controls.addView(control(R.drawable.ic_nox_close, "Закрыть") { hide() },
             LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(5) })
@@ -312,7 +317,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         if (!wake.isNullOrBlank() && allowed() && !restricted) {
             autoStartDeadline = 0L
             modelLoadAttempted = false
-            pendingCommand = wake to (SystemClock.elapsedRealtime() + 120_000L)
+            pendingCommand = PendingRequest(wake, SystemClock.elapsedRealtime() + 120_000L, speak = true)
             input?.setText(wake)
         }
         if (allowed() && !bound) {
@@ -381,6 +386,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         inAppTarget = null
         autoStartDeadline = 0L
         pendingCommand = null
+        dictatedDraft = null
         requestId = null
         showAnswer("")
         cancelRecording()
@@ -451,19 +457,20 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         }
     }
 
-    private fun submitInPlace(text: String) {
+    private fun submitInPlace(text: String, speak: Boolean) {
         if (!allowed() || session != null || requestId != null || pendingCommand != null ||
             text.isBlank() || text.length > 2000) return
         autoStartDeadline = 0L
         showAnswer("")
         modelLoadAttempted = false
-        pendingCommand = text to (SystemClock.elapsedRealtime() + 120_000L)
+        dictatedDraft = null
+        pendingCommand = PendingRequest(text, SystemClock.elapsedRealtime() + 120_000L, speak)
         drainCommand()
         refresh()
     }
 
     private fun drainCommand() {
-        val (command, deadline) = pendingCommand ?: return
+        val (command, deadline, speak) = pendingCommand ?: return
         if (!allowed() || SystemClock.elapsedRealtime() >= deadline) {
             pendingCommand = null
             notice = "Команда отменена или истекло время ожидания"
@@ -484,8 +491,8 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
             }
         }
         pendingCommand = null
-        requestId = if (restricted) s.askLockedInPlace(command)
-            else s.askInPlace(command, prepareAgent = ::handoffToAgent)
+        requestId = if (restricted) s.askLockedInPlace(command, speak = speak)
+            else s.askInPlace(command, speak = speak, prepareAgent = ::handoffToAgent)
         if (requestId == null) notice = "Не удалось запустить команду"
         else {
             notice = null
@@ -513,11 +520,12 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
                 val command = AssistantVoiceCommand.fromResult(autoExecuteRecording, s.webDictationFinal, final)
                 autoExecuteRecording = false
                 input?.setText(joined(final))
+                dictatedDraft = if (final.isNotBlank()) input?.text?.toString()?.trim() else null
                 session = null
                 s.cancelWebDictation(id)
                 notice = if (final.isEmpty()) (if (restricted) "Речь не распознана" else s.status) else null
                 if (command != null && allowed() && !s.busy) {
-                    submitInPlace(command)
+                    submitInPlace(command, speak = true)
                     return
                 }
             }

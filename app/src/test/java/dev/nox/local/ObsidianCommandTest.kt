@@ -13,6 +13,14 @@ class ObsidianCommandTest {
         for (op in listOf("pick_image", "perception", "review", "analyze", "remove_image"))
             assertEquals(op, ObsidianCommand.parse("""{"op":"$op"}""")?.op)
     }
+    @Test fun replyModalityIsPerRequestAndStrictlyTyped() {
+        assertEquals(true, ObsidianCommand.parse("""{"op":"send","text":"hello","agent":false,"voice":true}""")?.voice)
+        assertEquals(false, ObsidianCommand.parse("""{"op":"send","text":"hello","agent":false,"voice":false}""")?.voice)
+        assertEquals(false, ObsidianCommand.parse("""{"op":"send","text":"hello","agent":false}""")?.voice)
+        assertNull(ObsidianCommand.parse("""{"op":"send","text":"hello","agent":false,"voice":"true"}"""))
+        assertNull(ObsidianCommand.parse("""{"op":"send","text":"hello","agent":false,"voice":null}"""))
+        assertNull(ObsidianCommand.parse("""{"op":"tts"}"""))
+    }
     @Test fun rejectsArbitraryCommandsAndExtraFields() {
         for (raw in listOf("""{"op":"shell","command":"id"}""", """{"op":"launch","package":"com.example"}""", """{"op":"ready","url":"https://example.com"}""", """{"op":"send","text":"hi","agent":true,"permission":"always"}""")) assertNull(raw, ObsidianCommand.parse(raw))
     }

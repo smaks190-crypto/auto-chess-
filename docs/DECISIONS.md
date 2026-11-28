@@ -10,3 +10,5 @@
 - D08: Agent memory is versioned Markdown, not full transcript injection. Use existing local repo plus scoped GitHub MCP reads and branch-only submit; never expose credentials. Use one coherent task session, then concise handoff. Cache accounting from Tokenn must be verified, never assumed.
 
 - D-next: User explicitly rejected artificial action delays. Publish visible stop state and check cancellation immediately; no fixed veto timer. Known safe exact search and calculator keys require no additional action approval; unknown/consequential actions still need explicit approval and per-app grants remain. Events wake read-only verification; fallback polls and deadlines are not action delays. Never replay uncertain mutations.
+
+- Reply modality: per explicit request. Actual voice recognition requests speak locally and retain text; typed requests never use TTS, including native tools and keyguard. Pending requests retain their origin; unedited dictated drafts remain voice, keyboard edits become text. Remove global TTS switch. New requests stop previous speech. Timer/alarm signals are separate from reply TTS.
