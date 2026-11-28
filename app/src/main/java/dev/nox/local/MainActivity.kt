@@ -962,7 +962,7 @@ class MainActivity : ComponentActivity() {
         pendingAssistantDraft = null
         webPage = "chat"
         pendingAssistantShowChat = true
-        pendingInAppAssistantUntil = android.os.SystemClock.elapsedRealtime() + 5_000L
+        pendingInAppAssistantUntil = android.os.SystemClock.elapsedRealtime() + AssistantAutoListen.MAX_WAIT_MS
         if (advanced) closeAdvanced() else renderWeb()
         syncTelemetry()
     }
@@ -970,18 +970,16 @@ class MainActivity : ComponentActivity() {
     private fun startInAppAssistantIfReady() {
         val deadline = pendingInAppAssistantUntil
         if (deadline == 0L) return
-        if (android.os.SystemClock.elapsedRealtime() >= deadline || foregroundAssistantTarget() !== this ||
-            advanced || webPage != "chat") {
-            pendingInAppAssistantUntil = 0L
-            return
+        val s = service
+        val permitted = foregroundAssistantTarget() === this && !advanced && webPage == "chat" &&
+            DeviceInteraction.unlocked(this) && AssistantHandoff.active(this)
+        when (AssistantAutoListen.decide(deadline, android.os.SystemClock.elapsedRealtime(), permitted,
+            ::obsidian.isInitialized && obsidian.ready && s?.canStartWebDictation() == true)) {
+            AssistantAutoListen.Decision.WAIT -> return
+            AssistantAutoListen.Decision.CANCEL -> { pendingInAppAssistantUntil = 0L; return }
+            AssistantAutoListen.Decision.START -> pendingInAppAssistantUntil = 0L
         }
-        val s = service ?: return
-        if (!::obsidian.isInitialized || !obsidian.ready) return
-        pendingInAppAssistantUntil = 0L
-        if (s.busy) {
-            Toast.makeText(this, "Нокс занят", Toast.LENGTH_SHORT).show()
-            return
-        }
+        if (s == null) return
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 33)
             return

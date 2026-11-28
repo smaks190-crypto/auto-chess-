@@ -117,7 +117,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
     private var bound = false
     private var shown = false
     private var inAppTarget: MainActivity? = null
-    private var autoStartPending = false
+    private var autoStartDeadline = 0L
     private var autoExecuteRecording = false
     private var session: Long? = null
     private var draftBefore = ""
@@ -141,7 +141,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         }
         override fun onServiceDisconnected(name: ComponentName?) {
             service = null
-            autoStartPending = false
+            autoStartDeadline = 0L
             autoExecuteRecording = false
             if (session != null) input?.setText(draftBefore)
             session = null
@@ -155,6 +155,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
                 cancelRecording(); refresh()
                 return
             }
+            maybeAutoStart()
             refresh()
             main.postDelayed(this, if (session != null) 40L else 100L)
         }
@@ -299,10 +300,11 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         val newlyShown = !shown
         shown = true; notice = null
         service?.assistantPanelVisibility(true)
-        if (newlyShown) autoStartPending = allowed() && wake.isNullOrBlank()
+        if (newlyShown) autoStartDeadline = if (allowed() && wake.isNullOrBlank())
+            SystemClock.elapsedRealtime() + AssistantAutoListen.MAX_WAIT_MS else 0L
         if (newlyShown && wake.isNullOrBlank()) android.util.Log.i("NoxVoice", "assistant_panel_shown")
         if (!wake.isNullOrBlank() && allowed()) {
-            autoStartPending = false
+            autoStartDeadline = 0L
             modelLoadAttempted = false
             pendingCommand = wake to (SystemClock.elapsedRealtime() + 120_000L)
             input?.setText(wake)
@@ -371,7 +373,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
     private fun release() {
         main.removeCallbacks(tick)
         inAppTarget = null
-        autoStartPending = false
+        autoStartDeadline = 0L
         pendingCommand = null
         requestId = null
         showAnswer("")
@@ -386,13 +388,21 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
     }
 
     private fun maybeAutoStart() {
-        if (!autoStartPending || service == null) return
-        autoStartPending = false
-        if (allowed() && session == null) toggleRecording()
+        if (autoStartDeadline == 0L) return
+        when (AssistantAutoListen.decide(autoStartDeadline, SystemClock.elapsedRealtime(),
+            allowed() && session == null && pendingCommand == null && requestId == null &&
+                input?.text.isNullOrBlank(), service?.canStartWebDictation() == true)) {
+            AssistantAutoListen.Decision.WAIT -> Unit
+            AssistantAutoListen.Decision.CANCEL -> autoStartDeadline = 0L
+            AssistantAutoListen.Decision.START -> {
+                autoStartDeadline = 0L
+                toggleRecording()
+            }
+        }
     }
 
     private fun toggleRecording() {
-        autoStartPending = false
+        autoStartDeadline = 0L
         if (!allowed()) { refresh(); return }
         val s = service ?: run { notice = "Ядро подключается"; refresh(); return }
         session?.let {
@@ -415,7 +425,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
     }
 
     private fun cancelRecording() {
-        autoStartPending = false
+        autoStartDeadline = 0L
         autoExecuteRecording = false
         val id = session ?: return
         session = null
@@ -437,7 +447,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
     private fun submitInPlace(text: String) {
         if (!allowed() || session != null || requestId != null || pendingCommand != null ||
             text.isBlank() || text.length > 2000) return
-        autoStartPending = false
+        autoStartDeadline = 0L
         showAnswer("")
         modelLoadAttempted = false
         pendingCommand = text to (SystemClock.elapsedRealtime() + 120_000L)
@@ -454,7 +464,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
         }
         val s = service ?: return
         if (s.busy) return
-        val deterministic = TelegramDraft.request(command) != null || TelegramDraft.openWriteNeedsClarification(command)
+        val deterministic = GoalState(command).requiresNoModel
         if (s.loaded == null && !deterministic && !modelLoadAttempted && AssistantVoiceCommand.dedicatedToolUnavailable(command) == null) {
             modelLoadAttempted = true
             if (s.prepareAssistantModel()) {
@@ -517,6 +527,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
             recording -> if (s?.status == "Слушаю…") "Слушаю…" else "Подключаю микрофон…"
             pendingCommand != null -> if (s == null) "Ядро подключается…" else s.status
             running -> s?.status ?: "Думаю…"
+            autoStartDeadline != 0L -> s?.status ?: "Ядро подключается…"
             notice != null -> notice
             s == null -> "Ядро подключается…"
             else -> null
@@ -556,7 +567,7 @@ private class NoxAssistantSession(private val ctx: Context) : VoiceInteractionSe
 
     private fun launch(submit: Boolean, draft: String = "", execute: Boolean = false) {
         if (!allowed() || session != null) { refresh(); return }
-        autoStartPending = false
+        autoStartDeadline = 0L
         val text = if (submit) draft.trim() else input?.text?.toString()?.trim().orEmpty()
         val ticket = if (text.isNotEmpty()) AssistantHandoff.issueDraft(ctx, text, execute) ?: return else null
         if (ticket == null) AssistantHandoff.revoke()

@@ -4,6 +4,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class GoalStateTest {
+    @Test fun directOpenRequiresExactUniqueAppAndNoFollowUp() {
+        val goal = GoalState("Нокс, открой калькулятор")
+        assertEquals("калькулятор", goal.directOpenTarget)
+        assertEquals("com.sec.android.app.popupcalculator",
+            goal.directOpenPackage(mapOf("com.sec.android.app.popupcalculator" to "Калькулятор", "other.app" to "Калькулятор плюс")))
+        assertNull(goal.directOpenPackage(mapOf("one.app" to "Калькулятор", "two.app" to "Калькулятор")))
+        assertNull(goal.directOpenPackage(mapOf("other.app" to "Калькулятор плюс")))
+        assertNull(GoalState("Открой Telegram и напиши привет").directOpenTarget)
+        assertNull(GoalState("Как открыть Telegram?").directOpenTarget)
+        assertNull(GoalState("Не открывай Telegram").directOpenTarget)
+    }
+
     private val pkg = "com.sec.android.app.popupcalculator"
     private val key = "$pkg:id/calc_keypad_btn_"
     private fun screen(g: GoalState, text: String, packageName: String = pkg) =

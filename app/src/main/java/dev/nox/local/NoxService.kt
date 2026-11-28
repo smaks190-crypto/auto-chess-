@@ -1142,8 +1142,8 @@ class NoxService : Service() {
             finishRequest(it, speak)
             return
         }
-        val telegram = if (image == null) TelegramDraft.request(text) else null
-        val deterministic = telegram != null || (image == null && TelegramDraft.openWriteNeedsClarification(text))
+        val goal = GoalState(text)
+        val deterministic = image == null && goal.requiresNoModel
         val config = loaded
         if (!deterministic && (config == null || (image != null && !config.vision))) {
             finishRequest(if (config == null) "Сначала загрузи модель в настройках." else "Выбранная модель не поддерживает изображения.", speak)
@@ -1186,7 +1186,6 @@ class NoxService : Service() {
                         publish()
                     }
                 }
-                val goal = GoalState(text)
                 val tools = AndroidAgentTools(applicationContext, stop, goal = goal,
                     announce = { label -> announceAgent(label, stop) },
                     announceApproved = { label -> announceAgent(label, stop, vetoMs = 0L) },
@@ -1225,7 +1224,7 @@ class NoxService : Service() {
                     } }
                 ).run(text, previous)
                 }
-                if (deterministic) executeGoal { error("Verified Telegram goal must not invoke a model") }
+                if (deterministic) executeGoal { error("Verified deterministic goal must not invoke a model") }
                 else model.withAgentPlanner(stop, shortDecisions = goal.arithmetic, block = executeGoal)
             } else model.chat(if (inPlace) "Ответь на запрос текстом. Не заявляй о выполнении внешних действий или поиске, которых не было.\n" + prompt else prompt, image, thinkingBudget > 0, stop, thinkingBudget = thinkingBudget) { chunk ->
                 val now = SystemClock.elapsedRealtime()
@@ -1310,9 +1309,12 @@ class NoxService : Service() {
     }
 
     /** A UI-owned dictation session never routes recognized speech as a command. */
+    internal fun canStartWebDictation(): Boolean =
+        !destroyed && !busy && activeSpeech == null && !speaking && unlocked() &&
+            (!listening || waitingForName)
+
     internal fun startWebDictation(): Long? {
-        if (destroyed || busy || activeSpeech != null || speaking || !unlocked() ||
-            (listening && !waitingForName)) return null
+        if (!canStartWebDictation()) return null
         webDictationSession++
         webDictationResult = ""
         webDictationFinal = false

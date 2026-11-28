@@ -112,6 +112,8 @@ internal class AgentCore(
             // Only a typed, successful screen outcome can authorize a deterministic next decision.
             // Unknown outcomes stop below, and pre-action rejection requires fresh observation.
             var action: AgentDecision? = when {
+                goal?.directOpenTarget != null && executeTyped != null && step == 0 -> AgentDecision.Tool("apps", goal.directOpenTarget)
+                goal?.directOpenTarget != null && executeTyped != null && lastOutcome is ToolOutcome.Ok -> fastDecision()
                 goal?.telegramOpenWrite == true && executeTyped != null && step == 0 -> AgentDecision.Tool("apps", "Telegram")
                 goal?.telegramOpenWrite == true && executeTyped != null && lastOutcome is ToolOutcome.Ok -> fastDecision()
                 goal?.telegramDraftGoal == true && executeTyped != null && step == 0 -> AgentDecision.Tool("observe", "")
@@ -119,6 +121,8 @@ internal class AgentCore(
                     executeTyped != null && (lastOutcome as? ToolOutcome.Ok)?.pkg != null -> fastDecision()
                 else -> null
             }
+            if (goal?.directOpenTarget != null && executeTyped != null && step > 0 && action == null)
+                return "Не удалось однозначно найти или подтвердить запуск приложения. Уточни его название."
             if (goal?.telegramOpenWrite == true && executeTyped != null && step > 0 && action == null)
                 return "Не удалось однозначно найти или открыть Telegram. Сообщение не отправлено."
             if (goal?.telegramDraftGoal == true && executeTyped != null && step > 0 && action == null)

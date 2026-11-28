@@ -256,6 +256,12 @@ internal class AndroidAgentTools(
      *  The ordinary executor still checks permission, veto, identity and postcondition.
      */
     fun fastDecision(): AgentDecision? {
+        if (goal.directOpenTarget != null) {
+            val screen = snapshot
+            if (screen != null) return if (goal.finish(goalObservation(screen)) != null)
+                AgentDecision.Finish("") else null
+            return goal.directOpenPackage(apps)?.let { AgentDecision.Tool("launch", it) }
+        }
         if (goal.telegramOpenWrite) {
             val screen = snapshot
             if (screen != null) return if (goal.finish(goalObservation(screen)) != null)
@@ -703,6 +709,8 @@ internal class AndroidAgentTools(
         if (goal.searchNavigation && action.name !in setOf("apps", "launch", "observe", "click") &&
             !(action.name == "type" && goal.searchQuery != null))
             return ToolOutcome.RejectedBeforeAction("Для поиска допустимы только поиск приложения, наблюдение, проверенная навигация и явно запрошенный ввод поиска.")
+        if (goal.directOpenTarget != null && action.name !in setOf("apps", "launch", "observe"))
+            return ToolOutcome.RejectedBeforeAction("Запрошено только открытие приложения; другие действия запрещены.")
         if (goal.telegramOpenWrite && action.name !in setOf("apps", "launch", "observe"))
             return ToolOutcome.RejectedBeforeAction("Сначала открой Telegram и уточни получателя и текст. Не вводи и не отправляй сообщение.")
         if (goal.telegramDraftGoal && (goal.telegramSendRequested || action.name !in setOf("observe", "type")))

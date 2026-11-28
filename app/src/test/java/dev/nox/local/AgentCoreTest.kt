@@ -4,6 +4,48 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AgentCoreTest {
+    @Test fun simpleRussianOpenUsesNoModelAndVerifiesFreshScreen() {
+        val request = "Нокс, открой Telegram!"
+        val goal = GoalState(request)
+        val calls = mutableListOf<String>()
+        var launched = false
+        val pkg = "org.telegram.messenger"
+        val core = AgentCore(decide = { error("No model needed") }, execute = { error("Typed executor required") },
+            cancelled = { false }, goal = goal,
+            executeTyped = { action ->
+                calls.add(action.name)
+                when (action.name) {
+                    "apps" -> { assertEquals("telegram", action.arg); ToolOutcome.Ok("Telegram = $pkg") }
+                    "launch" -> {
+                        assertEquals(pkg, action.arg)
+                        goal.launched(pkg, "Telegram")
+                        launched = true
+                        ToolOutcome.Ok("screen", pkg)
+                    }
+                    else -> error("Unexpected action")
+                }
+            }, fastDecision = {
+                if (launched) AgentDecision.Finish("")
+                else goal.directOpenPackage(mapOf(pkg to "Telegram"))?.let { AgentDecision.Tool("launch", it) }
+            }, verifyFinish = { if (launched) goal.finish(GoalObservation(goal.sequence(), pkg, emptyList())) else null })
+        assertEquals("Приложение открыто: Telegram", core.run(request, ""))
+        assertEquals(listOf("apps", "launch"), calls)
+    }
+
+    @Test fun ambiguousSimpleOpenDoesNotGuessOrCallModel() {
+        val goal = GoalState("Открой Telegram")
+        var calls = 0
+        val core = AgentCore(decide = { error("No model fallback") }, execute = { error("Typed executor required") },
+            cancelled = { false }, goal = goal, executeTyped = {
+                assertEquals("apps", it.name); calls++; ToolOutcome.Ok("Two candidates")
+            }, fastDecision = {
+                goal.directOpenPackage(mapOf("one.app" to "Telegram", "two.app" to "Telegram"))
+                    ?.let { AgentDecision.Tool("launch", it) }
+            })
+        assertTrue(core.run("Открой Telegram", "").contains("однозначно"))
+        assertEquals(1, calls)
+    }
+
     @Test fun verifiedFastStepsUseSameTypedExecutorAndFreshFinishGate() {
         var modelCalls = 0
         var fastCalls = 0

@@ -3,6 +3,7 @@
 Repository smaks190-crypto/auto-chess-, PR #5, branch chatgpt/nox-agent-core. Use git HEAD and GitHub CI as live truth.
 
 ## Current work
+- CI #160 (f1f831d, 46110661417) passed. New work: bounded auto-listen wait in compact and in-app assistant, and exact single-app Russian launch without language-model inference, using existing permission/veto/fresh-screen checks. Source and regression tests added; CI/device confirmation pending. Timer and restricted lock-screen work not included.
 - Build #158 (e51dbab, CI 46109140449) passed and was installed on S24. APK hash and launch, saved model/history, microphone recording and Accessibility verified. Real Telegram typing test interrupted; not confirmed. New fix removes blanket refusal of compact agent commands, waits for panel hide, preserves permissions and lock/role checks. Unstructured Telegram open+write commands open only the verified Telegram app and ask for recipient/text, no guessed draft/send. New CI/device verification pending.
 - Previous 15a62a6 microphone visualization improvement: CI #156 (46106784662) passed. Earlier 4133842 build #153 installed on S24; invocation starts recording, Back stops. Later voice/in-place/visualizer behavior not yet physically verified.
 - Device-specific signed Dev APK update via existing workflow; do not install ephemeral CI debug APK.

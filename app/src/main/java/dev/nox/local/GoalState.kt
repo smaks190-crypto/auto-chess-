@@ -46,7 +46,16 @@ internal class GoalState(private val request: String) {
         val ru = "(?:(?:открой|запусти) калькулятор и (?:посчитай|вычисли|рассчитай|сложи)\\s+$expr(?:\\s+(?:кнопками|с помощью кнопок))?|(?:посчитай|вычисли|рассчитай)\\s+$expr\\s+в калькуляторе)"
         Regex("(?:$en|$ru)[.!]?").matches(normalized.trim())
     }
-    private val openTarget = if (telegramOpenWrite) "Telegram" else Regex("^(?:открой|запусти|open|launch)\\s+([\\p{L}0-9 ._-]+?)[.!?]?\\s*$", RegexOption.IGNORE_CASE)
+    // The existing Russian command grammar recognizes a single explicit app launch.
+    // Follow-up actions and unknown requests remain on the ordinary guarded path.
+    val directOpenTarget: String? = if (searchRequest == null && telegramDraft == null && !telegramOpenWrite)
+        (PhoneCommands.parse(request) as? PhoneCommand.Open)?.app else null
+    val requiresNoModel: Boolean get() = telegramDraftGoal || telegramOpenWrite || directOpenTarget != null
+    fun directOpenPackage(candidates: Map<String, String>): String? {
+        val target = directOpenTarget ?: return null
+        return candidates.entries.singleOrNull { SearchNavigation.matchesApp(target, it.value, it.key) }?.key
+    }
+    private val openTarget = if (telegramOpenWrite) "Telegram" else directOpenTarget ?: Regex("^(?:открой|запусти|open|launch)\\s+([\\p{L}0-9 ._-]+?)[.!?]?\\s*$", RegexOption.IGNORE_CASE)
         .matchEntire(request.trim())?.groupValues?.get(1)?.trim()
     val searchTarget = searchRequest?.app
     val searchQuery = searchRequest?.query
@@ -57,7 +66,7 @@ internal class GoalState(private val request: String) {
     val supported: Boolean get() = formula != null || openTarget != null || searchNavigation || telegramDraftGoal
     fun matchesSearchApp(pkg: String, label: String): Boolean =
         if (telegramOpenWrite) TelegramDraft.isTelegram(pkg)
-        else searchTarget?.let { SearchNavigation.matchesApp(it, label, pkg) } ?: true
+        else (directOpenTarget ?: searchTarget)?.let { SearchNavigation.matchesApp(it, label, pkg) } ?: true
     val arithmetic: Boolean get() = formula != null
     fun allowsLaunch(pkg: String) = !arithmetic || pkg == CALC
     private var verifiedEqualsSeq: Long? = null
